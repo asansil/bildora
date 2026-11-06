@@ -2,7 +2,25 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { readEnv, resolveExecutable } from './resolve-executable.js';
+import { isInstallerStub, readEnv, resolveExecutable } from './resolve-executable.js';
+
+describe('isInstallerStub', () => {
+  it('recognizes the alias Windows ships in place of Python', () => {
+    expect(
+      isInstallerStub(
+        'C:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.29_x64__8w\\AppInstallerPythonRedirector.exe',
+      ),
+    ).toBe(true);
+  });
+
+  it('accepts the alias of a real Store app', () => {
+    expect(
+      isInstallerStub(
+        'C:\\Program Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_x64__q\\python3.12.exe',
+      ),
+    ).toBe(false);
+  });
+});
 
 describe('readEnv', () => {
   it('ignores case, as Windows does', () => {

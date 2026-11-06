@@ -1,4 +1,5 @@
-import { dirname } from 'node:path';
+import { spawn as spawnProcess } from 'node:child_process';
+import { basename, dirname } from 'node:path';
 import type { ToolCommand, ToolManifest } from '@bildora/protocol';
 import type { RegisteredTool } from '../registry/tool-registry.js';
 import {
@@ -49,6 +50,8 @@ export interface RunOptions {
   /** Where the launcher is. Packaged apps pass a path outside the ASAR. */
   readonly launcherPath?: string;
 }
+
+export type WindowRunOptions = Omit<RunOptions, 'onOutput'>;
 
 export interface ToolRun {
   /** Settles when the tool has ended and all its output was delivered. It never rejects. */
@@ -131,6 +134,11 @@ async function prepare(tool: RegisteredTool, options: RunOptions): Promise<Prepa
   }
 }
 
+/** Arguments an interpreter needs before a script path. PowerShell treats a quoted one as text. */
+export function scriptInterpreterArguments(interpreter: string): readonly string[] {
+  return /^(?:powershell|pwsh)(?:\.exe)?$/i.test(basename(interpreter)) ? ['-File'] : [];
+}
+
 async function commandLineFor(
   manifest: ToolManifest,
   program: string,
@@ -145,7 +153,8 @@ async function commandLineFor(
         message: `Interpreter "${manifest.interpreter}" is not installed, or is not on PATH`,
       });
     }
-    return programCommandLine(interpreter, [program, ...args]);
+    const leading = scriptInterpreterArguments(interpreter);
+    return programCommandLine(interpreter, [...leading, program, ...args]);
   }
   if (isBatchFile(program)) {
     const commandInterpreter = readEnv(env, 'ComSpec') ?? (await resolveExecutable('cmd', { env }));
@@ -180,15 +189,27 @@ function resultOfExit(exitCode: number, durationMs: number): RunResult {
   };
 }
 
-/**
- * Starts a tool as a separate process, under a PTY and inside a Job Object. Anything that stops the
- * tool from running, wrong parameters included, is reported through `result`.
- */
-export function startRun(tool: RegisteredTool, options: RunOptions = {}): ToolRun {
+/** A launcher process that has started. Killing it closes the job, which ends the tree. */
+interface StartedProcess {
+  /** Settles with the launcher's exit code, once all output was delivered. */
+  readonly exit: Promise<number>;
+  kill(): void;
+}
+
+type ProcessStarter = (launcherPath: string, mode: string, run: PreparedRun) => StartedProcess;
+
+/** Everything that happens around a process, whichever way it is shown to the user. */
+function trackRun(
+  tool: RegisteredTool,
+  options: RunOptions,
+  loadStarter: () => Promise<ProcessStarter>,
+): ToolRun {
   const startedAt = performance.now();
   const elapsed = (): number => performance.now() - startedAt;
   let cancelled = false;
   let endProcess: (() => void) | undefined;
+  // A function, because `cancel()` changes this during the waits below.
+  const isCancelled = (): boolean => cancelled;
 
   async function execute(): Promise<RunResult> {
     const launcherPath = options.launcherPath ?? defaultLauncherPath();
@@ -199,37 +220,20 @@ export function startRun(tool: RegisteredTool, options: RunOptions = {}): ToolRu
         message: 'Running tools needs a process launcher, which only exists for Windows so far',
       });
     }
-    // Loaded here, so that importing core does not load a native module nobody may need.
-    const { spawn } = await import('node-pty');
-    if (cancelled) {
+    const start = await loadStarter();
+    if (isCancelled()) {
       return { status: 'cancelled', durationMs: elapsed() };
     }
 
-    const mode = tool.manifest.leftoverProcesses;
-    return await new Promise<RunResult>((resolve) => {
-      const terminal = spawn(launcherPath, `${mode} ${prepared.commandLine}`, {
-        cols: TERMINAL_COLUMNS,
-        rows: TERMINAL_ROWS,
-        cwd: prepared.cwd,
-        env: prepared.env,
-        useConpty: true,
-      });
-      // Killing the launcher closes the job, which ends the tree. `pty.kill()` would miss detached
-      // children and print a stack trace when the console has gone.
-      endProcess = () => {
-        process.kill(terminal.pid);
-      };
-      terminal.onData((data) => options.onOutput?.(data));
-      // On Windows this fires after node-pty has drained the output.
-      terminal.onExit(({ exitCode }) => {
-        endProcess = undefined;
-        resolve(
-          cancelled
-            ? { status: 'cancelled', durationMs: elapsed() }
-            : resultOfExit(exitCode, elapsed()),
-        );
-      });
-    });
+    const started = start(launcherPath, tool.manifest.leftoverProcesses, prepared);
+    endProcess = () => {
+      started.kill();
+    };
+    const exitCode = await started.exit;
+    endProcess = undefined;
+    return isCancelled()
+      ? { status: 'cancelled', durationMs: elapsed() }
+      : resultOfExit(exitCode, elapsed());
   }
 
   const result = execute().catch((error: unknown): RunResult => {
@@ -257,4 +261,71 @@ export function startRun(tool: RegisteredTool, options: RunOptions = {}): ToolRu
       }
     },
   };
+}
+
+/**
+ * Starts a tool as a separate process, under a PTY and inside a Job Object. Anything that stops the
+ * tool from running, wrong parameters included, is reported through `result`.
+ */
+export function startRun(tool: RegisteredTool, options: RunOptions = {}): ToolRun {
+  return trackRun(tool, options, async () => {
+    // Loaded here, so that importing core does not load a native module nobody may need.
+    const { spawn } = await import('node-pty');
+    return (launcherPath, mode, prepared) => {
+      const terminal = spawn(launcherPath, `${mode} ${prepared.commandLine}`, {
+        cols: TERMINAL_COLUMNS,
+        rows: TERMINAL_ROWS,
+        cwd: prepared.cwd,
+        env: prepared.env,
+        useConpty: true,
+      });
+      terminal.onData((data) => options.onOutput?.(data));
+      return {
+        // On Windows this fires after node-pty has drained the output.
+        exit: new Promise((resolve) => {
+          terminal.onExit(({ exitCode }) => {
+            resolve(exitCode);
+          });
+        }),
+        // `pty.kill()` would miss detached children and print a stack trace when the console has
+        // gone, so the launcher is killed instead.
+        kill: () => {
+          process.kill(terminal.pid);
+        },
+      };
+    };
+  });
+}
+
+/**
+ * Starts a tool in a window of its own, with no output reaching Bildora: a console program gets its
+ * own console, and a GUI program shows only its windows. The launcher stays hidden, tracks the exit
+ * code and keeps the tree in a Job Object. It is detached because libuv puts every other child in
+ * a kill-on-close job of its own, and the tool must outlive Bildora if the user leaves it open.
+ */
+export function startWindowRun(tool: RegisteredTool, options: WindowRunOptions = {}): ToolRun {
+  return trackRun(tool, options, () =>
+    Promise.resolve((launcherPath, mode, prepared) => {
+      const launcher = spawnProcess(launcherPath, [mode, '--new-console', prepared.commandLine], {
+        cwd: prepared.cwd,
+        env: prepared.env,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+      });
+      return {
+        exit: new Promise((resolve, reject) => {
+          launcher.once('error', reject);
+          launcher.once('exit', (code) => {
+            // No code means a signal ended it, so the tool did not finish cleanly.
+            resolve(code ?? 1);
+          });
+        }),
+        kill: () => {
+          launcher.kill();
+        },
+      };
+    }),
+  );
 }

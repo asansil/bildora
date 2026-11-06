@@ -42,6 +42,7 @@ describe.skipIf(process.platform !== 'win32')('job-launcher', () => {
 
   it.each([
     ['no command', 'end', 0xb1d00001],
+    ['no command after the console option', 'end --new-console', 0xb1d00001],
     ['an unknown mode', `stay ${node}`, 0xb1d00001],
     ['a missing program', 'end C:\\no\\such\\program.exe', 0xb1d00003],
   ])('reports %s with a reserved code', (_name, commandLine, code) => {
@@ -57,6 +58,12 @@ describe.skipIf(process.platform !== 'win32')('job-launcher', () => {
     } finally {
       endProcess(child);
     }
+  });
+
+  it('forwards the exit code from a console of its own', () => {
+    const { status, stdout } = launch(`end --new-console ${node} exit 7`);
+    expect(status).toBe(7);
+    expect(stdout).toBe('');
   });
 
   it('leaves a detached child running when the tool exits in keep mode', async () => {

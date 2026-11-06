@@ -26,11 +26,35 @@ export { ParameterError } from './runner/command-line.js';
 export type { ParameterValue, ParameterValues } from './runner/command-line.js';
 export { resolveExecutable } from './runner/resolve-executable.js';
 export type { ResolveOptions } from './runner/resolve-executable.js';
-export { startRun } from './runner/run-tool.js';
+export { startRun, startWindowRun } from './runner/run-tool.js';
 export type {
   RunFailure,
   RunFailureKind,
   RunOptions,
   RunResult,
   ToolRun,
+  WindowRunOptions,
 } from './runner/run-tool.js';
+export { SCAN_RESULT_LIMIT, detectPrograms, displayName } from './import/detect-program.js';
+export type { DetectOptions, Detection, ProgramProposal } from './import/detect-program.js';
+export {
+  createRegisteredManifest,
+  identifierFromName,
+  registerPrograms,
+  updateToolDetails,
+} from './import/register-program.js';
+export type {
+  ProgramDetails,
+  RegistrationFailure,
+  RegistrationReport,
+  ToolDetails,
+} from './import/register-program.js';
+export { checkRuntime, groupByCategory } from './tools/tool-status.js';
+export type { RuntimeCheckOptions, RuntimeStatus, ToolGroup } from './tools/tool-status.js';
+export {
+  DEFAULT_PREFERENCES,
+  THEMES,
+  readPreferences,
+  writePreferences,
+} from './storage/preferences.js';
+export type { Preferences, Theme } from './storage/preferences.js';

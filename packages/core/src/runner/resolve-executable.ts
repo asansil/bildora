@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises';
+import { lstat, readlink, stat } from 'node:fs/promises';
 import { delimiter as hostDelimiter, extname, isAbsolute, join, win32 } from 'node:path';
 
 const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD';
@@ -19,11 +19,30 @@ export function readEnv(
   return key === undefined ? undefined : env[key];
 }
 
+/** Windows ships this behind a `python` alias: it offers to install Python, and runs nothing. */
+export function isInstallerStub(aliasTarget: string): boolean {
+  return /PythonRedirector\.exe$/i.test(aliasTarget);
+}
+
+/**
+ * Tells whether a path is a Windows app execution alias for a real program. `stat` cannot follow
+ * these, although a Store app is reached only through one.
+ */
+async function isAppAlias(path: string): Promise<boolean> {
+  try {
+    return (await lstat(path)).isSymbolicLink() && !isInstallerStub(await readlink(path));
+  } catch {
+    return false;
+  }
+}
+
 async function isFile(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isFile();
-  } catch {
-    return false;
+  } catch (error) {
+    return error instanceof Error && 'code' in error && error.code === 'EACCES'
+      ? isAppAlias(path)
+      : false;
   }
 }
 

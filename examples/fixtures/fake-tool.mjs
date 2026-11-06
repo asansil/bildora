@@ -1,5 +1,6 @@
 // A tool that misbehaves on request, for tests of process execution.
 import { spawn } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const self = fileURLToPath(import.meta.url);
@@ -50,6 +51,16 @@ switch (mode) {
   case 'sleep':
     sleepForever();
     break;
+  case 'report': {
+    // For tools with a window of their own, whose output cannot be read. `rest` is <file> <then>.
+    const [file, then] = rest;
+    const child = then === 'tree' || then === 'orphan' ? startDetachedChild() : undefined;
+    writeFileSync(file, JSON.stringify({ pid: process.pid, child, tty: process.stdout.isTTY }));
+    if (then === 'tree' || then === 'hang') {
+      sleepForever();
+    }
+    break;
+  }
   default:
     console.error(`Unknown mode: ${mode}`);
     process.exitCode = 64;

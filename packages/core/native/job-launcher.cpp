@@ -1,6 +1,9 @@
 // Runs a command inside a kill-on-close Job Object and forwards its exit code.
 //
-// Usage: job-launcher <end|keep> <command line>
+// Usage: job-launcher <end|keep> [--new-console] <command line>
+//
+// With --new-console the command gets its own console window instead of sharing the launcher's,
+// which is how a tool opens in its own window. A GUI program ignores it and shows only its windows.
 //
 // When this launcher ends for any reason, Windows ends every process in the job, so killing the
 // launcher ends the whole tree, including children whose parent has already gone. In `keep` mode
@@ -12,13 +15,14 @@
 namespace {
 
 // Failures of the launcher itself. These stay clear of ordinary exit codes, so core can tell them
-// from a tool's own result. Keep in sync with launcher-exit-codes.ts.
+// from a tool's own result. Keep in sync with src/runner/launcher.ts.
 constexpr DWORD kUsageError = 0xB1D00001;
 constexpr DWORD kJobSetupError = 0xB1D00002;
 constexpr DWORD kCommandNotStarted = 0xB1D00003;
 constexpr DWORD kJobAssignError = 0xB1D00004;
 
 constexpr wchar_t kBlanks[] = L" \t";
+constexpr wchar_t kNewConsoleOption[] = L"--new-console";
 
 // Returns the position just past the token starting at `start`, which may be quoted.
 size_t SkipToken(const std::wstring& line, size_t start) {
@@ -60,7 +64,11 @@ int wmain(int argc, wchar_t** argv) {
   if (mode != L"end" && mode != L"keep") {
     return static_cast<int>(kUsageError);
   }
-  std::wstring command = CommandAfterTokens(GetCommandLineW(), 2);
+  const bool newConsole = std::wstring(argv[2]) == kNewConsoleOption;
+  std::wstring command = CommandAfterTokens(GetCommandLineW(), newConsole ? 3 : 2);
+  if (command.empty()) {
+    return static_cast<int>(kUsageError);
+  }
 
   HANDLE job = CreateJobObjectW(nullptr, nullptr);
   if (job == nullptr || !SetKillOnClose(job, true)) {
@@ -71,8 +79,10 @@ int wmain(int argc, wchar_t** argv) {
   startup.cb = sizeof startup;
   PROCESS_INFORMATION process = {};
   // Suspended, so the tool cannot start a child before it is inside the job.
-  if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED, nullptr,
-                      nullptr, &startup, &process)) {
+  const DWORD flags = CREATE_SUSPENDED | (newConsole ? CREATE_NEW_CONSOLE : 0);
+  // A new console brings its own standard handles, so nothing of the launcher's is inherited.
+  if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, newConsole ? FALSE : TRUE, flags,
+                      nullptr, nullptr, &startup, &process)) {
     return static_cast<int>(kCommandNotStarted);
   }
   if (!AssignProcessToJobObject(job, process.hProcess)) {
