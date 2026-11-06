@@ -15,6 +15,7 @@ const SEMVER_PATTERN =
 const NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 const FLAG_PATTERN = /^(?:--?|\/)[a-zA-Z0-9?][a-zA-Z0-9_-]*$/;
 const INTERPRETER_PATTERN = /^[a-zA-Z0-9._+-]+$/;
+const ENVIRONMENT_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 /** Relative, inside the tool folder: no drive, no leading separator and no `..` segment. */
 const CONTAINED_PATH_PATTERN = /^(?![\\/])(?![a-zA-Z]:)(?!(?:.*[\\/])?\.\.(?:[\\/]|$)).+$/;
 
@@ -49,6 +50,8 @@ const parameterFields = {
   description: nonEmpty.optional(),
   required: z.boolean().default(false),
   flag: z.string().regex(FLAG_PATTERN).optional(),
+  /** Hands the value over in this environment variable rather than as an argument. */
+  env: z.string().regex(ENVIRONMENT_NAME_PATTERN).optional(),
 };
 
 const parameterSchema = z.discriminatedUnion('type', [
@@ -78,6 +81,7 @@ const parameterSchema = z.discriminatedUnion('type', [
     type: z.literal('boolean'),
     // A boolean has no value of its own, so it can only appear as a flag.
     flag: z.string().regex(FLAG_PATTERN),
+    env: z.never().optional(),
     default: z.boolean().optional(),
   }),
   z.strictObject({
@@ -155,9 +159,26 @@ export const toolManifestSchema = manifestShape.superRefine((manifest, context) 
     });
   }
 
+  const environmentNames = parameters.flatMap(({ env }) => (env === undefined ? [] : [env]));
+  // Windows reads environment names without regard to case.
+  for (const name of findDuplicates(environmentNames.map((env) => env.toUpperCase()))) {
+    context.addIssue({
+      code: 'custom',
+      path: ['parameters'],
+      message: `Environment variable "${name}" is used more than once`,
+    });
+  }
+
   let sawOptionalPositional = false;
   parameters.forEach((parameter, index) => {
     const path = ['parameters', index];
+    if (parameter.env !== undefined && parameter.flag !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: [...path, 'env'],
+        message: 'A parameter reaches the tool as a flag or as a variable, not both',
+      });
+    }
     if (parameter.type === 'string' && parameter.secret && parameter.default !== undefined) {
       context.addIssue({
         code: 'custom',
@@ -176,7 +197,7 @@ export const toolManifestSchema = manifestShape.superRefine((manifest, context) 
         message: `Default "${parameter.default}" is not one of the choices`,
       });
     }
-    if (parameter.flag === undefined) {
+    if (parameter.flag === undefined && parameter.env === undefined) {
       if (parameter.required && sawOptionalPositional) {
         context.addIssue({
           code: 'custom',

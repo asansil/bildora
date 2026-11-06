@@ -40,6 +40,45 @@ function issues(input: unknown): string[] {
 }
 
 describe('toolManifestSchema', () => {
+  describe('env', () => {
+    const withParameters = (...parameters: unknown[]): unknown => ({
+      ...levelOne,
+      parameters,
+      outputs: [],
+    });
+    const token = { name: 'token', type: 'string', label: 'Token', secret: true };
+
+    it('accepts a value handed over in a variable', () => {
+      expect(issues(withParameters({ ...token, env: 'TOOL_TOKEN' }))).toEqual([]);
+    });
+
+    it('lets a required variable follow an optional positional', () => {
+      const optional = { name: 'first', type: 'string', label: 'First' };
+
+      expect(
+        issues(withParameters(optional, { ...token, required: true, env: 'TOOL_TOKEN' })),
+      ).toEqual([]);
+    });
+
+    it.each([
+      ['a flag as well', withParameters({ ...token, env: 'TOOL_TOKEN', flag: '--token' })],
+      [
+        'a boolean',
+        withParameters({ name: 'on', type: 'boolean', label: 'On', flag: '-o', env: 'ON' }),
+      ],
+      ['a bad name', withParameters({ ...token, env: '1 BAD' })],
+      [
+        'a name used twice, whatever its case',
+        withParameters(
+          { ...token, env: 'TOOL_TOKEN' },
+          { ...token, name: 'other', env: 'tool_token' },
+        ),
+      ],
+    ])('refuses %s', (_name, manifest) => {
+      expect(issues(manifest)).not.toEqual([]);
+    });
+  });
+
   it.each([
     ['level 0', levelZero],
     ['level 1', levelOne],
