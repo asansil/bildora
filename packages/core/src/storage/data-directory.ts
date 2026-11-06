@@ -86,13 +86,23 @@ function parseFormatFile(text: string): DefinitionDocument {
   return { ...parsed };
 }
 
+/** Folder holding every Workspace. */
+export function workspacesDirectory(dataDir: string): string {
+  return join(dataDir, 'workspaces');
+}
+
+/** Folder of one Workspace. The id is checked here because it becomes part of a path. */
+export function workspaceDirectory(dataDir: string, workspaceId: string): string {
+  assertIdentifier(workspaceId, 'Workspace id');
+  return join(workspacesDirectory(dataDir), workspaceId);
+}
+
 /** Folder holding the tools of one install scope. */
 export function toolsDirectory(dataDir: string, scope: InstallScope): string {
   if (scope.kind === 'global') {
     return join(dataDir, 'tools');
   }
-  assertIdentifier(scope.workspaceId, 'Workspace id');
-  return join(dataDir, 'workspaces', scope.workspaceId, 'tools');
+  return join(workspaceDirectory(dataDir, scope.workspaceId), 'tools');
 }
 
 /** Folder of one tool. The id is checked here because it becomes part of a path. */

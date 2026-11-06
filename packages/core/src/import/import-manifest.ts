@@ -1,9 +1,12 @@
 import { readFile, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
+import { startsWithPathVariable } from '@bildora/protocol';
 import type { Permission, ToolManifest } from '@bildora/protocol';
 import { parseManifest } from '../manifest/parse-manifest.js';
 import type { RegisteredTool, ToolRegistry } from '../registry/tool-registry.js';
 import { resolveExecutable } from '../runner/resolve-executable.js';
+import { GLOBAL_SCOPE } from '../storage/data-directory.js';
+import type { InstallScope } from '../storage/data-directory.js';
 import { DefinitionError } from '../storage/definition-error.js';
 
 export const MANIFEST_FILE_NAME = 'tool.yaml';
@@ -95,7 +98,7 @@ async function anchorProgram(
   folder: string,
 ): Promise<ToolManifest> {
   const { program } = manifest.run;
-  if (isAbsolute(program)) {
+  if (isAbsolute(program) || startsWithPathVariable(program)) {
     return manifest;
   }
   const beside = await resolveExecutable(program, { env: {}, searchFirst: [folder] });
@@ -112,6 +115,7 @@ async function anchorProgram(
 export async function importManifests(
   registry: ToolRegistry,
   paths: readonly string[],
+  scope: InstallScope = GLOBAL_SCOPE,
 ): Promise<ManifestImportReport> {
   const registered: RegisteredTool[] = [];
   const failures: { program: string; message: string }[] = [];
@@ -121,7 +125,7 @@ export async function importManifests(
         throw new DefinitionError(`Only files named ${MANIFEST_FILE_NAME} can be imported`);
       }
       const manifest = await anchorProgram(await readLevelOneManifest(path), dirname(path));
-      registered.push(await registry.register(manifest, { replace: true }));
+      registered.push(await registry.register(manifest, { replace: true, scope }));
     } catch (error) {
       failures.push({ program: path, message: describeError(error) });
     }

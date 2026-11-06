@@ -50,9 +50,18 @@ function profileFile(tool: RegisteredTool, id: string): string {
   return join(profilesFolder(tool), `${id}${PROFILE_EXTENSION}`);
 }
 
-/** Where one secret of a profile is stored. Tool and profile ids hold no `/`, so keys cannot clash. */
-export function profileSecretKey(toolId: string, profileId: string, parameter: string): string {
-  return `${toolId}/${profileId}/${parameter}`;
+/**
+ * Where one secret of a profile is stored. Ids hold no `/`, so a global key, with three parts, and
+ * a Workspace key, with five, cannot clash, and two Workspaces can hold tools with the same id.
+ */
+export function profileSecretKey(
+  tool: Pick<RegisteredTool, 'manifest' | 'scope'>,
+  profileId: string,
+  parameter: string,
+): string {
+  const { scope, manifest } = tool;
+  const prefix = scope.kind === 'global' ? '' : `workspace/${scope.workspaceId}/`;
+  return `${prefix}${manifest.id}/${profileId}/${parameter}`;
 }
 
 function isParameterValue(value: unknown): value is ParameterValue {
@@ -162,7 +171,7 @@ export async function saveProfile(
   const secrets = new Set(previous?.secrets ?? []);
   for (const parameter of parameters.filter(isSecretParameter)) {
     const value = input.secrets?.[parameter.name];
-    const key = profileSecretKey(tool.manifest.id, id, parameter.name);
+    const key = profileSecretKey(tool, id, parameter.name);
     if (value === null) {
       await store.delete(key);
       secrets.delete(parameter.name);
@@ -194,7 +203,7 @@ export async function removeProfile(
 ): Promise<void> {
   const profile = await getProfile(tool, id);
   for (const parameter of profile?.secrets ?? []) {
-    await store.delete(profileSecretKey(tool.manifest.id, id, parameter));
+    await store.delete(profileSecretKey(tool, id, parameter));
   }
   await rm(profileFile(tool, id), { force: true });
 }
@@ -207,7 +216,7 @@ export async function readProfileSecrets(
 ): Promise<Readonly<Record<string, string>>> {
   const values: Record<string, string> = {};
   for (const parameter of profile.secrets) {
-    const value = await store.get(profileSecretKey(tool.manifest.id, profile.id, parameter));
+    const value = await store.get(profileSecretKey(tool, profile.id, parameter));
     if (value !== undefined) {
       values[parameter] = value;
     }

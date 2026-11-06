@@ -12,8 +12,11 @@ export const DEFAULT_HISTORY_RUN_LIMIT = 200;
 export const HISTORY_RUN_LIMIT_MAX = 100_000;
 
 export interface Preferences {
+  /** Only the seed of the first Workspace. After that, each Workspace holds its own theme. */
   readonly theme: Theme;
   readonly historyRunLimit: number;
+  /** The Workspace to open with. Absent or gone, the app takes the first one. */
+  readonly activeWorkspaceId?: string;
 }
 
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -30,7 +33,7 @@ const format: VersionedFormat = {
   migrations: [],
 };
 
-function isTheme(value: unknown): value is Theme {
+export function isTheme(value: unknown): value is Theme {
   return THEMES.some((theme) => theme === value);
 }
 
@@ -61,12 +64,13 @@ export async function readPreferences(dataDir: string): Promise<Preferences> {
   if (document === undefined || document['formatVersion'] === undefined) {
     return DEFAULT_PREFERENCES;
   }
-  const { theme, historyRunLimit } = migrateDefinition(document, format);
+  const { theme, historyRunLimit, activeWorkspaceId } = migrateDefinition(document, format);
   return {
     theme: isTheme(theme) ? theme : DEFAULT_PREFERENCES.theme,
     historyRunLimit: isHistoryRunLimit(historyRunLimit)
       ? historyRunLimit
       : DEFAULT_PREFERENCES.historyRunLimit,
+    ...(typeof activeWorkspaceId === 'string' ? { activeWorkspaceId } : {}),
   };
 }
 
