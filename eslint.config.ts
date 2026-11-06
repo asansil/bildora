@@ -12,7 +12,7 @@ export default defineConfig(
     languageOptions: {
       parserOptions: {
         projectService: {
-          allowDefaultProject: ['.dependency-cruiser.cjs', 'packages/*/scripts/*.mjs'],
+          allowDefaultProject: ['.dependency-cruiser.cjs'],
         },
         tsconfigRootDir: import.meta.dirname,
       },
@@ -31,8 +31,14 @@ export default defineConfig(
   },
   {
     files: ['**/*.mjs'],
+    extends: [tseslint.configs.disableTypeChecked],
     languageOptions: {
-      globals: { URL: 'readonly', console: 'readonly', process: 'readonly' },
+      globals: {
+        URL: 'readonly',
+        console: 'readonly',
+        process: 'readonly',
+        setInterval: 'readonly',
+      },
     },
   },
   {
