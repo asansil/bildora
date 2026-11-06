@@ -2,6 +2,8 @@ import { readdir, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
 import type { RegisteredTool } from '../registry/tool-registry.js';
 import { resolveExecutable } from '../runner/resolve-executable.js';
+import { MANIFEST_FILE_NAME, isManifestFile, proposeManifest } from './import-manifest.js';
+import type { ManifestProposal, RefusedManifest } from './import-manifest.js';
 
 /** What a scan returns at most, so that pointing it at a whole drive stays usable. */
 export const SCAN_RESULT_LIMIT = 500;
@@ -38,6 +40,10 @@ export interface ProgramProposal {
 
 export interface Detection {
   readonly proposals: readonly ProgramProposal[];
+  /** Manifests of declarative tools, found by name and read as data. */
+  readonly manifests: readonly ManifestProposal[];
+  /** Files named like a manifest that Bildora cannot use, with the reason. */
+  readonly refused: readonly RefusedManifest[];
   /** Paths given directly that are not a program Bildora recognizes, or cannot be read. */
   readonly skipped: readonly string[];
   /** The scan stopped at its limit, so there may be more. */
@@ -63,7 +69,7 @@ export function displayName(name: string): string {
 }
 
 function isDetectable(path: string): boolean {
-  return Object.hasOwn(INTERPRETERS, extname(path).toLowerCase());
+  return isManifestFile(path) || Object.hasOwn(INTERPRETERS, extname(path).toLowerCase());
 }
 
 /** Picks the first interpreter that is installed, or the usual one so the warning can name it. */
@@ -132,7 +138,9 @@ async function scanFolder(root: string, recursive: boolean, limit: number): Prom
       continue;
     }
     entries.sort((first, second) => first.name.localeCompare(second.name));
-    for (const entry of entries) {
+    // A manifest speaks for its whole folder, whose scripts are that tool's parts.
+    const manifest = entries.find((entry) => entry.isFile() && entry.name === MANIFEST_FILE_NAME);
+    for (const entry of manifest === undefined ? entries : [manifest]) {
       const path = join(folder, entry.name);
       if (entry.isFile() && isDetectable(path)) {
         if (files.length === limit) {
@@ -162,8 +170,9 @@ async function kindOf(path: string): Promise<PathKind> {
 }
 
 /**
- * Proposes tools for dropped or chosen files and folders, for the user to review. It looks only at
- * paths and extensions, so a hostile file cannot do anything by being detected.
+ * Proposes tools for dropped or chosen files and folders, for the user to review. It looks at paths
+ * and extensions, and reads manifests as data, so a hostile file cannot do anything by being
+ * detected.
  */
 export async function detectPrograms(
   paths: readonly string[],
@@ -193,8 +202,20 @@ export async function detectPrograms(
   }
 
   const proposals: ProgramProposal[] = [];
+  const manifests: ManifestProposal[] = [];
+  const refused: RefusedManifest[] = [];
+  const registeredIds = new Set(registered.map((tool) => tool.manifest.id));
   for (const path of found.values()) {
-    proposals.push(await propose(path, known, env));
+    if (isManifestFile(path)) {
+      const proposal = await proposeManifest(path, registeredIds);
+      if ('reason' in proposal) {
+        refused.push(proposal);
+      } else {
+        manifests.push(proposal);
+      }
+    } else {
+      proposals.push(await propose(path, known, env));
+    }
   }
-  return { proposals, skipped, truncated };
+  return { proposals, manifests, refused, skipped, truncated };
 }

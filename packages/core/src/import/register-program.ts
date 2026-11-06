@@ -1,8 +1,10 @@
-import { MANIFEST_SCHEMA_VERSION, isValidIdentifier, toolManifestSchema } from '@bildora/protocol';
+import { MANIFEST_SCHEMA_VERSION, toolManifestSchema } from '@bildora/protocol';
 import type { ToolManifest } from '@bildora/protocol';
 import type { RegisteredTool, ToolRegistry } from '../registry/tool-registry.js';
+import { identifierFromName } from './identifier.js';
 
-const IDENTIFIER_BASE_LENGTH = 100;
+export { identifierFromName };
+
 /** Registered programs have no version of their own that Bildora could know. */
 const REGISTERED_VERSION = '0.0.0';
 
@@ -16,21 +18,6 @@ export interface ToolDetails {
 export interface ProgramDetails extends ToolDetails {
   /** Absolute path. A registered program stays where it is, so a relative path has no base. */
   readonly program: string;
-}
-
-/** Makes a folder-safe id from a tool name, as close to readable as the name allows. */
-export function identifierFromName(name: string): string {
-  const slug = name
-    .normalize('NFKD')
-    .replace(/\p{M}/gu, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .slice(0, IDENTIFIER_BASE_LENGTH)
-    .replace(/^-+|-+$/g, '');
-  if (slug === '') {
-    return 'tool';
-  }
-  return isValidIdentifier(slug) ? slug : `tool-${slug}`;
 }
 
 function uniqueIdentifier(name: string, taken: ReadonlySet<string>): string {

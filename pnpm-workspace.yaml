@@ -17,3 +17,4 @@ minimumReleaseAge: 1440
 
 allowBuilds:
   node-pty: false
+  electron-winstaller: false

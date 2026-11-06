@@ -8,13 +8,16 @@ import {
   isBatchFile,
   programCommandLine,
   renderArguments,
+  renderEnvironment,
 } from './command-line.js';
 import type { ParameterValues } from './command-line.js';
 import { LAUNCHER_FAILURES, defaultLauncherPath } from './launcher.js';
+import { createProgressParser } from './progress-lines.js';
+import type { RunProgress } from './progress-lines.js';
 import { readEnv, resolveExecutable } from './resolve-executable.js';
 
-const TERMINAL_COLUMNS = 120;
-const TERMINAL_ROWS = 30;
+export const TERMINAL_COLUMNS = 120;
+export const TERMINAL_ROWS = 30;
 
 export type RunFailureKind =
   | 'invalid-parameters'
@@ -22,6 +25,7 @@ export type RunFailureKind =
   | 'interpreter-not-found'
   | 'unsupported'
   | 'launcher'
+  | 'credentials'
   | 'exit-code';
 
 export interface RunFailure {
@@ -46,18 +50,27 @@ export interface RunOptions {
   readonly cwd?: string;
   /** Raw terminal output, escape sequences included. Core keeps none of it. */
   readonly onOutput?: (data: string) => void;
+  /** Called for each structured progress line the tool writes. Tools opt in by writing them. */
+  readonly onProgress?: (progress: RunProgress) => void;
+  /** Starting terminal size. */
+  readonly columns?: number;
+  readonly rows?: number;
   readonly env?: Readonly<Record<string, string | undefined>>;
   /** Where the launcher is. Packaged apps pass a path outside the ASAR. */
   readonly launcherPath?: string;
 }
 
-export type WindowRunOptions = Omit<RunOptions, 'onOutput'>;
+export type WindowRunOptions = Omit<RunOptions, 'columns' | 'onOutput' | 'onProgress' | 'rows'>;
 
 export interface ToolRun {
   /** Settles when the tool has ended and all its output was delivered. It never rejects. */
   readonly result: Promise<RunResult>;
   /** Ends the tool and every process it started. Does nothing once the run is over. */
   cancel(): void;
+  /** Types into the tool's console. Does nothing for a tool with a window of its own. */
+  write(data: string): void;
+  /** Changes the console size. Does nothing for a tool with a window of its own. */
+  resize(columns: number, rows: number): void;
 }
 
 interface PreparedRun {
@@ -99,6 +112,19 @@ function commandOf(manifest: ToolManifest): ToolCommand {
   return manifest.run;
 }
 
+/** Sets variables, replacing any other spelling of a name: Windows reads them without case. */
+function setVariables(env: Record<string, string>, variables: Record<string, string>): void {
+  for (const [name, value] of Object.entries(variables)) {
+    for (const inherited of Object.keys(env)) {
+      if (inherited.toUpperCase() === name.toUpperCase()) {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- a plain string map
+        delete env[inherited];
+      }
+    }
+    env[name] = value;
+  }
+}
+
 async function prepare(tool: RegisteredTool, options: RunOptions): Promise<PreparedRun> {
   const { manifest, directory } = tool;
   const command = commandOf(manifest);
@@ -107,7 +133,9 @@ async function prepare(tool: RegisteredTool, options: RunOptions): Promise<Prepa
 
   let args: string[];
   try {
-    args = [...command.args, ...renderArguments(parameters, options.parameters ?? {})];
+    const values = options.parameters ?? {};
+    args = [...command.args, ...renderArguments(parameters, values)];
+    setVariables(env, renderEnvironment(parameters, values));
   } catch (error) {
     if (error instanceof ParameterError) {
       throw new RunPreparationError({ kind: 'invalid-parameters', message: error.message });
@@ -194,9 +222,20 @@ interface StartedProcess {
   /** Settles with the launcher's exit code, once all output was delivered. */
   readonly exit: Promise<number>;
   kill(): void;
+  write?(data: string): void;
+  resize?(columns: number, rows: number): void;
 }
 
 type ProcessStarter = (launcherPath: string, mode: string, run: PreparedRun) => StartedProcess;
+
+/** The process can end on its own at any moment, between a check and the call it guards. */
+function ignoringEndedProcess(action: () => void): void {
+  try {
+    action();
+  } catch {
+    // It has gone, which the caller will hear about through `result`.
+  }
+}
 
 /** Everything that happens around a process, whichever way it is shown to the user. */
 function trackRun(
@@ -207,7 +246,8 @@ function trackRun(
   const startedAt = performance.now();
   const elapsed = (): number => performance.now() - startedAt;
   let cancelled = false;
-  let endProcess: (() => void) | undefined;
+  let live: StartedProcess | undefined;
+  let requestedSize: { columns: number; rows: number } | undefined;
   // A function, because `cancel()` changes this during the waits below.
   const isCancelled = (): boolean => cancelled;
 
@@ -226,11 +266,12 @@ function trackRun(
     }
 
     const started = start(launcherPath, tool.manifest.leftoverProcesses, prepared);
-    endProcess = () => {
-      started.kill();
-    };
+    live = started;
+    if (requestedSize !== undefined) {
+      started.resize?.(requestedSize.columns, requestedSize.rows);
+    }
     const exitCode = await started.exit;
-    endProcess = undefined;
+    live = undefined;
     return isCancelled()
       ? { status: 'cancelled', durationMs: elapsed() }
       : resultOfExit(exitCode, elapsed());
@@ -254,11 +295,20 @@ function trackRun(
     result,
     cancel() {
       cancelled = true;
-      try {
-        endProcess?.();
-      } catch {
-        // The process ended on its own between the check and the kill.
-      }
+      ignoringEndedProcess(() => {
+        live?.kill();
+      });
+    },
+    write(data) {
+      ignoringEndedProcess(() => {
+        live?.write?.(data);
+      });
+    },
+    resize(columns, rows) {
+      requestedSize = { columns, rows };
+      ignoringEndedProcess(() => {
+        live?.resize?.(columns, rows);
+      });
     },
   };
 }
@@ -273,17 +323,23 @@ export function startRun(tool: RegisteredTool, options: RunOptions = {}): ToolRu
     const { spawn } = await import('node-pty');
     return (launcherPath, mode, prepared) => {
       const terminal = spawn(launcherPath, `${mode} ${prepared.commandLine}`, {
-        cols: TERMINAL_COLUMNS,
-        rows: TERMINAL_ROWS,
+        cols: options.columns ?? TERMINAL_COLUMNS,
+        rows: options.rows ?? TERMINAL_ROWS,
         cwd: prepared.cwd,
         env: prepared.env,
         useConpty: true,
       });
-      terminal.onData((data) => options.onOutput?.(data));
+      const { onProgress } = options;
+      const progress = onProgress === undefined ? undefined : createProgressParser(onProgress);
+      terminal.onData((data) => {
+        options.onOutput?.(data);
+        progress?.feed(data);
+      });
       return {
         // On Windows this fires after node-pty has drained the output.
         exit: new Promise((resolve) => {
           terminal.onExit(({ exitCode }) => {
+            progress?.end();
             resolve(exitCode);
           });
         }),
@@ -291,6 +347,12 @@ export function startRun(tool: RegisteredTool, options: RunOptions = {}): ToolRu
         // gone, so the launcher is killed instead.
         kill: () => {
           process.kill(terminal.pid);
+        },
+        write: (data) => {
+          terminal.write(data);
+        },
+        resize: (columns, rows) => {
+          terminal.resize(columns, rows);
         },
       };
     };

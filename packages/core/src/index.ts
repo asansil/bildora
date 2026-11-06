@@ -24,9 +24,44 @@ export type {
 } from './registry/tool-registry.js';
 export { ParameterError } from './runner/command-line.js';
 export type { ParameterValue, ParameterValues } from './runner/command-line.js';
+export { defaultLauncherPath } from './runner/launcher.js';
 export { resolveExecutable } from './runner/resolve-executable.js';
 export type { ResolveOptions } from './runner/resolve-executable.js';
 export { startRun, startWindowRun } from './runner/run-tool.js';
+export { startRecordedRun } from './runner/recorded-run.js';
+export type { RecordedRunOptions } from './runner/recorded-run.js';
+export { resolveRunValues } from './runner/resolve-values.js';
+export type { RecordedParameter, ResolvedValues } from './runner/resolve-values.js';
+export type { RunProgress } from './runner/progress-lines.js';
+export { RunHistory } from './history/run-history.js';
+export type {
+  RecordedStatus,
+  RunFinish,
+  RunRecord,
+  RunStart,
+  RunSummary,
+} from './history/run-history.js';
+export {
+  createChunkedStore,
+  createCredentialStore,
+  createMemorySecretStore,
+} from './secrets/secret-store.js';
+export type { SecretStore } from './secrets/secret-store.js';
+export {
+  getProfile,
+  isSecretParameter,
+  listProfiles,
+  removeProfile,
+  saveProfile,
+} from './profiles/profile-store.js';
+export type { Profile, ProfileInput } from './profiles/profile-store.js';
+export { importManifests } from './import/import-manifest.js';
+export type {
+  ManifestImportReport,
+  ManifestProposal,
+  RefusedManifest,
+} from './import/import-manifest.js';
+export { removeTool } from './tools/remove-tool.js';
 export type {
   RunFailure,
   RunFailureKind,
@@ -52,7 +87,9 @@ export type {
 export { categoryKey, checkRuntime, groupByCategory } from './tools/tool-status.js';
 export type { RuntimeCheckOptions, RuntimeStatus, ToolGroup } from './tools/tool-status.js';
 export {
+  DEFAULT_HISTORY_RUN_LIMIT,
   DEFAULT_PREFERENCES,
+  HISTORY_RUN_LIMIT_MAX,
   THEMES,
   readPreferences,
   writePreferences,

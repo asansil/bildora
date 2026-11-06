@@ -7,11 +7,19 @@ import type { VersionedFormat } from './migrations.js';
 export const THEMES = ['system', 'light', 'dark'] as const;
 export type Theme = (typeof THEMES)[number];
 
+/** Runs kept per tool, a limit users can change because history also serves as evidence. */
+export const DEFAULT_HISTORY_RUN_LIMIT = 200;
+export const HISTORY_RUN_LIMIT_MAX = 100_000;
+
 export interface Preferences {
   readonly theme: Theme;
+  readonly historyRunLimit: number;
 }
 
-export const DEFAULT_PREFERENCES: Preferences = { theme: 'system' };
+export const DEFAULT_PREFERENCES: Preferences = {
+  theme: 'system',
+  historyRunLimit: DEFAULT_HISTORY_RUN_LIMIT,
+};
 
 const PREFERENCES_FILE = 'preferences.json';
 const PREFERENCES_VERSION = 1;
@@ -24,6 +32,15 @@ const format: VersionedFormat = {
 
 function isTheme(value: unknown): value is Theme {
   return THEMES.some((theme) => theme === value);
+}
+
+function isHistoryRunLimit(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= HISTORY_RUN_LIMIT_MAX
+  );
 }
 
 /**
@@ -44,13 +61,21 @@ export async function readPreferences(dataDir: string): Promise<Preferences> {
   if (document === undefined || document['formatVersion'] === undefined) {
     return DEFAULT_PREFERENCES;
   }
-  const { theme } = migrateDefinition(document, format);
-  return isTheme(theme) ? { theme } : DEFAULT_PREFERENCES;
+  const { theme, historyRunLimit } = migrateDefinition(document, format);
+  return {
+    theme: isTheme(theme) ? theme : DEFAULT_PREFERENCES.theme,
+    historyRunLimit: isHistoryRunLimit(historyRunLimit)
+      ? historyRunLimit
+      : DEFAULT_PREFERENCES.historyRunLimit,
+  };
 }
 
-/** Stores the preferences, refusing to replace a file written by a newer build. */
-export async function writePreferences(dataDir: string, preferences: Preferences): Promise<void> {
-  await readPreferences(dataDir);
-  const document = { formatVersion: PREFERENCES_VERSION, ...preferences };
+/** Stores changed preferences, refusing to replace a file written by a newer build. */
+export async function writePreferences(
+  dataDir: string,
+  changes: Partial<Preferences>,
+): Promise<void> {
+  const current = await readPreferences(dataDir);
+  const document = { formatVersion: PREFERENCES_VERSION, ...current, ...changes };
   await writeFileAtomic(join(dataDir, PREFERENCES_FILE), `${JSON.stringify(document, null, 2)}\n`);
 }

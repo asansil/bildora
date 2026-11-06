@@ -25,7 +25,7 @@ describe('preferences', () => {
   it('reads back what was written, with a format version on disk', async () => {
     await writePreferences(dataDir, { theme: 'dark' });
 
-    expect(await readPreferences(dataDir)).toEqual({ theme: 'dark' });
+    expect(await readPreferences(dataDir)).toEqual({ ...DEFAULT_PREFERENCES, theme: 'dark' });
     expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ formatVersion: 1 });
   });
 

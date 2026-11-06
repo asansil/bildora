@@ -20,10 +20,14 @@
   },
   "dependencies": {
     "@bildora/protocol": "workspace:*",
+    "@napi-rs/keyring": "^2.1.2",
+    "@xterm/headless": "^6.0.0",
+    "better-sqlite3": "^13.0.3",
     "node-pty": "1.1.0",
     "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@bildora/typescript-config": "workspace:*"
+    "@bildora/typescript-config": "workspace:*",
+    "@types/better-sqlite3": "^9.6.0"
   }
 }

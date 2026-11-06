@@ -29,9 +29,29 @@ function describeProblem(parameter: ToolParameter, value: ParameterValue): strin
   }
 }
 
+/** The value a parameter has for a run, checked, or undefined when it is optional and unset. */
+function checkedValue(
+  parameter: ToolParameter,
+  values: ParameterValues,
+): ParameterValue | undefined {
+  const value = Object.hasOwn(values, parameter.name) ? values[parameter.name] : parameter.default;
+  if (value === undefined) {
+    if (parameter.required) {
+      throw new ParameterError(`Parameter "${parameter.name}" is required`);
+    }
+    return undefined;
+  }
+  const problem = describeProblem(parameter, value);
+  if (problem !== undefined) {
+    throw new ParameterError(`Parameter "${parameter.name}" ${problem}`);
+  }
+  return value;
+}
+
 /**
  * Turns parameter values into arguments, in declared order. An unset optional disappears along
- * with its flag, and a boolean is its flag alone.
+ * with its flag, and a boolean is its flag alone. A parameter with `env` is left to
+ * `renderEnvironment`.
  */
 export function renderArguments(
   parameters: readonly ToolParameter[],
@@ -44,18 +64,9 @@ export function renderArguments(
   }
 
   return parameters.flatMap((parameter) => {
-    const value = Object.hasOwn(values, parameter.name)
-      ? values[parameter.name]
-      : parameter.default;
-    if (value === undefined) {
-      if (parameter.required) {
-        throw new ParameterError(`Parameter "${parameter.name}" is required`);
-      }
+    const value = checkedValue(parameter, values);
+    if (value === undefined || parameter.env !== undefined) {
       return [];
-    }
-    const problem = describeProblem(parameter, value);
-    if (problem !== undefined) {
-      throw new ParameterError(`Parameter "${parameter.name}" ${problem}`);
     }
     if (parameter.type === 'boolean') {
       return value === true ? [parameter.flag] : [];
@@ -63,6 +74,23 @@ export function renderArguments(
     const text = String(value);
     return parameter.flag === undefined ? [text] : [parameter.flag, text];
   });
+}
+
+/** The variables that carry the parameters declaring `env`. */
+export function renderEnvironment(
+  parameters: readonly ToolParameter[],
+  values: ParameterValues,
+): Record<string, string> {
+  const variables: Record<string, string> = {};
+  for (const parameter of parameters) {
+    const value = parameter.env === undefined ? undefined : checkedValue(parameter, values);
+    if (parameter.env !== undefined && value !== undefined) {
+      const text = String(value);
+      assertPassable(text);
+      variables[parameter.env] = text;
+    }
+  }
+  return variables;
 }
 
 function assertPassable(value: string): void {
