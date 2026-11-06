@@ -43,7 +43,7 @@ describe.skipIf(process.platform !== 'win32')('startRecordedRun', () => {
   }
 
   function options(extra: Partial<RecordedRunOptions> = {}): RecordedRunOptions {
-    return { history, store, historyRunLimit: 200, ...extra };
+    return { history, workspaceId: 'work', store, historyRunLimit: 200, ...extra };
   }
 
   beforeEach(async () => {
@@ -88,7 +88,7 @@ if (process.env.HANG_TOOL) { process.stdin.resume(); process.stdin.once('data', 
     expect(result.status).toBe('completed');
     expect(progress).toEqual([{ percent: 50, message: 'Half way' }]);
     expect(output.join('')).toContain('DONE');
-    const record = history.get(run.runId);
+    const record = history.get('work', run.runId);
     expect(record).toMatchObject({
       toolId: 'sample',
       toolName: 'Sample',
@@ -113,7 +113,7 @@ if (process.env.HANG_TOOL) { process.stdin.resume(); process.stdin.once('data', 
 
     expect(shown.join('')).toContain('TOKEN ••••••');
     expect(shown.join('')).not.toContain('hunter2');
-    const record = history.get(run.runId);
+    const record = history.get('work', run.runId);
     expect(record?.output).toContain('TOKEN ••••••');
     expect(JSON.stringify(record)).not.toContain(SECRET);
     expect(record?.parameters).toContainEqual({ name: 'token', label: 'Token', secret: true });
@@ -132,7 +132,7 @@ if (process.env.HANG_TOOL) { process.stdin.resume(); process.stdin.once('data', 
     const run = await startRecordedRun(tool, options({ values: { passed: 'plain-secret' } }));
     await run.result;
 
-    expect(history.get(run.runId)?.output).toContain('ARGS ["--passed","••••••"]');
+    expect(history.get('work', run.runId)?.output).toContain('ARGS ["--passed","••••••"]');
   });
 
   it('fills a run from a profile, with its secret from the store', async () => {
@@ -146,7 +146,7 @@ if (process.env.HANG_TOOL) { process.stdin.resume(); process.stdin.once('data', 
     const run = await startRecordedRun(tool, options({ profile, values: { label: 'typed' } }));
     await run.result;
 
-    const record = history.get(run.runId);
+    const record = history.get('work', run.runId);
     expect(record?.output).toContain('ARGS ["--label","typed"]');
     expect(record?.output).toContain('TOKEN ••••••');
     expect(JSON.stringify(record)).not.toContain(SECRET);
@@ -167,7 +167,7 @@ if (process.env.HANG_TOOL) { process.stdin.resume(); process.stdin.once('data', 
     const run = await startRecordedRun(tool, options({ profile, store: broken }));
 
     expect(await run.result).toMatchObject({ status: 'failed', failure: { kind: 'credentials' } });
-    expect(JSON.stringify(history.get(run.runId))).not.toContain(SECRET);
+    expect(JSON.stringify(history.get('work', run.runId))).not.toContain(SECRET);
   });
 
   it('records a run that could not start', async () => {
@@ -176,10 +176,42 @@ if (process.env.HANG_TOOL) { process.stdin.resume(); process.stdin.once('data', 
     const run = await startRecordedRun(tool, options({ values: { unknown: 'x' } }));
 
     expect(await run.result).toMatchObject({ status: 'failed' });
-    expect(history.get(run.runId)).toMatchObject({
+    expect(history.get('work', run.runId)).toMatchObject({
       status: 'failed',
       failure: { kind: 'invalid-parameters' },
     });
+  });
+
+  it('runs through a path variable, and fails by name when it has no value', async () => {
+    const stored = await declaredTool();
+    const tool = await registry.register(
+      toolManifestSchema.parse({
+        ...stored.manifest,
+        run: { program: `{{paths.scripts}}\\tool.mjs` },
+      }),
+      { replace: true },
+    );
+
+    const missing = await startRecordedRun(tool, options());
+    expect(await missing.result).toMatchObject({
+      status: 'failed',
+      failure: { kind: 'path-variable', message: expect.stringContaining('"scripts"') as string },
+    });
+
+    const pathVariables = new Map([['scripts', scriptFolder]]);
+    const run = await startRecordedRun(tool, options({ pathVariables }));
+    expect(await run.result).toMatchObject({ status: 'completed' });
+    expect(history.get('work', run.runId)?.output).toContain('ARGS []');
+  });
+
+  it('files a run under the Workspace that started it', async () => {
+    const tool = await declaredTool();
+
+    const run = await startRecordedRun(tool, options({ workspaceId: 'home' }));
+    await run.result;
+
+    expect(history.get('work', run.runId)).toBeUndefined();
+    expect(history.list('home', 'sample')).toHaveLength(1);
   });
 
   it('takes typed input, and keeps a cancelled run in the record', async () => {
@@ -205,7 +237,7 @@ if (process.env.HANG_TOOL) { process.stdin.resume(); process.stdin.once('data', 
     run.write('hello\r');
 
     expect(await run.result).toMatchObject({ status: 'failed', exitCode: 4 });
-    expect(history.get(run.runId)?.output).toContain('TYPED hello');
+    expect(history.get('work', run.runId)?.output).toContain('TYPED hello');
   });
 
   it('keeps only the newest runs of a tool', async () => {
@@ -216,7 +248,7 @@ if (process.env.HANG_TOOL) { process.stdin.resume(); process.stdin.once('data', 
       await run.result;
     }
 
-    expect(history.list('sample')).toHaveLength(2);
+    expect(history.list('work', 'sample')).toHaveLength(2);
   });
 
   it('records a level 0 tool with no output', async () => {
@@ -238,6 +270,10 @@ if (process.env.HANG_TOOL) { process.stdin.resume(); process.stdin.once('data', 
     const run = await startRecordedRun(tool, options());
     await run.result;
 
-    expect(history.get(run.runId)).toMatchObject({ status: 'completed', level: 0, output: '' });
+    expect(history.get('work', run.runId)).toMatchObject({
+      status: 'completed',
+      level: 0,
+      output: '',
+    });
   });
 });

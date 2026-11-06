@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { MANIFEST_SCHEMA_VERSION, toolManifestSchema } from '@bildora/protocol';
 import type { ToolManifest } from '@bildora/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { RunHistory } from '../history/run-history.js';
 import { registerPrograms } from '../import/register-program.js';
 import { profileSecretKey, removeProfile, saveProfile } from '../profiles/profile-store.js';
 import { ToolRegistry, toolKey } from '../registry/tool-registry.js';
@@ -12,6 +13,7 @@ import type { SecretStore } from '../secrets/secret-store.js';
 import { GLOBAL_SCOPE } from '../storage/data-directory.js';
 import { writePreferences } from '../storage/preferences.js';
 import { moveTool } from '../tools/move-tool.js';
+import { removeWorkspace } from './remove-workspace.js';
 import { findVisibleTool, listVisibleTools, workspaceScope } from './visible-tools.js';
 import {
   createWorkspace,
@@ -235,6 +237,39 @@ describe('Workspaces', () => {
       expect(await memory.get(profileSecretKey(tool, 'a', 'token'))).toBe('one');
       const copy = { ...tool, scope: WORK };
       expect(await memory.get(profileSecretKey(copy, 'a', 'token'))).toBeUndefined();
+    });
+  });
+
+  describe('removing a Workspace', () => {
+    it('takes its tools, secrets and runs, and leaves everything else', async () => {
+      const store = createMemorySecretStore();
+      const history = await RunHistory.open(dataDir);
+      await createWorkspace(dataDir, 'Work', 'light');
+      await createWorkspace(dataDir, 'Home', 'light');
+      await registry.register(manifest('shared'));
+      const own = await registry.register(manifest('own'), { scope: WORK });
+      await saveProfile(own, { name: 'Main', values: {}, secrets: { token: 'value' } }, store);
+      const run = { toolId: 'own', toolName: 'Own', level: 1, startedAt: 1, parameters: [] };
+      history.start({ ...run, runId: 'a', workspaceId: 'work' });
+      history.start({ ...run, runId: 'b', workspaceId: 'home' });
+
+      await removeWorkspace(registry, 'work', store, history);
+
+      expect(await getWorkspace(dataDir, 'work')).toBeUndefined();
+      expect(store.size()).toBe(0);
+      expect(history.list('work')).toEqual([]);
+      expect(history.list('home')).toHaveLength(1);
+      expect(await registry.get('shared')).toBeDefined();
+      history.close();
+    });
+
+    it('refuses the last one', async () => {
+      const history = await RunHistory.open(dataDir);
+      await createWorkspace(dataDir, 'Work', 'light');
+      await expect(
+        removeWorkspace(registry, 'work', createMemorySecretStore(), history),
+      ).rejects.toThrow('last Workspace');
+      history.close();
     });
   });
 });

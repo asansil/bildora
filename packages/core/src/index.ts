@@ -112,7 +112,13 @@ export {
   removeCategoryLogo,
   setCategoryLogo,
 } from './storage/category-logos.js';
+export {
+  readPathVariables,
+  removePathVariable,
+  setPathVariable,
+} from './storage/path-variables.js';
 export { findVisibleTool, listVisibleTools, workspaceScope } from './workspaces/visible-tools.js';
+export { removeWorkspace } from './workspaces/remove-workspace.js';
 export {
   DEFAULT_WORKSPACE_ID,
   DEFAULT_WORKSPACE_NAME,

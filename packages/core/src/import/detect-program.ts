@@ -1,6 +1,8 @@
 import { readdir, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
 import type { RegisteredTool } from '../registry/tool-registry.js';
+import { expandPath } from '../runner/expand-paths.js';
+import type { PathVariables } from '../runner/expand-paths.js';
 import { resolveExecutable } from '../runner/resolve-executable.js';
 import { MANIFEST_FILE_NAME, isManifestFile, proposeManifest } from './import-manifest.js';
 import type { ManifestProposal, RefusedManifest } from './import-manifest.js';
@@ -55,6 +57,8 @@ export interface DetectOptions {
   readonly recursive?: boolean;
   /** Tools already installed, to mark what would be a duplicate. */
   readonly registered?: readonly RegisteredTool[];
+  /** Lets a tool that points through a path variable match the real file. */
+  readonly pathVariables?: PathVariables;
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly limit?: number;
 }
@@ -90,10 +94,21 @@ function normalizedPath(path: string): string {
   return process.platform === 'win32' ? path.toLowerCase() : path;
 }
 
-function registeredPrograms(tools: readonly RegisteredTool[]): Set<string> {
+function comparablePath(program: string, variables: PathVariables): string {
+  try {
+    return normalizedPath(expandPath(program, variables));
+  } catch {
+    return normalizedPath(program);
+  }
+}
+
+function registeredPrograms(
+  tools: readonly RegisteredTool[],
+  variables: PathVariables,
+): Set<string> {
   return new Set(
     tools.flatMap(({ manifest }) =>
-      manifest.level === 2 ? [] : [normalizedPath(manifest.run.program)],
+      manifest.level === 2 ? [] : [comparablePath(manifest.run.program, variables)],
     ),
   );
 }
@@ -179,7 +194,7 @@ export async function detectPrograms(
   options: DetectOptions = {},
 ): Promise<Detection> {
   const { recursive = true, registered = [], env, limit = SCAN_RESULT_LIMIT } = options;
-  const known = registeredPrograms(registered);
+  const known = registeredPrograms(registered, options.pathVariables ?? new Map<string, string>());
   const found = new Map<string, string>();
   const skipped: string[] = [];
   let truncated = false;

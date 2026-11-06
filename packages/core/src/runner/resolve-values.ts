@@ -4,6 +4,8 @@ import type { Profile } from '../profiles/profile-store.js';
 import type { RegisteredTool } from '../registry/tool-registry.js';
 import type { SecretStore } from '../secrets/secret-store.js';
 import type { ParameterValue, ParameterValues } from './command-line.js';
+import { expandPath } from './expand-paths.js';
+import type { PathVariables } from './expand-paths.js';
 
 /** A parameter as run history shows it. A secret records only that it was set. */
 export interface RecordedParameter {
@@ -24,6 +26,7 @@ export interface ValueSources {
   readonly profile?: Profile | undefined;
   readonly values?: ParameterValues | undefined;
   readonly store: SecretStore;
+  readonly pathVariables?: PathVariables | undefined;
 }
 
 function recordedParameter(
@@ -62,6 +65,17 @@ export async function resolveRunValues(
   }
   // Unknown names stay in, because a form asking for one is a mistake the runner must report.
   Object.assign(values, sources.values);
+
+  // Only paths expand: any other text is the user's, and may hold these characters on purpose.
+  for (const parameter of parameters.filter(({ type }) => type === 'path')) {
+    const value = values[parameter.name] ?? parameter.default;
+    if (typeof value === 'string') {
+      const expanded = expandPath(value, sources.pathVariables ?? new Map<string, string>());
+      if (expanded !== value) {
+        values[parameter.name] = expanded;
+      }
+    }
+  }
 
   const secrets = parameters.flatMap((parameter) => {
     const value = values[parameter.name];
