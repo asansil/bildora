@@ -1,17 +1,19 @@
 /**
- * Windows drive letters have no case, yet the two URLs compared here can spell one differently: a
- * start from a shell in `c:\` gives a lowercase module path, and Chromium reports the uppercase.
+ * One file can be written as a URL in several ways, and the two compared here come from different
+ * encoders: Node writes `~` as `%7E`, as in the 8.3 paths of `RUNNER~1`, and Chromium leaves it. So
+ * paths are compared decoded. Windows drive letters have no case, and a start from a shell in `c:\`
+ * gives a lowercase one where Chromium reports the uppercase.
  */
-function withDriveLetterInCapitals({ protocol, pathname }: URL): string {
+function canonicalPath({ protocol, pathname }: URL): string {
   return protocol === 'file:'
-    ? pathname.replace(/^\/[a-z]:/, (drive) => drive.toUpperCase())
+    ? decodeURIComponent(pathname).replace(/^\/[a-z]:/, (drive) => drive.toUpperCase())
     : pathname;
 }
 
 function withoutQueryOrHash(url: string): string | undefined {
   try {
     const parsed = new URL(url);
-    return `${parsed.origin}${withDriveLetterInCapitals(parsed)}`;
+    return `${parsed.origin}${canonicalPath(parsed)}`;
   } catch {
     return undefined;
   }

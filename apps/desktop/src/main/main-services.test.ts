@@ -34,6 +34,21 @@ describe('isTrustedSender', () => {
     expect(isTrustedSender(url, rendererUrl)).toBe(expected);
   });
 
+  describe('with a path two encoders write differently', () => {
+    const encoded = 'file:///C:/Users/RUNNER%7E1/app%20(x)/%C3%B1/index.html';
+
+    it.each([
+      ['a short name left as it is', 'file:///C:/Users/RUNNER~1/app%20(x)/%C3%B1/index.html', true],
+      ['brackets written out', 'file:///C:/Users/RUNNER%7E1/app%20%28x%29/%C3%B1/index.html', true],
+      ['the same encoding', encoded, true],
+      ['a neighbour of the page', 'file:///C:/Users/RUNNER~1/app%20(x)/%C3%B1/evil.html', false],
+      ['a similar folder', 'file:///C:/Users/RUNNER~2/app%20(x)/%C3%B1/index.html', false],
+      ['a path that does not decode', 'file:///C:/Users/RUNNER~1/%ZZ/index.html', false],
+    ])('for %s', (_label, url, expected) => {
+      expect(isTrustedSender(url, encoded)).toBe(expected);
+    });
+  });
+
   it('accepts the development server only as the configured page', () => {
     expect(isTrustedSender('http://localhost:5173/', 'http://localhost:5173/')).toBe(true);
     expect(isTrustedSender('http://localhost:5174/', 'http://localhost:5173/')).toBe(false);
