@@ -140,9 +140,9 @@ describe('ToolRegistry', () => {
 
       const { tools, problems } = await registry.list();
       expect(tools.map((tool) => tool.manifest.id)).toEqual(['good.tool']);
-      expect(problems).toEqual([
-        { folder: 'bad.tool', scope: GLOBAL_SCOPE, message: expect.stringContaining('YAML') },
-      ]);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toMatchObject({ folder: 'bad.tool', scope: GLOBAL_SCOPE });
+      expect(problems[0]?.message).toContain('YAML');
     });
 
     it('reports a manifest from a newer build', async () => {
