@@ -147,7 +147,10 @@ test('the shell opens sandboxed, with a welcome and no categories', async () => 
   await expect(window).toHaveTitle('Bildora');
   await expect(window.getByTestId('welcome')).toBeVisible();
   await expect(window.getByTestId('status')).toHaveText('Ready');
-  await expect(window.getByRole('navigation').getByRole('button')).toHaveText(['Settings']);
+  await expect(window.getByRole('navigation').getByRole('button')).toHaveText([
+    'Run history',
+    'Settings',
+  ]);
   expect(await window.evaluate(() => typeof Reflect.get(globalThis, 'require'))).toBe('undefined');
 });
 

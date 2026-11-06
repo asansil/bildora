@@ -1,6 +1,6 @@
 {
   "name": "@bildora/desktop",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
   "private": true,
   "description": "Electron main process, preload and React renderer.",
   "type": "module",
@@ -9,7 +9,8 @@
   "scripts": {
     "build": "electron-vite build",
     "dev": "electron-vite dev",
-    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.preload.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.preload.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "package": "electron-builder --win zip --publish never"
   },
   "dependencies": {
     "@bildora/core": "workspace:*",
@@ -21,11 +22,38 @@
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "electron": "catalog:",
+    "electron-builder": "26.18.0",
     "electron-vite": "catalog:",
     "lucide-react": "^1.69.0",
     "react": "catalog:",
     "react-dom": "catalog:",
     "vite": "catalog:"
+  },
+  "author": "Bildora",
+  "build": {
+    "appId": "dev.bildora.app",
+    "productName": "Bildora",
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**"
+    ],
+    "asarUnpack": [
+      "**/*.node",
+      "**/node-pty/prebuilds/**",
+      "**/node-pty/lib/**",
+      "**/job-launcher.exe"
+    ],
+    "win": {
+      "target": [
+        "zip"
+      ]
+    },
+    "artifactName": "${productName}-${version}-win-${arch}.${ext}"
   }
 }

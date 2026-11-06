@@ -1,7 +1,12 @@
 import { useState } from 'react';
 import type { SyntheticEvent } from 'react';
 import { t } from '../../shared/i18n/translate.js';
-import type { DetectionView, ProposalView, RegisterTools } from '../../shared/ipc-contract.js';
+import type {
+  DetectionView,
+  ManifestProposalView,
+  ProposalView,
+  RegisterTools,
+} from '../../shared/ipc-contract.js';
 import { Dialog } from '../shell/Dialog.js';
 
 interface Row {
@@ -26,14 +31,55 @@ function rowOf(proposal: ProposalView): Row {
 
 interface ImportReviewProps {
   readonly detection: DetectionView;
-  readonly onConfirm: (programs: RegisterTools['programs']) => void;
+  readonly onConfirm: (programs: RegisterTools['programs'], manifests: readonly string[]) => void;
   readonly onClose: () => void;
+}
+
+interface ManifestRowProps {
+  readonly manifest: ManifestProposalView;
+  readonly included: boolean;
+  readonly onChange: (included: boolean) => void;
+}
+
+/** A declared tool. Its details come from its author, so the user sees them and edits nothing. */
+function ManifestRow({ manifest, included, onChange }: ManifestRowProps) {
+  const { name, path, permissions, alreadyRegistered, category } = manifest;
+  return (
+    <label className="manifest-row" title={path} data-testid="manifest-row">
+      <input
+        type="checkbox"
+        checked={included}
+        aria-label={t('import.include', { name })}
+        onChange={(event) => {
+          onChange(event.target.checked);
+        }}
+      />
+      <span className="manifest-text">
+        <span className="manifest-name">
+          <strong className="truncate">{name}</strong>
+          {category === undefined ? null : <span className="muted truncate">{category}</span>}
+          {alreadyRegistered ? <span className="import-tag">{t('import.replaces')}</span> : null}
+        </span>
+        <code className="path">{path}</code>
+        <span className="field-hint">
+          {permissions.length === 0
+            ? t('import.noPermissions')
+            : t('import.permissions', { list: permissions.join(', ') })}
+        </span>
+      </span>
+    </label>
+  );
 }
 
 /** The last step of assisted import: nothing becomes a tool until the user confirms it here. */
 export function ImportReview({ detection, onConfirm, onClose }: ImportReviewProps) {
   const [rows, setRows] = useState(() => detection.proposals.map(rowOf));
   const included = rows.filter((row) => row.included && row.name.trim() !== '');
+  const [manifests, setManifests] = useState<readonly string[]>(() =>
+    detection.manifests.filter((item) => !item.alreadyRegistered).map((item) => item.path),
+  );
+  const count = included.length + manifests.length;
+  const found = rows.length + detection.manifests.length;
 
   function change(path: string, patch: Partial<Row>): void {
     setRows((current) => current.map((row) => (row.path === path ? { ...row, ...patch } : row)));
@@ -48,16 +94,17 @@ export function ImportReview({ detection, onConfirm, onClose }: ImportReviewProp
         category,
         interpreter,
       })),
+      manifests,
     );
   }
 
   return (
     <Dialog title={t('import.title')} className="dialog-wide" onClose={onClose}>
       <form className="form" onSubmit={submit} data-testid="import-review">
-        {rows.length === 0 ? (
+        {found === 0 ? (
           <p>{t('import.empty')}</p>
         ) : (
-          <p className="muted">{t('import.summary', { count: rows.length })}</p>
+          <p className="muted">{t('import.summary', { count: found })}</p>
         )}
         {detection.truncated ? (
           <p className="muted">{t('import.truncated', { limit: rows.length })}</p>
@@ -67,6 +114,31 @@ export function ImportReview({ detection, onConfirm, onClose }: ImportReviewProp
             {t('import.skipped', { count: detection.skipped.length })}
           </p>
         ) : null}
+        {detection.refused.map(({ path, reason }) => (
+          <p className="notice notice-failed" key={path} data-testid="refused-manifest">
+            {t('import.refused', { path, reason })}
+          </p>
+        ))}
+        {detection.manifests.length === 0 ? null : (
+          <div className="manifest-list">
+            <span className="field-label">{t('import.declared')}</span>
+            <span className="field-hint">{t('import.declaredHint')}</span>
+            {detection.manifests.map((manifest) => (
+              <ManifestRow
+                key={manifest.path}
+                manifest={manifest}
+                included={manifests.includes(manifest.path)}
+                onChange={(checked) => {
+                  setManifests((current) =>
+                    checked
+                      ? [...current, manifest.path]
+                      : current.filter((path) => path !== manifest.path),
+                  );
+                }}
+              />
+            ))}
+          </div>
+        )}
         {rows.length === 0 ? null : (
           <div className="import-table" role="table" aria-label={t('import.title')}>
             <div className="import-row import-head" role="row">
@@ -131,8 +203,8 @@ export function ImportReview({ detection, onConfirm, onClose }: ImportReviewProp
           <button type="button" onClick={onClose}>
             {t('form.cancel')}
           </button>
-          <button type="submit" className="primary" disabled={included.length === 0}>
-            {t('import.confirm', { count: included.length })}
+          <button type="submit" className="primary" disabled={count === 0}>
+            {t('import.confirm', { count })}
           </button>
         </div>
       </form>

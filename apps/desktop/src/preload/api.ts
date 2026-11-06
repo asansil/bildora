@@ -1,11 +1,18 @@
 import type {
   DetectionView,
   EditCommand,
+  HistoryRecordView,
+  HistorySummaryView,
+  ProfileView,
   RegisterTools,
   RegistrationView,
+  RunOutputView,
+  RunRequest,
   RunView,
+  SaveProfileInput,
   ShellInfo,
   ShellPreferences,
+  ShellPreferencesChange,
   ToolCatalog,
   ToolDetailsInput,
 } from '../shared/ipc-contract.js';
@@ -16,6 +23,8 @@ export interface ShellApi {
   shellInfo(): Promise<ShellInfo>;
   quit(): Promise<void>;
   edit(command: EditCommand): Promise<void>;
+  /** Asks the user for a file, for a path field of a form. */
+  pickPath(): Promise<string | undefined>;
   listTools(): Promise<ToolCatalog>;
   pickFiles(): Promise<DetectionView | undefined>;
   pickFolder(recursive: boolean): Promise<DetectionView | undefined>;
@@ -23,15 +32,28 @@ export interface ShellApi {
   /** Finds a dropped file's path, which a sandboxed page cannot read by itself. */
   pathForFile(file: File): string;
   registerTools(input: RegisterTools): Promise<RegistrationView>;
+  importManifests(paths: readonly string[]): Promise<RegistrationView>;
   updateTool(id: string, details: ToolDetailsInput): Promise<void>;
   removeTool(id: string): Promise<void>;
   /** Offers to change a category's logo, and tells whether the user changed anything. */
   openCategoryMenu(category: string): Promise<boolean>;
-  startRun(toolId: string): Promise<RunView>;
+  startRun(toolId: string, request?: RunRequest): Promise<RunView>;
   cancelRun(runId: string): Promise<void>;
   listRuns(): Promise<readonly RunView[]>;
   /** Calls back on every run change, and returns how to stop listening. */
   onRunsChanged(listener: (runs: readonly RunView[]) => void): () => void;
+  /** Calls back as runs write to their console, and returns how to stop listening. */
+  onRunOutput(listener: (output: RunOutputView) => void): () => void;
+  readRunOutput(runId: string): Promise<RunOutputView | undefined>;
+  sendRunInput(runId: string, data: string): Promise<void>;
+  resizeRun(runId: string, columns: number, rows: number): Promise<void>;
+  listProfiles(toolId: string): Promise<readonly ProfileView[]>;
+  saveProfile(input: SaveProfileInput): Promise<ProfileView>;
+  removeProfile(toolId: string, id: string): Promise<void>;
+  listHistory(toolId?: string): Promise<readonly HistorySummaryView[]>;
+  getHistoryRun(runId: string): Promise<HistoryRecordView | undefined>;
+  recentTools(): Promise<readonly string[]>;
+  clearHistory(): Promise<void>;
   getPreferences(): Promise<ShellPreferences>;
-  setPreferences(preferences: ShellPreferences): Promise<void>;
+  setPreferences(preferences: ShellPreferencesChange): Promise<void>;
 }

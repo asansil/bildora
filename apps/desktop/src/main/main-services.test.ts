@@ -7,6 +7,10 @@ import {
   noInputSchema,
   preferencesSchema,
   registerToolsSchema,
+  runInputSchema,
+  runResizeSchema,
+  saveProfileSchema,
+  startRunSchema,
   toolIdSchema,
   updateToolSchema,
 } from '../shared/ipc-contract.js';
@@ -50,6 +54,15 @@ describe('IPC schemas', () => {
     ['an unknown theme', preferencesSchema, { theme: 'pink' }],
     ['a menu for no category', categoryMenuSchema, { category: '' }],
     ['a logo path sent by the page', categoryMenuSchema, { category: 'A', source: 'C:\\a.png' }],
+    ['a run of a path', startRunSchema, { id: 'a', program: 'C:\\evil.exe' }],
+    ['a run with a value too long', startRunSchema, { id: 'a', values: { a: 'x'.repeat(70_000) } }],
+    ['a run with an object value', startRunSchema, { id: 'a', values: { a: { b: 1 } } }],
+    ['a console with no size', runResizeSchema, { runId: 'a', columns: 0, rows: 10 }],
+    ['a console far too wide', runResizeSchema, { runId: 'a', columns: 5000, rows: 10 }],
+    ['console input too long', runInputSchema, { runId: 'a', data: 'x'.repeat(70_000) }],
+    ['a nameless profile', saveProfileSchema, { toolId: 'a', name: '', values: {} }],
+    ['a run limit of zero', preferencesSchema, { historyRunLimit: 0 }],
+    ['a fractional run limit', preferencesSchema, { historyRunLimit: 1.5 }],
   ])('rejects %s', (_label, schema, input) => {
     expect(schema.safeParse(input).success).toBe(false);
   });
@@ -68,6 +81,8 @@ describe('RunService', () => {
     readonly run: ToolRun;
     finish(result: RunResult): void;
     readonly cancel: ReturnType<typeof vi.fn>;
+    readonly write: ReturnType<typeof vi.fn>;
+    readonly resize: ReturnType<typeof vi.fn>;
   }
 
   function fakeRun(): FakeRun {
@@ -76,8 +91,13 @@ describe('RunService', () => {
       finish = resolve;
     });
     const cancel = vi.fn();
-    return { run: { result, cancel }, finish, cancel };
+    const write = vi.fn();
+    const resize = vi.fn();
+    return { run: { result, cancel, write, resize }, finish, cancel, write, resize };
   }
+
+  /** Lets a run started this tick reach the point where it can be cancelled. */
+  const started = (): Promise<void> => new Promise((resolve) => setTimeout(resolve));
 
   const tool = (id: string): RegisteredTool =>
     ({ manifest: { id }, scope: { kind: 'global' }, directory: '' }) as unknown as RegisteredTool;
@@ -153,10 +173,11 @@ describe('RunService', () => {
     expect(runs.list().map((view) => view.status)).toEqual(['cancelled']);
   });
 
-  it('cancels one run by id, ignoring ids it does not know', () => {
+  it('cancels one run by id, ignoring ids it does not know', async () => {
     const fake = fakeRun();
     const { service: runs } = service([fake]);
     const { runId } = runs.start(tool('a'));
+    await started();
 
     runs.cancel('unknown');
     expect(fake.cancel).not.toHaveBeenCalled();
@@ -165,11 +186,163 @@ describe('RunService', () => {
     expect(fake.cancel).toHaveBeenCalledOnce();
   });
 
+  it('cancels a run asked to stop before it had started', async () => {
+    const fake = fakeRun();
+    const { service: runs } = service([fake]);
+    const { runId } = runs.start(tool('a'));
+
+    runs.cancel(runId);
+    await started();
+
+    expect(fake.cancel).toHaveBeenCalledOnce();
+  });
+
+  it('reports a run that could not start at all', async () => {
+    const runs = new RunService(() => Promise.reject(new Error('No launcher')), vi.fn());
+
+    runs.start(tool('a'));
+    await vi.waitFor(() => {
+      expect(runs.activeCount).toBe(0);
+    });
+
+    expect(runs.list()[0]).toMatchObject({ status: 'failed', failure: { message: 'No launcher' } });
+  });
+
+  it('passes typing and size to the run', async () => {
+    const fake = fakeRun();
+    const { service: runs } = service([fake]);
+    const { runId } = runs.start(tool('a'));
+    await started();
+
+    runs.write(runId, 'x');
+    runs.resize(runId, 80, 24);
+
+    expect(fake.write).toHaveBeenCalledWith('x');
+    expect(fake.resize).toHaveBeenCalledWith(80, 24);
+  });
+
+  describe('console output', () => {
+    function consoleService(): {
+      runs: RunService;
+      fake: FakeRun;
+      write: (data: string) => void;
+      progress: (percent: number) => void;
+      sent: { data: string; sequence: number }[];
+      onChange: ReturnType<typeof vi.fn>;
+    } {
+      const fake = fakeRun();
+      const sent: { data: string; sequence: number }[] = [];
+      const onChange = vi.fn();
+      let write: (data: string) => void = () => undefined;
+      let progress: (percent: number) => void = () => undefined;
+      const runs = new RunService(
+        (_tool, context) => {
+          write = context.onOutput;
+          progress = (percent) => {
+            context.onProgress({ percent });
+          };
+          return fake.run;
+        },
+        onChange,
+        (output) => sent.push(output),
+      );
+      return {
+        runs,
+        fake,
+        sent,
+        onChange,
+        write: (data) => {
+          write(data);
+        },
+        progress: (percent) => {
+          progress(percent);
+        },
+      };
+    }
+
+    it('groups output before sending it to the shell', async () => {
+      const { runs, write, sent } = consoleService();
+      runs.start(tool('a'));
+      await started();
+
+      write('a');
+      write('b');
+
+      await vi.waitFor(() => {
+        expect(sent).toEqual([expect.objectContaining({ data: 'ab', sequence: 1 })]);
+      });
+    });
+
+    it('replays output for a console that opens late, with nothing counted twice', async () => {
+      const { runs, write, sent } = consoleService();
+      const { runId } = runs.start(tool('a'));
+      await started();
+      write('first');
+
+      const read = runs.readOutput(runId);
+
+      expect(read).toMatchObject({ data: 'first', sequence: 1 });
+      expect(sent.at(-1)?.sequence).toBeLessThanOrEqual(read?.sequence ?? 0);
+    });
+
+    it('keeps the output of the latest finished run', async () => {
+      const { runs, fake, write } = consoleService();
+      const { runId } = runs.start(tool('a'));
+      await started();
+      write('kept');
+      fake.finish({ status: 'completed', exitCode: 0, durationMs: 1 });
+      await vi.waitFor(() => {
+        expect(runs.activeCount).toBe(0);
+      });
+
+      expect(runs.readOutput(runId)?.data).toBe('kept');
+      runs.forget('a');
+      expect(runs.readOutput(runId)).toBeUndefined();
+    });
+
+    it('shows the latest progress on the run', async () => {
+      const { runs, progress, onChange } = consoleService();
+      runs.start(tool('a'));
+      await started();
+      const before = onChange.mock.calls.length;
+
+      progress(10);
+      progress(60);
+
+      await vi.waitFor(() => {
+        expect(onChange.mock.calls.length).toBe(before + 1);
+      });
+      expect(runs.list()[0]?.progress).toEqual({ percent: 60 });
+    });
+  });
+
+  it('ends console runs and leaves own-window runs alone', async () => {
+    const [own, inConsole] = [fakeRun(), fakeRun()];
+    const { service: runs } = service([own, inConsole]);
+    const windowTool = { manifest: { id: 'w', level: 0 } } as unknown as RegisteredTool;
+    const consoleTool = { manifest: { id: 'c', level: 1 } } as unknown as RegisteredTool;
+    runs.start(windowTool);
+    runs.start(consoleTool);
+    await started();
+    expect(runs.consoleCount).toBe(1);
+
+    const ended = runs.cancelConsoleRuns();
+    await started();
+    inConsole.finish({ status: 'cancelled', durationMs: 1 });
+    await ended;
+
+    expect(own.cancel).not.toHaveBeenCalled();
+    expect(inConsole.cancel).toHaveBeenCalledOnce();
+    expect(runs.isRunning('w')).toBe(true);
+    expect(runs.isRunning('c')).toBe(false);
+  });
+
   it('waits for every run when cancelling all of them', async () => {
     const [first, second] = [fakeRun(), fakeRun()];
     const { service: runs } = service([first, second]);
     runs.start(tool('a'));
     runs.start(tool('b'));
+    await started();
 
     const all = runs.cancelAll();
     expect(first.cancel).toHaveBeenCalledOnce();

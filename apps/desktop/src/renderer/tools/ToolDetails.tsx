@@ -4,7 +4,7 @@ import type { RunView, ToolRuntime, ToolView } from '../../shared/ipc-contract.j
 import { RunStateBadge } from '../shell/RunStateBadge.js';
 import { summarizeRuns } from './run-state.js';
 
-function failureText(run: RunView, tool: ToolView): string | undefined {
+export function failureText(run: RunView, tool: ToolView): string | undefined {
   const { failure, exitCode } = run;
   if (failure === undefined) {
     return undefined;
@@ -44,7 +44,7 @@ interface RuntimeWarningProps {
   readonly onCheckAgain: () => void;
 }
 
-function RuntimeWarning({ runtime, onCheckAgain }: RuntimeWarningProps) {
+export function RuntimeWarning({ runtime, onCheckAgain }: RuntimeWarningProps) {
   const missingInterpreter = runtime.status === 'missing-interpreter';
   return (
     <div className="notice notice-warning" role="status" data-testid="runtime-warning">

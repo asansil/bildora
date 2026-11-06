@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Folder, Settings, TriangleAlert } from 'lucide-react';
+import { Folder, History, Settings, TriangleAlert } from 'lucide-react';
 import { t } from '../../shared/i18n/translate.js';
 import type { ToolGroupView, ToolView } from '../../shared/ipc-contract.js';
 import { categoryInitial, groupKey, groupLabel } from '../tools/category-rail.js';
@@ -44,11 +44,11 @@ interface CategoryRailProps {
   readonly openCategory: string | undefined;
   /** The tool in the work area, if the work area is showing one. */
   readonly currentTool: ToolView | undefined;
-  readonly screen: 'tools' | 'problems' | 'settings';
+  readonly screen: 'tools' | 'problems' | 'history' | 'settings';
   readonly problemCount: number;
   readonly onToggleCategory: (key: string) => void;
   readonly onCategoryMenu: (category: string) => void;
-  readonly onScreen: (screen: 'problems' | 'settings') => void;
+  readonly onScreen: (screen: 'problems' | 'history' | 'settings') => void;
 }
 
 /** The always visible column of icons. */
@@ -118,6 +118,20 @@ export function CategoryRail({
             </button>
           </li>
         )}
+        <li>
+          <button
+            type="button"
+            className="rail-button"
+            title={t('nav.history')}
+            aria-current={screen === 'history' ? 'true' : undefined}
+            onClick={() => {
+              onScreen('history');
+            }}
+          >
+            <History className="icon" aria-hidden="true" />
+            <span className="visually-hidden">{t('nav.history')}</span>
+          </button>
+        </li>
         <li>
           <button
             type="button"

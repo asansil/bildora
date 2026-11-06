@@ -1,4 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { formatDuration, historyState } from './history/history-format.js';
+import {
+  formProblems,
+  initialValues,
+  parameterProblem,
+  submittedValues,
+} from './tools/parameter-form.js';
+import type { ParameterView } from '../shared/ipc-contract.js';
 import { en } from '../shared/i18n/en.js';
 import { t } from '../shared/i18n/translate.js';
 import type { RunView } from '../shared/ipc-contract.js';
@@ -123,5 +131,104 @@ describe('matchCommands', () => {
 
   it('finds nothing when the letters are not there', () => {
     expect(labels('zzz')).toEqual([]);
+  });
+});
+
+describe('parameter form', () => {
+  const text = (name: string, extra: Partial<ParameterView> = {}): ParameterView => ({
+    name,
+    label: name,
+    type: 'string',
+    required: false,
+    delivery: 'argument',
+    ...extra,
+  });
+  const parameters: readonly ParameterView[] = [
+    text('input', { type: 'path', required: true }),
+    text('count', { type: 'integer', default: 3 }),
+    text('ratio', { type: 'number' }),
+    text('verbose', { type: 'boolean', default: true }),
+    text('mode', { type: 'choice', choices: ['a', 'b'], default: 'a' }),
+    text('token', { secret: true, required: true }),
+  ];
+
+  it('starts from the defaults, with text for everything but checkboxes', () => {
+    expect(initialValues(parameters)).toEqual({
+      input: '',
+      count: '3',
+      ratio: '',
+      verbose: true,
+      mode: 'a',
+      token: '',
+    });
+  });
+
+  it('lets a profile replace defaults, and never fills a secret', () => {
+    const profile = {
+      id: 'p',
+      name: 'P',
+      values: { count: 9, verbose: false, token: 'leaked' },
+      secrets: ['token'],
+    };
+
+    expect(initialValues(parameters, profile)).toMatchObject({
+      count: '9',
+      verbose: false,
+      token: '',
+    });
+  });
+
+  it('asks for required fields, unless a saved secret fills one', () => {
+    const values = initialValues(parameters);
+
+    expect(formProblems(parameters, values, [])).toEqual({
+      input: 'runner.required',
+      token: 'runner.required',
+    });
+    expect(formProblems(parameters, values, ['token'])).toEqual({ input: 'runner.required' });
+  });
+
+  it.each([
+    ['integer', '12', undefined],
+    ['integer', '-3', undefined],
+    ['integer', '1.5', 'runner.notWholeNumber'],
+    ['integer', 'abc', 'runner.notWholeNumber'],
+    ['integer', '99999999999999999999', 'runner.notWholeNumber'],
+    ['number', '1.5', undefined],
+    ['number', '1e3', undefined],
+    ['number', 'abc', 'runner.notNumber'],
+    ['number', 'Infinity', 'runner.notNumber'],
+  ] as const)('checks %s value %s', (type, value, problem) => {
+    expect(parameterProblem(text('field', { type }), value, false)).toBe(problem);
+  });
+
+  it('types values, keeps secrets apart and leaves empty fields out', () => {
+    const { plain, secrets } = submittedValues(parameters, {
+      input: 'a.txt',
+      count: '4',
+      ratio: '',
+      verbose: false,
+      mode: 'b',
+      token: 'typed',
+    });
+
+    expect(plain).toEqual({ input: 'a.txt', count: 4, verbose: false, mode: 'b' });
+    expect(secrets).toEqual({ token: 'typed' });
+  });
+});
+
+describe('history format', () => {
+  it.each([
+    [undefined, '—'],
+    [1234, '1.2 s'],
+    [65_000, '1 min 5 s'],
+    [3_780_000, '1 h 3 min'],
+  ])('shows %s ms', (durationMs, shown) => {
+    expect(formatDuration(durationMs)).toBe(shown);
+  });
+
+  it('reads an interrupted run as cancelled', () => {
+    expect(historyState('interrupted')).toBe('cancelled');
+    expect(historyState('failed')).toBe('failed');
   });
 });

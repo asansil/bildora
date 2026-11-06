@@ -1,17 +1,23 @@
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BrowserWindow, app, dialog, nativeTheme, session } from 'electron';
+import type { RegisteredTool, ToolRun } from '@bildora/core';
 import {
   DEFAULT_PREFERENCES,
+  RunHistory,
   ToolRegistry,
+  createCredentialStore,
+  defaultLauncherPath,
+  getProfile,
   readPreferences,
   resolveDataDir,
-  startWindowRun,
+  startRecordedRun,
 } from '@bildora/core';
 import { CHANNELS } from '../shared/channels.js';
 import { t } from '../shared/i18n/translate.js';
 import { registerIpc } from './ipc.js';
 import { RunService } from './run-service.js';
+import type { RunContext } from './run-service.js';
 import { ToolService } from './tool-service.js';
 import { shellWebPreferences, titleBarOverlay } from './web-preferences.js';
 
@@ -25,12 +31,12 @@ app.setPath('userData', join(dataDir, 'chromium'));
 
 let shellWindow: BrowserWindow | undefined;
 
-function askAboutRunningTools(window: BrowserWindow, count: number) {
+function askAboutRunningTools(window: BrowserWindow, count: number, consoles: number) {
   return dialog.showMessageBox(window, {
     type: 'question',
     title: t('close.title'),
     message: t('close.message', { count }),
-    detail: t('close.detail'),
+    detail: consoles === 0 ? t('close.detail') : t('close.detailConsoles'),
     buttons: [t('close.leaveOpen'), t('close.endAll'), t('close.cancel')],
     defaultId: 0,
     cancelId: 2,
@@ -62,12 +68,17 @@ function createShellWindow(runs: RunService): BrowserWindow {
       return;
     }
     event.preventDefault();
-    void askAboutRunningTools(window, runs.activeCount).then(async ({ response }) => {
+    const consoles = runs.consoleCount;
+    void askAboutRunningTools(window, runs.activeCount, consoles).then(async ({ response }) => {
       if (response === 2) {
         return;
       }
       if (response === 1) {
         await runs.cancelAll();
+      } else {
+        // A console belongs to this process, so its tool ends here whatever the answer. Waiting
+        // lets the run reach history as cancelled, rather than interrupted.
+        await runs.cancelConsoleRuns();
       }
       closeDecided = true;
       window.close();
@@ -82,6 +93,30 @@ function createShellWindow(runs: RunService): BrowserWindow {
   return window;
 }
 
+/** Inside a packaged app the launcher is unpacked, because Windows cannot run a file in an ASAR. */
+function launcherOptions(): { launcherPath?: string } {
+  if (!app.isPackaged) {
+    return {};
+  }
+  const packed = `${sep}app.asar${sep}`;
+  return { launcherPath: defaultLauncherPath().replace(packed, `${sep}app.asar.unpacked${sep}`) };
+}
+
+/**
+ * Opens run history. A file that cannot be opened must not stop the app, so runs are then kept in
+ * memory for this session, and the shell says so.
+ */
+async function openHistory(): Promise<{ history: RunHistory; problem?: string }> {
+  try {
+    return { history: await RunHistory.open(dataDir) };
+  } catch (error) {
+    return {
+      history: await RunHistory.open(dataDir, { inMemory: true }),
+      problem: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function start(): Promise<void> {
   await app.whenReady();
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
@@ -91,17 +126,49 @@ async function start(): Promise<void> {
   const preferences = await readPreferences(dataDir).catch(() => DEFAULT_PREFERENCES);
   nativeTheme.themeSource = preferences.theme;
 
+  const { history, problem: historyProblem } = await openHistory();
+  history.recoverInterrupted();
+  const secrets = createCredentialStore(dataDir);
+
+  async function startTool(tool: RegisteredTool, context: RunContext): Promise<ToolRun> {
+    const { runId, request, onOutput, onProgress } = context;
+    const { profileId, values, columns, rows } = request;
+    const { historyRunLimit } = await readPreferences(dataDir).catch(() => DEFAULT_PREFERENCES);
+    const profile = profileId === undefined ? undefined : await getProfile(tool, profileId);
+    if (profileId !== undefined && profile === undefined) {
+      throw new Error('The chosen profile no longer exists');
+    }
+    return startRecordedRun(tool, {
+      history,
+      store: secrets,
+      historyRunLimit,
+      runId,
+      profile,
+      values,
+      onOutput,
+      onProgress,
+      ...(columns === undefined ? {} : { columns }),
+      ...(rows === undefined ? {} : { rows }),
+      ...launcherOptions(),
+    });
+  }
+
   const runs = new RunService(
-    (tool) => startWindowRun(tool),
+    startTool,
     () => {
       shellWindow?.webContents.send(CHANNELS.runsChanged, runs.list());
+    },
+    (output) => {
+      shellWindow?.webContents.send(CHANNELS.runsOutput, output);
     },
   );
   registerIpc({
     dataDir,
     rendererUrl: developmentUrl ?? pathToFileURL(rendererFile).href,
-    tools: new ToolService(await ToolRegistry.open({ dataDir }), dataDir),
+    tools: new ToolService(await ToolRegistry.open({ dataDir }), dataDir, secrets),
     runs,
+    history,
+    historyProblem,
     version: app.getVersion(),
     quit: () => {
       shellWindow?.close();

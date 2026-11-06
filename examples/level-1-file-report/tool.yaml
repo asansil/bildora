@@ -1,0 +1,53 @@
+# A sample level 1 tool: a manifest beside an ordinary script that knows nothing about Bildora.
+# Import this file, or this folder, to get a generated form, a live console and saved profiles.
+schemaVersion: 1
+id: bildora.sample.file-report
+name: File Report
+version: 1.0.0
+level: 1
+category: Samples
+description: Counts the lines, words and bytes of a text file.
+interpreter: node
+permissions:
+  - filesystem.read
+run:
+  program: report.mjs
+parameters:
+  - name: file
+    type: path
+    label: File
+    description: The text file to read.
+    required: true
+    flag: --file
+  - name: format
+    type: choice
+    label: Format
+    choices: [text, json]
+    default: text
+    flag: --format
+  - name: top
+    type: integer
+    label: Longest lines
+    description: How many of the longest lines to list.
+    default: 3
+    flag: --top
+  - name: minimum
+    type: number
+    label: Minimum length
+    description: Ignores lines shorter than this.
+    flag: --minimum
+  - name: title
+    type: string
+    label: Report title
+    flag: --title
+  - name: verbose
+    type: boolean
+    label: Show each step
+    flag: --verbose
+  # The value reaches the script as a variable, so it stays out of the process list.
+  - name: token
+    type: string
+    label: Signing token
+    description: Optional. Stored in the Windows credential store when saved in a profile.
+    secret: true
+    env: REPORT_TOKEN

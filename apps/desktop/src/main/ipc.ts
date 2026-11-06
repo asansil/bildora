@@ -1,6 +1,7 @@
 import { BrowserWindow, Menu, dialog, ipcMain, nativeTheme } from 'electron';
 import type { IpcMainInvokeEvent, MenuItemConstructorOptions, OpenDialogOptions } from 'electron';
 import { LOGO_EXTENSIONS, readPreferences, writePreferences } from '@bildora/core';
+import type { RunHistory } from '@bildora/core';
 import type { ZodType, z } from 'zod';
 import { CHANNELS } from '../shared/channels.js';
 import { t } from '../shared/i18n/translate.js';
@@ -8,11 +9,18 @@ import {
   categoryMenuSchema,
   detectPathsSchema,
   editCommandSchema,
+  historyListSchema,
+  importManifestsSchema,
   noInputSchema,
   pickFolderSchema,
   preferencesSchema,
   registerToolsSchema,
+  removeProfileSchema,
   runIdSchema,
+  runInputSchema,
+  runResizeSchema,
+  saveProfileSchema,
+  startRunSchema,
   toolIdSchema,
   updateToolSchema,
 } from '../shared/ipc-contract.js';
@@ -25,6 +33,8 @@ export interface IpcContext {
   readonly rendererUrl: string;
   readonly tools: ToolService;
   readonly runs: RunService;
+  readonly history: RunHistory;
+  readonly historyProblem: string | undefined;
   readonly version: string;
   readonly quit: () => void;
 }
@@ -35,6 +45,9 @@ type Handler<Schema extends ZodType> = (
 ) => unknown;
 
 type LogoAction = 'change' | 'remove';
+
+/** Tools listed in the Recent section. */
+const RECENT_TOOLS_LIMIT = 5;
 
 /** How long a closing menu waits for a click, which can arrive just after it closes. */
 const MENU_CLICK_GRACE_MS = 100;
@@ -63,7 +76,7 @@ function askLogoAction(window: BrowserWindow, hasLogo: boolean): Promise<LogoAct
 
 /** Registers every channel. Each call checks who is asking, then what is being asked. */
 export function registerIpc(context: IpcContext): void {
-  const { dataDir, rendererUrl, tools, runs } = context;
+  const { dataDir, rendererUrl, tools, runs, history, historyProblem } = context;
 
   function handle<Schema extends ZodType>(
     channel: string,
@@ -100,12 +113,23 @@ export function registerIpc(context: IpcContext): void {
     return canceled || filePaths.length === 0 ? undefined : tools.detect(filePaths, recursive);
   }
 
-  handle(CHANNELS.shellInfo, noInputSchema, () => ({ version: context.version }));
+  handle(CHANNELS.shellInfo, noInputSchema, () => ({
+    version: context.version,
+    ...(historyProblem === undefined ? {} : { historyProblem }),
+  }));
   handle(CHANNELS.shellQuit, noInputSchema, () => {
     context.quit();
   });
   handle(CHANNELS.shellEdit, editCommandSchema, (command, event) => {
     event.sender[command]();
+  });
+
+  handle(CHANNELS.shellPickPath, noInputSchema, async (_input, event) => {
+    const { filePaths } = await dialog.showOpenDialog(dialogWindow(event), {
+      title: t('dialog.pickPath'),
+      properties: ['openFile'],
+    });
+    return filePaths[0];
   });
 
   handle(CHANNELS.toolsList, noInputSchema, () => tools.catalog());
@@ -118,7 +142,7 @@ export function registerIpc(context: IpcContext): void {
         filters: [
           {
             name: t('dialog.programs'),
-            extensions: ['exe', 'com', 'bat', 'cmd', 'py', 'pyw', 'js', 'mjs', 'ps1'],
+            extensions: ['exe', 'com', 'bat', 'cmd', 'py', 'pyw', 'js', 'mjs', 'ps1', 'yaml'],
           },
         ],
       },
@@ -130,6 +154,9 @@ export function registerIpc(context: IpcContext): void {
   );
   handle(CHANNELS.toolsDetectPaths, detectPathsSchema, ({ paths }) => tools.detect(paths));
   handle(CHANNELS.toolsRegister, registerToolsSchema, (input) => tools.register(input));
+  handle(CHANNELS.toolsImportManifests, importManifestsSchema, ({ paths }) =>
+    tools.importManifests(paths),
+  );
   handle(CHANNELS.toolsUpdate, updateToolSchema, ({ id, details }) => tools.update(id, details));
   handle(CHANNELS.toolsRemove, toolIdSchema, async ({ id }) => {
     if (runs.isRunning(id)) {
@@ -162,21 +189,52 @@ export function registerIpc(context: IpcContext): void {
     return true;
   });
 
-  handle(CHANNELS.runsStart, toolIdSchema, async ({ id }) => {
+  handle(CHANNELS.runsStart, startRunSchema, async ({ id, ...request }) => {
     const tool = await tools.get(id);
-    if (tool.manifest.level !== 0) {
+    if (tool.manifest.level === 2) {
       throw new Error(`Tool "${id}" needs a later version of Bildora`);
     }
-    return runs.start(tool);
+    if (tool.manifest.level === 1 && runs.isRunning(id)) {
+      throw new Error(`Tool "${id}" is already running`);
+    }
+    return runs.start(tool, request);
   });
   handle(CHANNELS.runsCancel, runIdSchema, ({ runId }) => {
     runs.cancel(runId);
   });
   handle(CHANNELS.runsList, noInputSchema, () => runs.list());
+  handle(CHANNELS.runsOutputRead, runIdSchema, ({ runId }) => runs.readOutput(runId));
+  handle(CHANNELS.runsInput, runInputSchema, ({ runId, data }) => {
+    runs.write(runId, data);
+  });
+  handle(CHANNELS.runsResize, runResizeSchema, ({ runId, columns, rows }) => {
+    runs.resize(runId, columns, rows);
+  });
+
+  handle(CHANNELS.profilesList, toolIdSchema, ({ id }) => tools.profiles(id));
+  handle(CHANNELS.profilesSave, saveProfileSchema, (input) => tools.saveProfile(input));
+  handle(CHANNELS.profilesRemove, removeProfileSchema, ({ toolId, id }) =>
+    tools.removeProfile(toolId, id),
+  );
+
+  handle(CHANNELS.historyList, historyListSchema, ({ toolId }) => history.list(toolId));
+  handle(CHANNELS.historyGet, runIdSchema, ({ runId }) => history.get(runId));
+  handle(CHANNELS.historyRecent, noInputSchema, () => history.recentToolIds(RECENT_TOOLS_LIMIT));
+  handle(CHANNELS.historyClear, noInputSchema, () => {
+    history.clear();
+  });
 
   handle(CHANNELS.preferencesGet, noInputSchema, () => readPreferences(dataDir));
-  handle(CHANNELS.preferencesSet, preferencesSchema, async (preferences) => {
-    await writePreferences(dataDir, preferences);
-    nativeTheme.themeSource = preferences.theme;
+  handle(CHANNELS.preferencesSet, preferencesSchema, async ({ theme, historyRunLimit }) => {
+    await writePreferences(dataDir, {
+      ...(theme === undefined ? {} : { theme }),
+      ...(historyRunLimit === undefined ? {} : { historyRunLimit }),
+    });
+    if (theme !== undefined) {
+      nativeTheme.themeSource = theme;
+    }
+    if (historyRunLimit !== undefined) {
+      history.pruneAll(historyRunLimit);
+    }
   });
 }

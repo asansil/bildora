@@ -1,8 +1,61 @@
 import { randomUUID } from 'node:crypto';
-import type { RegisteredTool, RunResult, ToolRun } from '@bildora/core';
-import type { RunView } from '../shared/ipc-contract.js';
+import type { RegisteredTool, RunProgress, RunResult, ToolRun } from '@bildora/core';
+import type { RunOutputView, RunRequest, RunView } from '../shared/ipc-contract.js';
 
-type StartRun = (tool: RegisteredTool) => ToolRun;
+/** Raw console output kept per run, for a console that opens after the run started. */
+const OUTPUT_BUFFER_LIMIT = 2 * 1024 * 1024;
+/** How often output and progress reach the shell. A chatty tool must not flood the page. */
+const SHELL_UPDATE_MS = 33;
+
+export interface RunContext {
+  readonly runId: string;
+  readonly request: RunRequest;
+  readonly onOutput: (data: string) => void;
+  readonly onProgress: (progress: RunProgress) => void;
+}
+
+type StartRun = (tool: RegisteredTool, context: RunContext) => ToolRun | Promise<ToolRun>;
+type OutputListener = (output: RunOutputView) => void;
+
+/** The end of a run's output. It keeps whole chunks, so a terminal sequence is rarely cut. */
+class OutputBuffer {
+  private chunks: string[] = [];
+  private size = 0;
+  private pending = '';
+  sequence = 0;
+
+  add(data: string): void {
+    this.pending += data;
+  }
+
+  /** Moves what arrived since last time into the buffer, and returns it. */
+  drain(): string {
+    const data = this.pending;
+    if (data === '') {
+      return data;
+    }
+    this.pending = '';
+    this.sequence += 1;
+    this.chunks.push(data);
+    this.size += data.length;
+    while (this.size > OUTPUT_BUFFER_LIMIT && this.chunks.length > 1) {
+      this.size -= this.chunks.shift()?.length ?? 0;
+    }
+    return data;
+  }
+
+  text(): string {
+    return this.chunks.join('');
+  }
+}
+
+interface ActiveRun {
+  view: RunView;
+  readonly level: number;
+  readonly output: OutputBuffer;
+  run?: ToolRun;
+  cancelRequested: boolean;
+}
 
 function viewOfResult(runId: string, toolId: string, result: RunResult): RunView {
   const shared = { runId, toolId, durationMs: result.durationMs };
@@ -22,32 +75,48 @@ function viewOfResult(runId: string, toolId: string, result: RunResult): RunView
 }
 
 /**
- * Tool runs this session knows about. State lives in memory only, until run history exists: every
- * run still going, plus the latest finished one of each tool.
+ * Tool runs this session knows about, which is what the shell shows live: every run still going,
+ * plus the latest finished one of each tool. What is kept for later is run history, in core.
  */
 export class RunService {
-  private readonly active = new Map<string, { run: ToolRun; view: RunView }>();
+  private readonly active = new Map<string, ActiveRun>();
   private readonly lastFinished = new Map<string, RunView>();
+  private readonly finishedOutput = new Map<string, { runId: string; output: OutputBuffer }>();
   private readonly settled = new Set<Promise<void>>();
   private readonly startRun: StartRun;
   private readonly onChange: () => void;
+  private readonly onOutput: OutputListener;
+  private updateTimer: ReturnType<typeof setTimeout> | undefined;
+  private progressChanged = false;
 
-  constructor(startRun: StartRun, onChange: () => void) {
+  constructor(
+    startRun: StartRun,
+    onChange: () => void,
+    onOutput: OutputListener = () => undefined,
+  ) {
     this.startRun = startRun;
     this.onChange = onChange;
+    this.onOutput = onOutput;
   }
 
-  start(tool: RegisteredTool): RunView {
+  start(tool: RegisteredTool, request: RunRequest = {}): RunView {
     const runId = randomUUID();
     const toolId = tool.manifest.id;
     const view: RunView = { runId, toolId, status: 'running' };
-    const run = this.startRun(tool);
-    this.active.set(runId, { run, view });
+    const entry: ActiveRun = {
+      view,
+      level: tool.manifest.level,
+      output: new OutputBuffer(),
+      cancelRequested: false,
+    };
+    this.active.set(runId, entry);
 
-    const settled = run.result.then((result) => {
+    const settled = this.follow(tool, entry, request).then((result) => {
+      this.sendOutput(entry);
       this.active.delete(runId);
       this.settled.delete(settled);
       this.lastFinished.set(toolId, viewOfResult(runId, toolId, result));
+      this.finishedOutput.set(toolId, { runId, output: entry.output });
       this.onChange();
     });
     this.settled.add(settled);
@@ -55,16 +124,113 @@ export class RunService {
     return view;
   }
 
+  private async follow(
+    tool: RegisteredTool,
+    entry: ActiveRun,
+    request: RunRequest,
+  ): Promise<RunResult> {
+    const { runId } = entry.view;
+    try {
+      const run = await this.startRun(tool, {
+        runId,
+        request,
+        onOutput: (data) => {
+          entry.output.add(data);
+          this.scheduleUpdate();
+        },
+        onProgress: (progress) => {
+          entry.view = { ...entry.view, progress };
+          this.progressChanged = true;
+          this.scheduleUpdate();
+        },
+      });
+      entry.run = run;
+      if (entry.cancelRequested) {
+        run.cancel();
+      }
+      return await run.result;
+    } catch (error) {
+      return {
+        status: 'failed',
+        durationMs: 0,
+        failure: {
+          kind: 'launcher',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  }
+
+  private scheduleUpdate(): void {
+    this.updateTimer ??= setTimeout(() => {
+      this.updateTimer = undefined;
+      for (const entry of this.active.values()) {
+        this.sendOutput(entry);
+      }
+      if (this.progressChanged) {
+        this.progressChanged = false;
+        this.onChange();
+      }
+    }, SHELL_UPDATE_MS);
+  }
+
+  private sendOutput(entry: ActiveRun): void {
+    const data = entry.output.drain();
+    if (data !== '') {
+      this.onOutput({ runId: entry.view.runId, data, sequence: entry.output.sequence });
+    }
+  }
+
   cancel(runId: string): void {
-    this.active.get(runId)?.run.cancel();
+    const entry = this.active.get(runId);
+    if (entry !== undefined) {
+      entry.cancelRequested = true;
+      entry.run?.cancel();
+    }
+  }
+
+  write(runId: string, data: string): void {
+    this.active.get(runId)?.run?.write(data);
+  }
+
+  resize(runId: string, columns: number, rows: number): void {
+    this.active.get(runId)?.run?.resize(columns, rows);
+  }
+
+  /** What a run has written so far, for a console opening late. Later output has a higher sequence. */
+  readOutput(runId: string): RunOutputView | undefined {
+    const entry = this.active.get(runId);
+    if (entry !== undefined) {
+      this.sendOutput(entry);
+      return { runId, data: entry.output.text(), sequence: entry.output.sequence };
+    }
+    for (const finished of this.finishedOutput.values()) {
+      if (finished.runId === runId) {
+        const { output } = finished;
+        return { runId, data: output.text(), sequence: output.sequence };
+      }
+    }
+    return undefined;
   }
 
   /** Ends every run, and settles once all of them have reported. */
   async cancelAll(): Promise<void> {
-    for (const { run } of this.active.values()) {
-      run.cancel();
+    for (const entry of this.active.keys()) {
+      this.cancel(entry);
     }
     await Promise.all(this.settled);
+  }
+
+  /** Ends the runs that live inside Bildora's own console, which cannot outlive the app. */
+  async cancelConsoleRuns(): Promise<void> {
+    const consoles = [...this.active.entries()].filter(([, entry]) => entry.level !== 0);
+    const left = this.settled.size - consoles.length;
+    for (const [runId] of consoles) {
+      this.cancel(runId);
+    }
+    while (this.settled.size > left) {
+      await Promise.race(this.settled);
+    }
   }
 
   isRunning(toolId: string): boolean {
@@ -75,6 +241,11 @@ export class RunService {
     return this.active.size;
   }
 
+  /** Runs that end with Bildora, because they have no window of their own. */
+  get consoleCount(): number {
+    return [...this.active.values()].filter(({ level }) => level !== 0).length;
+  }
+
   list(): readonly RunView[] {
     const running = [...this.active.values()].map(({ view }) => view);
     return [...running, ...this.lastFinished.values()];
@@ -83,5 +254,6 @@ export class RunService {
   /** Forgets a removed tool's result, so a new tool with its id does not inherit it. */
   forget(toolId: string): void {
     this.lastFinished.delete(toolId);
+    this.finishedOutput.delete(toolId);
   }
 }

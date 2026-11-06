@@ -28,6 +28,8 @@ export const en = {
   'nav.uncategorized': 'Uncategorized',
   'nav.problems': 'Problems',
   'nav.settings': 'Settings',
+  'nav.history': 'Run history',
+  'nav.recent': 'Recent',
 
   'category.changeLogo': 'Change logo…',
   'category.removeLogo': 'Remove logo',
@@ -62,6 +64,56 @@ export const en = {
   'tool.instances': { one: '{count} running', other: '{count} running' },
   'tool.laterVersion':
     'This tool needs a later version of Bildora, which will show its form or panel here.',
+
+  'runner.run': 'Run',
+  'runner.history': 'History',
+  'runner.console': 'Console',
+  'runner.progress': 'Progress',
+  'runner.percent': '{percent}%',
+  'runner.browse': 'Browse…',
+  'runner.noParameters': 'This tool takes no parameters.',
+  'runner.required': 'This field is required.',
+  'runner.requiredMark': '(required)',
+  'runner.notWholeNumber': 'Enter a whole number.',
+  'runner.notNumber': 'Enter a number.',
+  'runner.noChoice': 'Not set',
+  'runner.secretSaved': 'Saved in the credential store',
+  'runner.forgetSecret': 'Forget saved value',
+  'runner.secretArgument':
+    'This tool receives the value as an argument, which other programs you run can read while it runs.',
+
+  'profile.label': 'Profile',
+  'profile.none': 'No profile',
+  'profile.save': 'Save',
+  'profile.saveAs': 'Save as…',
+  'profile.saveAsTitle': 'Save as a profile',
+  'profile.secretsHint':
+    'Secrets you typed go to the Windows credential store, never to the profile file.',
+  'profile.remove': 'Delete',
+  'profile.removeTitle': 'Delete {name}?',
+  'profile.removeBody': 'The profile and the secrets saved with it are deleted.',
+
+  'history.title': 'Run history',
+  'history.tool': 'Tool',
+  'history.allTools': 'All tools',
+  'history.empty': 'No runs recorded yet.',
+  'history.pick': 'Choose a run to see its details.',
+  'history.started': 'Started',
+  'history.duration': 'Duration',
+  'history.exitCode': 'Exit code',
+  'history.failure': 'Problem',
+  'history.parameters': 'Parameters',
+  'history.output': 'Output',
+  'history.noOutput': 'This run wrote nothing.',
+  'history.notSet': 'Not set',
+  'history.secretHidden': 'Secret, not recorded',
+  'history.truncated': 'This output was long, so only its end was kept.',
+  'history.interrupted': 'Bildora closed before this run ended, so its result is unknown.',
+  'history.noDuration': '—',
+  'history.seconds': '{value} s',
+  'history.minutes': '{minutes} min {seconds} s',
+  'history.hours': '{hours} h {minutes} min',
+  'history.unavailable': 'Run history is unavailable, so runs will not be kept: {detail}',
 
   'runtime.interpreterTitle': '{interpreter} is not installed',
   'runtime.interpreterBody':
@@ -98,6 +150,13 @@ export const en = {
   'remove.confirm': 'Remove tool',
 
   'import.title': 'Review what to import',
+  'import.declared': 'Declared tools',
+  'import.declaredHint':
+    'These read their form from a tool.yaml. Their program stays where it is, and it will run with your permissions.',
+  'import.permissions': 'Declares: {list}',
+  'import.noPermissions': 'Declares no permissions',
+  'import.replaces': 'Replaces the installed tool',
+  'import.refused': '{path}: {reason}',
   'import.summary': {
     one: '{count} program found. Nothing has been run.',
     other: '{count} programs found. Nothing has been run.',
@@ -134,6 +193,12 @@ export const en = {
   'settings.themeSystem': 'Follow Windows',
   'settings.themeLight': 'Light',
   'settings.themeDark': 'Dark',
+  'settings.historyLimit': 'Runs kept per tool',
+  'settings.historyLimitHint':
+    'Older runs are deleted once a tool passes this number. Each run keeps up to 1 MiB of output.',
+  'settings.clearHistory': 'Clear run history',
+  'settings.clearHistoryTitle': 'Clear run history?',
+  'settings.clearHistoryBody': 'Every finished run is deleted. This cannot be undone.',
 
   'about.title': 'About Bildora',
   'about.body': 'A home for your tools and scripts. Version {version}.',
@@ -144,6 +209,7 @@ export const en = {
   'dialog.pickFiles': 'Choose programs to add',
   'dialog.pickFolder': 'Choose a folder to import',
   'dialog.programs': 'Programs and scripts',
+  'dialog.pickPath': 'Choose a file',
   'dialog.pickLogo': 'Choose a logo',
   'dialog.images': 'Images',
 
@@ -153,6 +219,8 @@ export const en = {
     other: '{count} tools are still running',
   },
   'close.detail': 'Left open, they keep running, but Bildora stops tracking them.',
+  'close.detailConsoles':
+    'Tools with a window of their own can stay open, but Bildora stops tracking them. Tools running in a Bildora console always end.',
   'close.leaveOpen': 'Leave open',
   'close.endAll': 'End all',
   'close.cancel': 'Cancel',

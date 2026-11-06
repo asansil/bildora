@@ -3,26 +3,57 @@ import {
   checkRuntime,
   detectPrograms,
   groupByCategory,
+  importManifests,
+  listProfiles,
   readCategoryLogos,
   registerPrograms,
   removeCategoryLogo,
+  removeProfile,
+  removeTool,
+  saveProfile,
   setCategoryLogo,
   updateToolDetails,
 } from '@bildora/core';
-import type { Detection, RegisteredTool, ToolGroup, ToolRegistry } from '@bildora/core';
+import type {
+  Detection,
+  RegisteredTool,
+  SecretStore,
+  ToolGroup,
+  ToolRegistry,
+} from '@bildora/core';
 import type {
   DetectionView,
+  ParameterView,
+  ProfileView,
   RegisterTools,
   RegistrationView,
+  SaveProfileInput,
   ToolCatalog,
   ToolDetailsInput,
   ToolGroupView,
   ToolView,
 } from '../shared/ipc-contract.js';
 
+type DeclaredParameter = Extract<RegisteredTool['manifest'], { level: 1 }>['parameters'][number];
+
+function viewOfParameter(parameter: DeclaredParameter): ParameterView {
+  const { name, label, type, required, description } = parameter;
+  return {
+    name,
+    label,
+    type,
+    required,
+    delivery: parameter.env === undefined ? 'argument' : 'environment',
+    ...(description === undefined ? {} : { description }),
+    ...(parameter.default === undefined ? {} : { default: parameter.default }),
+    ...(type === 'choice' ? { choices: parameter.choices } : {}),
+    ...(type === 'string' && parameter.secret ? { secret: true } : {}),
+  };
+}
+
 async function viewOfTool(tool: RegisteredTool): Promise<ToolView> {
   const { manifest } = tool;
-  const { id, name, level, category, description, interpreter } = manifest;
+  const { id, name, level, category, description, interpreter, permissions } = manifest;
   return {
     id,
     name,
@@ -31,6 +62,8 @@ async function viewOfTool(tool: RegisteredTool): Promise<ToolView> {
     ...(description === undefined ? {} : { description }),
     ...(interpreter === undefined ? {} : { interpreter }),
     ...(manifest.level === 2 ? {} : { program: manifest.run.program }),
+    ...(manifest.level === 0 ? {} : { parameters: manifest.parameters.map(viewOfParameter) }),
+    permissions,
     runtime: await checkRuntime(tool),
   };
 }
@@ -52,10 +85,12 @@ async function viewOfGroup(
 export class ToolService {
   private readonly registry: ToolRegistry;
   private readonly dataDir: string;
+  private readonly secrets: SecretStore;
 
-  constructor(registry: ToolRegistry, dataDir: string) {
+  constructor(registry: ToolRegistry, dataDir: string, secrets: SecretStore) {
     this.registry = registry;
     this.dataDir = dataDir;
+    this.secrets = secrets;
   }
 
   async catalog(): Promise<ToolCatalog> {
@@ -95,6 +130,24 @@ export class ToolService {
     return { registeredIds: registered.map((tool) => tool.manifest.id), failures };
   }
 
+  async importManifests(paths: readonly string[]): Promise<RegistrationView> {
+    const { registered, failures } = await importManifests(this.registry, paths);
+    return { registeredIds: registered.map((tool) => tool.manifest.id), failures };
+  }
+
+  async profiles(toolId: string): Promise<readonly ProfileView[]> {
+    return listProfiles(await this.get(toolId));
+  }
+
+  /** Saves a profile. The answer names which secrets are set, and holds none of them. */
+  async saveProfile({ toolId, id, name, values, secrets }: SaveProfileInput): Promise<ProfileView> {
+    return saveProfile(await this.get(toolId), { id, name, values, secrets }, this.secrets);
+  }
+
+  async removeProfile(toolId: string, id: string): Promise<void> {
+    await removeProfile(await this.get(toolId), id, this.secrets);
+  }
+
   async update(id: string, details: ToolDetailsInput): Promise<void> {
     const updated = await updateToolDetails(this.registry, id, details);
     if (updated === undefined) {
@@ -111,6 +164,6 @@ export class ToolService {
   }
 
   async remove(id: string): Promise<void> {
-    await this.registry.remove(id);
+    await removeTool(this.registry, id, this.secrets);
   }
 }

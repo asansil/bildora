@@ -7,11 +7,14 @@ import type {
   ProposalView,
   RegisterTools,
   RegistrationView,
+  RunRequest,
   RunView,
+  ShellPreferences,
   ShellTheme,
   ToolCatalog,
   ToolView,
 } from '../shared/ipc-contract.js';
+import { HistoryView } from './history/HistoryView.js';
 import { ImportReview } from './import/ImportReview.js';
 import { CommandPalette } from './palette/CommandPalette.js';
 import type { Command } from './palette/CommandPalette.js';
@@ -24,6 +27,7 @@ import type { Menu } from './shell/MenuBar.js';
 import { RunStateBadge, RunStateIcon, runStateLabel } from './shell/RunStateBadge.js';
 import { ToolDetails } from './tools/ToolDetails.js';
 import { ToolForm } from './tools/ToolForm.js';
+import { ToolRunner } from './tools/ToolRunner.js';
 import { Welcome } from './tools/Welcome.js';
 import { groupKey, groupLabel, toggleCategory } from './tools/category-rail.js';
 import { countRunning, summarizeRuns } from './tools/run-state.js';
@@ -31,7 +35,9 @@ import { countRunning, summarizeRuns } from './tools/run-state.js';
 const api = window.bildora;
 const EMPTY_CATALOG: ToolCatalog = { groups: [], problems: [] };
 
-type Screen = 'tools' | 'problems' | 'settings';
+const EMPTY_RECENT: readonly string[] = [];
+
+type Screen = 'tools' | 'problems' | 'history' | 'settings';
 
 type Modal =
   | { readonly kind: 'palette' }
@@ -53,6 +59,9 @@ export function App() {
   const [runs, setRuns] = useState<readonly RunView[]>([]);
   const [version, setVersion] = useState('');
   const [theme, setTheme] = useState<ShellTheme>('system');
+  const [historyRunLimit, setHistoryRunLimit] = useState(200);
+  const [recent, setRecent] = useState(EMPTY_RECENT);
+  const [historyTool, setHistoryTool] = useState<string | undefined>(undefined);
   const [screen, setScreen] = useState<Screen>('tools');
   const [openCategory, setOpenCategory] = useState<string | undefined>(undefined);
   const [selectedTool, setSelectedTool] = useState<string | undefined>(undefined);
@@ -80,14 +89,18 @@ export function App() {
     void api.listRuns().then(setRuns).catch(report);
     void api
       .shellInfo()
-      .then(({ version: value }) => {
+      .then(({ version: value, historyProblem }) => {
         setVersion(value);
+        if (historyProblem !== undefined) {
+          setBanner(t('history.unavailable', { detail: historyProblem }));
+        }
       })
       .catch(report);
     void api
       .getPreferences()
       .then((preferences) => {
         setTheme(preferences.theme);
+        setHistoryRunLimit(preferences.historyRunLimit);
       })
       .catch(report);
     const stopListening = api.onRunsChanged(setRuns);
@@ -115,10 +128,15 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    void api.recentTools().then(setRecent).catch(report);
+  }, [runs, report]);
+
   const allTools = useMemo(() => catalog.groups.flatMap((group) => group.tools), [catalog]);
   const panelGroup = catalog.groups.find((candidate) => groupKey(candidate) === openCategory);
   const tool = allTools.find((candidate) => candidate.id === selectedTool) ?? allTools[0];
   const running = countRunning(runs);
+  const recentTools = recent.flatMap((id) => allTools.filter((item) => item.id === id));
 
   function showTool(id: string, list: ToolCatalog = catalog): void {
     const owner = list.groups.find((candidate) => candidate.tools.some((item) => item.id === id));
@@ -158,9 +176,28 @@ export function App() {
     );
   }
 
-  function register(programs: RegisterTools['programs']): void {
+  /** Adds reviewed programs and manifests. Both report the same way, so one result covers them. */
+  async function registerAll(
+    programs: RegisterTools['programs'],
+    manifests: readonly string[],
+  ): Promise<RegistrationView> {
+    const fromPrograms: RegistrationView =
+      programs.length === 0
+        ? { registeredIds: [], failures: [] }
+        : await api.registerTools({ programs });
+    const fromManifests: RegistrationView =
+      manifests.length === 0
+        ? { registeredIds: [], failures: [] }
+        : await api.importManifests(manifests);
+    return {
+      registeredIds: [...fromManifests.registeredIds, ...fromPrograms.registeredIds],
+      failures: [...fromPrograms.failures, ...fromManifests.failures],
+    };
+  }
+
+  function register(programs: RegisterTools['programs'], manifests: readonly string[] = []): void {
     setModal(undefined);
-    void api.registerTools({ programs }).then(finishRegistration).catch(report);
+    void registerAll(programs, manifests).then(finishRegistration).catch(report);
   }
 
   function reviewDetection(detection: DetectionView | undefined): void {
@@ -174,7 +211,8 @@ export function App() {
       .pickFiles()
       .then((detection) => {
         const [only, ...others] = detection?.proposals ?? [];
-        if (only !== undefined && others.length === 0) {
+        const plain = detection?.manifests.length === 0 && detection.refused.length === 0;
+        if (only !== undefined && others.length === 0 && plain) {
           setModal({ kind: 'add', proposal: only });
         } else {
           reviewDetection(detection);
@@ -187,13 +225,31 @@ export function App() {
     void api.pickFolder(true).then(reviewDetection).catch(report);
   }
 
-  function launch(target: ToolView): void {
-    void api.startRun(target.id).catch(report);
+  function launch(target: ToolView, request?: RunRequest): void {
+    void api.startRun(target.id, request).catch(report);
+  }
+
+  function showHistory(toolId?: string): void {
+    setHistoryTool(toolId);
+    setScreen('history');
   }
 
   function changeTheme(next: ShellTheme): void {
     setTheme(next);
     void api.setPreferences({ theme: next }).catch(report);
+  }
+
+  function changeHistoryRunLimit(next: ShellPreferences['historyRunLimit']): void {
+    setHistoryRunLimit(next);
+    void api.setPreferences({ historyRunLimit: next }).catch(report);
+  }
+
+  function clearHistory(): void {
+    void api
+      .clearHistory()
+      .then(() => api.recentTools())
+      .then(setRecent)
+      .catch(report);
   }
 
   function onDragOver(event: DragEvent): void {
@@ -288,6 +344,14 @@ export function App() {
       run: importFolder,
     },
     {
+      id: 'history',
+      label: t('nav.history'),
+      detail: t('palette.action'),
+      run: () => {
+        showHistory();
+      },
+    },
+    {
       id: 'settings',
       label: t('menu.settings'),
       detail: t('palette.action'),
@@ -344,7 +408,13 @@ export function App() {
           problemCount={catalog.problems.length}
           onToggleCategory={pressCategory}
           onCategoryMenu={openCategoryMenu}
-          onScreen={setScreen}
+          onScreen={(next) => {
+            if (next === 'history') {
+              showHistory();
+            } else {
+              setScreen(next);
+            }
+          }}
         />
 
         {panelGroup === undefined ? null : (
@@ -380,6 +450,27 @@ export function App() {
                 );
               })}
             </ul>
+            {recentTools.length === 0 ? null : (
+              <>
+                <h2>{t('nav.recent')}</h2>
+                <ul className="nav-list" data-testid="recent-tools">
+                  {recentTools.map((item) => (
+                    <li key={item.id}>
+                      <button
+                        type="button"
+                        className="row"
+                        title={item.name}
+                        onClick={() => {
+                          showTool(item.id);
+                        }}
+                      >
+                        <span className="truncate">{item.name}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
           </aside>
         )}
 
@@ -399,7 +490,25 @@ export function App() {
               </button>
             </div>
           )}
-          {screen === 'settings' ? <SettingsView theme={theme} onTheme={changeTheme} /> : null}
+          {screen === 'settings' ? (
+            <SettingsView
+              key={historyRunLimit}
+              theme={theme}
+              historyRunLimit={historyRunLimit}
+              onTheme={changeTheme}
+              onHistoryRunLimit={changeHistoryRunLimit}
+              onClearHistory={clearHistory}
+            />
+          ) : null}
+          {screen === 'history' ? (
+            <HistoryView
+              tools={allTools}
+              toolId={historyTool}
+              revision={runs}
+              onToolId={setHistoryTool}
+              onError={report}
+            />
+          ) : null}
           {screen === 'problems' ? (
             <section className="problems">
               <h1>{t('problems.title')}</h1>
@@ -415,7 +524,33 @@ export function App() {
             </section>
           ) : null}
           {screen === 'tools' && empty ? <Welcome onAdd={addTool} onImport={importFolder} /> : null}
-          {screen === 'tools' && tool !== undefined ? (
+          {screen === 'tools' && tool?.level === 1 ? (
+            <ToolRunner
+              key={tool.id}
+              tool={tool}
+              runs={runs}
+              onRun={(request) => {
+                launch(tool, request);
+              }}
+              onStop={(runId) => {
+                void api.cancelRun(runId).catch(report);
+              }}
+              onEdit={() => {
+                setModal({ kind: 'edit', tool });
+              }}
+              onRemove={() => {
+                setModal({ kind: 'remove', tool });
+              }}
+              onCheckAgain={() => {
+                void reload().catch(report);
+              }}
+              onHistory={() => {
+                showHistory(tool.id);
+              }}
+              onError={report}
+            />
+          ) : null}
+          {screen === 'tools' && tool !== undefined && tool.level !== 1 ? (
             <ToolDetails
               tool={tool}
               runs={runs}
