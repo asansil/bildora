@@ -19,7 +19,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@bildora/protocol": "workspace:*"
+    "@bildora/protocol": "workspace:*",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@bildora/typescript-config": "workspace:*"

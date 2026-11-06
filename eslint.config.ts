@@ -12,7 +12,7 @@ export default defineConfig(
     languageOptions: {
       parserOptions: {
         projectService: {
-          allowDefaultProject: ['.dependency-cruiser.cjs'],
+          allowDefaultProject: ['.dependency-cruiser.cjs', 'packages/*/scripts/*.mjs'],
         },
         tsconfigRootDir: import.meta.dirname,
       },
@@ -27,6 +27,12 @@ export default defineConfig(
     languageOptions: {
       sourceType: 'commonjs',
       globals: { module: 'writable' },
+    },
+  },
+  {
+    files: ['**/*.mjs'],
+    languageOptions: {
+      globals: { URL: 'readonly', console: 'readonly', process: 'readonly' },
     },
   },
   {

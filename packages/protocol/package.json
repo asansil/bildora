@@ -9,16 +9,21 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./schemas/tool-manifest.schema.json": "./dist/schemas/tool-manifest.schema.json"
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/generate-manifest-schema.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "@bildora/typescript-config": "workspace:*"
+    "@bildora/typescript-config": "workspace:*",
+    "ajv": "^8.20.0"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
   }
 }
