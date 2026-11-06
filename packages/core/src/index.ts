@@ -9,3 +9,9 @@ export interface CoreInfo {
 export function getCoreInfo(): CoreInfo {
   return { productName: 'Bildora', protocolVersion: PROTOCOL_VERSION };
 }
+
+export { parseManifest, serializeManifest } from './manifest/parse-manifest.js';
+export { DefinitionError } from './storage/definition-error.js';
+export type { DefinitionIssue } from './storage/definition-error.js';
+export { GLOBAL_SCOPE, openDataDirectory, resolveDataDir } from './storage/data-directory.js';
+export type { DataDirectoryOptions, InstallScope } from './storage/data-directory.js';
