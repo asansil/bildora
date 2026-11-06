@@ -1,6 +1,9 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import '@bildora/panel-sdk/theme.css';
 import type { ShellApi } from '../preload/api.js';
+import { App } from './App.js';
+import './styles/shell.css';
 
 declare global {
   interface Window {
@@ -15,9 +18,6 @@ if (container === null) {
 
 createRoot(container).render(
   <StrictMode>
-    <main>
-      <h1>Bildora</h1>
-      <p data-testid="platform">{window.bildora.platform}</p>
-    </main>
+    <App />
   </StrictMode>,
 );
