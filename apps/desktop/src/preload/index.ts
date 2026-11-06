@@ -23,9 +23,10 @@ const api: ShellApi = {
   detectPaths: (paths) => invoke(CHANNELS.toolsDetectPaths, { paths }),
   pathForFile: (file) => webUtils.getPathForFile(file),
   registerTools: (input) => invoke(CHANNELS.toolsRegister, input),
-  importManifests: (paths) => invoke(CHANNELS.toolsImportManifests, { paths }),
+  importManifests: (paths, scope) => invoke(CHANNELS.toolsImportManifests, { paths, scope }),
   updateTool: (id, details) => invoke(CHANNELS.toolsUpdate, { id, details }),
   removeTool: (id) => invoke(CHANNELS.toolsRemove, { id }),
+  setToolScope: (id, scope) => invoke(CHANNELS.toolsSetScope, { id, scope }),
   openCategoryMenu: (category) => invoke(CHANNELS.categoriesOpenMenu, { category }),
   startRun: (toolId, request = {}) => invoke(CHANNELS.runsStart, { id: toolId, ...request }),
   cancelRun: (runId) => invoke(CHANNELS.runsCancel, { runId }),
@@ -61,6 +62,16 @@ const api: ShellApi = {
   clearHistory: () => invoke(CHANNELS.historyClear),
   getPreferences: () => invoke(CHANNELS.preferencesGet),
   setPreferences: (preferences) => invoke(CHANNELS.preferencesSet, preferences),
+  listWorkspaces: () => invoke(CHANNELS.workspacesList),
+  switchWorkspace: (id) => invoke(CHANNELS.workspacesSwitch, { id }),
+  createWorkspace: (name) => invoke(CHANNELS.workspacesCreate, { name }),
+  renameWorkspace: (id, name) => invoke(CHANNELS.workspacesRename, { id, name }),
+  removeWorkspace: (id) => invoke(CHANNELS.workspacesRemove, { id }),
+  updateWorkspace: (changes) => invoke(CHANNELS.workspacesUpdate, changes),
+  saveLayout: (layout) => invoke(CHANNELS.workspacesUpdate, { layout }),
+  listPathVariables: () => invoke(CHANNELS.pathVariablesList),
+  setPathVariable: (name, value) => invoke(CHANNELS.pathVariablesSet, { name, value }),
+  removePathVariable: (name) => invoke(CHANNELS.pathVariablesRemove, { name }),
 };
 
 contextBridge.exposeInMainWorld('bildora', api);

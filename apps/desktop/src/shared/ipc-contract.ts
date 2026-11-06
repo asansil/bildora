@@ -12,6 +12,13 @@ const CONSOLE_INPUT_MAX_LENGTH = 64 * 1024;
 const CONSOLE_COLUMNS_MAX = 1000;
 const CONSOLE_ROWS_MAX = 500;
 const HISTORY_RUN_LIMIT_MAX = 100_000;
+const WORKSPACE_NAME_MAX_LENGTH = 80;
+const PATH_VARIABLE_NAME_MAX_LENGTH = 64;
+const FAVORITES_MAX = 1000;
+const CATEGORIES_MAX = 1000;
+export const PANEL_WIDTH_MIN = 180;
+export const PANEL_WIDTH_MAX = 480;
+export const PANEL_WIDTH_DEFAULT = 248;
 
 const textSchema = z.string().max(TEXT_MAX_LENGTH);
 const pathSchema = z.string().min(1).max(PATH_MAX_LENGTH);
@@ -25,6 +32,9 @@ const valuesSchema = z
 const secretsSchema = z
   .record(parameterNameSchema, z.string().max(VALUE_MAX_LENGTH).nullable())
   .refine((values) => Object.keys(values).length <= VALUES_MAX);
+/** Where a tool goes: `workspace` is always the active one, which only main can name. */
+const toolScopeSchema = z.enum(['global', 'workspace']);
+const workspaceNameSchema = z.string().min(1).max(WORKSPACE_NAME_MAX_LENGTH);
 const columnsSchema = z.int().min(1).max(CONSOLE_COLUMNS_MAX);
 const rowsSchema = z.int().min(1).max(CONSOLE_ROWS_MAX);
 
@@ -46,14 +56,17 @@ export const registerToolsSchema = z.strictObject({
     .array(z.strictObject({ ...toolDetailsFields, program: absolutePathSchema }))
     .min(1)
     .max(REGISTRATIONS_MAX),
+  scope: toolScopeSchema,
 });
 export const updateToolSchema = z.strictObject({
   id: idSchema,
-  details: z.strictObject(toolDetailsFields),
+  details: z.strictObject({ ...toolDetailsFields, program: pathSchema.optional() }),
 });
+export const setToolScopeSchema = z.strictObject({ id: idSchema, scope: toolScopeSchema });
 export const categoryMenuSchema = z.strictObject({ category: textSchema.min(1) });
 export const importManifestsSchema = z.strictObject({
   paths: z.array(absolutePathSchema).min(1).max(REGISTRATIONS_MAX),
+  scope: toolScopeSchema,
 });
 export const toolIdSchema = z.strictObject({ id: idSchema });
 export const runIdSchema = z.strictObject({ runId: idSchema });
@@ -83,8 +96,29 @@ export const saveProfileSchema = z.strictObject({
 export const removeProfileSchema = z.strictObject({ toolId: idSchema, id: idSchema });
 export const historyListSchema = z.strictObject({ toolId: idSchema.optional() });
 export const preferencesSchema = z.strictObject({
-  theme: z.enum(['system', 'light', 'dark']).optional(),
   historyRunLimit: z.int().min(1).max(HISTORY_RUN_LIMIT_MAX).optional(),
+});
+export const workspaceIdSchema = z.strictObject({ id: idSchema });
+export const createWorkspaceSchema = z.strictObject({ name: workspaceNameSchema });
+export const renameWorkspaceSchema = z.strictObject({ id: idSchema, name: workspaceNameSchema });
+export const updateWorkspaceSchema = z.strictObject({
+  theme: z.enum(['system', 'light', 'dark']).optional(),
+  favorites: z.array(idSchema).max(FAVORITES_MAX).optional(),
+  layout: z
+    .strictObject({
+      categoryOrder: z.array(textSchema).max(CATEGORIES_MAX).optional(),
+      panelWidth: z.int().min(PANEL_WIDTH_MIN).max(PANEL_WIDTH_MAX).optional(),
+      selectedTool: idSchema.nullable().optional(),
+      openCategory: textSchema.nullable().optional(),
+    })
+    .optional(),
+});
+export const pathVariableSchema = z.strictObject({
+  name: z.string().min(1).max(PATH_VARIABLE_NAME_MAX_LENGTH),
+  value: absolutePathSchema,
+});
+export const pathVariableNameSchema = z.strictObject({
+  name: z.string().min(1).max(PATH_VARIABLE_NAME_MAX_LENGTH),
 });
 
 export type EditCommand = z.infer<typeof editCommandSchema>;
@@ -92,13 +126,43 @@ export type RegisterTools = z.infer<typeof registerToolsSchema>;
 export type ToolDetailsInput = z.infer<typeof updateToolSchema>['details'];
 export type ShellPreferencesChange = z.infer<typeof preferencesSchema>;
 export type ShellTheme = 'system' | 'light' | 'dark';
+export type ToolScopeChoice = z.infer<typeof toolScopeSchema>;
+export type WorkspaceUpdate = z.infer<typeof updateWorkspaceSchema>;
+export type LayoutUpdate = NonNullable<WorkspaceUpdate['layout']>;
 export type StartRunInput = z.infer<typeof startRunSchema>;
 export type RunRequest = Omit<StartRunInput, 'id'>;
 export type SaveProfileInput = z.infer<typeof saveProfileSchema>;
 
 export interface ShellPreferences {
-  readonly theme: ShellTheme;
   readonly historyRunLimit: number;
+}
+
+export interface WorkspaceLayoutView {
+  /** Category keys in rail order. */
+  readonly categoryOrder: readonly string[];
+  readonly panelWidth?: number;
+  readonly selectedTool?: string;
+  readonly openCategory?: string;
+}
+
+export interface WorkspaceView {
+  readonly id: string;
+  readonly name: string;
+  readonly theme: ShellTheme;
+  /** Tool ids. Some may have no tool now, which leaves them out of what is shown. */
+  readonly favorites: readonly string[];
+  readonly layout: WorkspaceLayoutView;
+}
+
+export interface WorkspaceListView {
+  readonly activeId: string;
+  readonly workspaces: readonly WorkspaceView[];
+  readonly problems: readonly { readonly folder: string; readonly message: string }[];
+}
+
+export interface PathVariableView {
+  readonly name: string;
+  readonly value: string;
 }
 
 export interface ShellInfo {
@@ -109,6 +173,7 @@ export interface ShellInfo {
 
 export type ToolRuntime =
   | { readonly status: 'ready' }
+  | { readonly status: 'missing-variable'; readonly variable: string }
   | { readonly status: 'missing-program'; readonly program: string }
   | { readonly status: 'missing-interpreter'; readonly interpreter: string };
 
@@ -129,7 +194,10 @@ export interface ParameterView {
 }
 
 export interface ToolView {
+  /** Unique across scopes, unlike the id, which names a tool only inside a Workspace. */
+  readonly key: string;
   readonly id: string;
+  readonly scope: ToolScopeChoice;
   readonly name: string;
   readonly level: 0 | 1 | 2;
   readonly category?: string;
@@ -153,6 +221,7 @@ export interface ToolGroupView {
 
 export interface ToolProblemView {
   readonly folder: string;
+  readonly scope: ToolScopeChoice;
   readonly message: string;
 }
 
@@ -200,11 +269,14 @@ export type RunFailureCode =
   | 'unsupported'
   | 'launcher'
   | 'credentials'
+  | 'path-variable'
   | 'exit-code';
 
 export interface RunView {
   readonly runId: string;
   readonly toolId: string;
+  /** Matches `ToolView.key`, so a run shows only on the tool it belongs to. */
+  readonly toolKey: string;
   readonly status: RunStatus;
   readonly durationMs?: number;
   readonly exitCode?: number;

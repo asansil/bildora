@@ -2,9 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RegisteredTool, RunResult, ToolRun } from '@bildora/core';
 import {
   categoryMenuSchema,
+  createWorkspaceSchema,
   detectPathsSchema,
   editCommandSchema,
   noInputSchema,
+  pathVariableSchema,
   preferencesSchema,
   registerToolsSchema,
   runInputSchema,
@@ -13,6 +15,7 @@ import {
   startRunSchema,
   toolIdSchema,
   updateToolSchema,
+  updateWorkspaceSchema,
 } from '../shared/ipc-contract.js';
 import { RunService } from './run-service.js';
 import { isTrustedSender } from './trusted-sender.js';
@@ -63,10 +66,32 @@ describe('IPC schemas', () => {
     ['an unknown edit command', editCommandSchema, 'delete'],
     ['an empty path list', detectPathsSchema, { paths: [] }],
     ['too many dropped paths', detectPathsSchema, { paths: Array<string>(1001).fill('C:\\a') }],
-    ['a relative program', registerToolsSchema, { programs: [{ ...program, program: 'a.exe' }] }],
-    ['a nameless program', registerToolsSchema, { programs: [{ ...program, name: '' }] }],
-    ['an extra field', registerToolsSchema, { programs: [{ ...program, level: 2 }] }],
-    ['an update that moves the program', updateToolSchema, { id: 'a', details: program }],
+    [
+      'a relative program',
+      registerToolsSchema,
+      { programs: [{ ...program, program: 'a.exe' }], scope: 'global' },
+    ],
+    [
+      'a nameless program',
+      registerToolsSchema,
+      { programs: [{ ...program, name: '' }], scope: 'global' },
+    ],
+    [
+      'an extra field',
+      registerToolsSchema,
+      { programs: [{ ...program, level: 2 }], scope: 'global' },
+    ],
+    ['a registration with no scope', registerToolsSchema, { programs: [program] }],
+    ['a scope naming a Workspace', registerToolsSchema, { programs: [program], scope: 'other' }],
+    [
+      'an update with an unknown field',
+      updateToolSchema,
+      { id: 'a', details: { name: 'A', x: 1 } },
+    ],
+    ['a nameless Workspace', createWorkspaceSchema, { name: '' }],
+    ['a panel too wide', updateWorkspaceSchema, { layout: { panelWidth: 5000 } }],
+    ['an unknown theme for a Workspace', updateWorkspaceSchema, { theme: 'pink' }],
+    ['a relative path variable', pathVariableSchema, { name: 'a', value: 'relative' }],
     ['a launch by path', toolIdSchema, { path: 'C:\\evil.exe' }],
     ['an unknown theme', preferencesSchema, { theme: 'pink' }],
     ['a menu for no category', categoryMenuSchema, { category: '' }],
@@ -88,7 +113,7 @@ describe('IPC schemas', () => {
     ['a drive path', 'C:\\Tools\\tool.exe'],
     ['a network share', '\\\\server\\tools\\tool.exe'],
   ])('accepts %s', (_label, path) => {
-    const input = { programs: [{ ...program, program: path }] };
+    const input = { programs: [{ ...program, program: path }], scope: 'workspace' };
     expect(registerToolsSchema.safeParse(input).success).toBe(true);
   });
 });
@@ -133,12 +158,33 @@ describe('RunService', () => {
     return { service: created, onChange };
   }
 
+  it('keeps tools with one id in different Workspaces apart', () => {
+    const { service: runs } = service([fakeRun()]);
+    const scoped = { ...tool('a'), scope: { kind: 'workspace', workspaceId: 'home' } as const };
+
+    runs.start(scoped, 'home');
+
+    expect(runs.isRunning('workspace/home/a')).toBe(true);
+    expect(runs.isRunning('global/a')).toBe(false);
+    expect(runs.isWorkspaceBusy('home')).toBe(true);
+    expect(runs.isWorkspaceBusy('work')).toBe(false);
+  });
+
+  it('counts a Workspace as busy with a global tool it started', () => {
+    const { service: runs } = service([fakeRun()]);
+
+    runs.start(tool('a'), 'home');
+
+    expect(runs.isWorkspaceBusy('home')).toBe(true);
+    expect(runs.isWorkspaceBusy('work')).toBe(false);
+  });
+
   it('tracks a run from start to its result, and reports each change', async () => {
     const fake = fakeRun();
     const { service: runs, onChange } = service([fake]);
 
-    const view = runs.start(tool('a'));
-    expect(runs.isRunning('a')).toBe(true);
+    const view = runs.start(tool('a'), 'work');
+    expect(runs.isRunning('global/a')).toBe(true);
     expect(runs.list()).toEqual([view]);
 
     fake.finish({
@@ -155,6 +201,7 @@ describe('RunService', () => {
       {
         runId: view.runId,
         toolId: 'a',
+        toolKey: 'global/a',
         status: 'failed',
         durationMs: 5,
         exitCode: 3,
@@ -167,8 +214,8 @@ describe('RunService', () => {
   it('lets a tool run twice at once', () => {
     const { service: runs } = service([fakeRun(), fakeRun()]);
 
-    runs.start(tool('a'));
-    runs.start(tool('a'));
+    runs.start(tool('a'), 'work');
+    runs.start(tool('a'), 'work');
 
     expect(runs.activeCount).toBe(2);
   });
@@ -176,12 +223,12 @@ describe('RunService', () => {
   it('keeps only the latest finished run of a tool', async () => {
     const [first, second] = [fakeRun(), fakeRun()];
     const { service: runs } = service([first, second]);
-    runs.start(tool('a'));
+    runs.start(tool('a'), 'work');
     first.finish({ status: 'completed', exitCode: 0, durationMs: 1 });
     await vi.waitFor(() => {
       expect(runs.activeCount).toBe(0);
     });
-    runs.start(tool('a'));
+    runs.start(tool('a'), 'work');
     second.finish({ status: 'cancelled', durationMs: 1 });
     await vi.waitFor(() => {
       expect(runs.activeCount).toBe(0);
@@ -193,7 +240,7 @@ describe('RunService', () => {
   it('cancels one run by id, ignoring ids it does not know', async () => {
     const fake = fakeRun();
     const { service: runs } = service([fake]);
-    const { runId } = runs.start(tool('a'));
+    const { runId } = runs.start(tool('a'), 'work');
     await started();
 
     runs.cancel('unknown');
@@ -206,7 +253,7 @@ describe('RunService', () => {
   it('cancels a run asked to stop before it had started', async () => {
     const fake = fakeRun();
     const { service: runs } = service([fake]);
-    const { runId } = runs.start(tool('a'));
+    const { runId } = runs.start(tool('a'), 'work');
 
     runs.cancel(runId);
     await started();
@@ -217,7 +264,7 @@ describe('RunService', () => {
   it('reports a run that could not start at all', async () => {
     const runs = new RunService(() => Promise.reject(new Error('No launcher')), vi.fn());
 
-    runs.start(tool('a'));
+    runs.start(tool('a'), 'work');
     await vi.waitFor(() => {
       expect(runs.activeCount).toBe(0);
     });
@@ -228,7 +275,7 @@ describe('RunService', () => {
   it('passes typing and size to the run', async () => {
     const fake = fakeRun();
     const { service: runs } = service([fake]);
-    const { runId } = runs.start(tool('a'));
+    const { runId } = runs.start(tool('a'), 'work');
     await started();
 
     runs.write(runId, 'x');
@@ -279,7 +326,7 @@ describe('RunService', () => {
 
     it('groups output before sending it to the shell', async () => {
       const { runs, write, sent } = consoleService();
-      runs.start(tool('a'));
+      runs.start(tool('a'), 'work');
       await started();
 
       write('a');
@@ -292,7 +339,7 @@ describe('RunService', () => {
 
     it('replays output for a console that opens late, with nothing counted twice', async () => {
       const { runs, write, sent } = consoleService();
-      const { runId } = runs.start(tool('a'));
+      const { runId } = runs.start(tool('a'), 'work');
       await started();
       write('first');
 
@@ -304,7 +351,7 @@ describe('RunService', () => {
 
     it('keeps the output of the latest finished run', async () => {
       const { runs, fake, write } = consoleService();
-      const { runId } = runs.start(tool('a'));
+      const { runId } = runs.start(tool('a'), 'work');
       await started();
       write('kept');
       fake.finish({ status: 'completed', exitCode: 0, durationMs: 1 });
@@ -313,13 +360,13 @@ describe('RunService', () => {
       });
 
       expect(runs.readOutput(runId)?.data).toBe('kept');
-      runs.forget('a');
+      runs.forget('global/a');
       expect(runs.readOutput(runId)).toBeUndefined();
     });
 
     it('shows the latest progress on the run', async () => {
       const { runs, progress, onChange } = consoleService();
-      runs.start(tool('a'));
+      runs.start(tool('a'), 'work');
       await started();
       const before = onChange.mock.calls.length;
 
@@ -336,10 +383,16 @@ describe('RunService', () => {
   it('ends console runs and leaves own-window runs alone', async () => {
     const [own, inConsole] = [fakeRun(), fakeRun()];
     const { service: runs } = service([own, inConsole]);
-    const windowTool = { manifest: { id: 'w', level: 0 } } as unknown as RegisteredTool;
-    const consoleTool = { manifest: { id: 'c', level: 1 } } as unknown as RegisteredTool;
-    runs.start(windowTool);
-    runs.start(consoleTool);
+    const windowTool = {
+      ...tool('w'),
+      manifest: { id: 'w', level: 0 },
+    } as unknown as RegisteredTool;
+    const consoleTool = {
+      ...tool('c'),
+      manifest: { id: 'c', level: 1 },
+    } as unknown as RegisteredTool;
+    runs.start(windowTool, 'work');
+    runs.start(consoleTool, 'work');
     await started();
     expect(runs.consoleCount).toBe(1);
 
@@ -350,15 +403,15 @@ describe('RunService', () => {
 
     expect(own.cancel).not.toHaveBeenCalled();
     expect(inConsole.cancel).toHaveBeenCalledOnce();
-    expect(runs.isRunning('w')).toBe(true);
-    expect(runs.isRunning('c')).toBe(false);
+    expect(runs.isRunning('global/w')).toBe(true);
+    expect(runs.isRunning('global/c')).toBe(false);
   });
 
   it('waits for every run when cancelling all of them', async () => {
     const [first, second] = [fakeRun(), fakeRun()];
     const { service: runs } = service([first, second]);
-    runs.start(tool('a'));
-    runs.start(tool('b'));
+    runs.start(tool('a'), 'work');
+    runs.start(tool('b'), 'work');
     await started();
 
     const all = runs.cancelAll();
@@ -374,13 +427,13 @@ describe('RunService', () => {
   it('forgets a removed tool', async () => {
     const fake = fakeRun();
     const { service: runs } = service([fake]);
-    runs.start(tool('a'));
+    runs.start(tool('a'), 'work');
     fake.finish({ status: 'completed', exitCode: 0, durationMs: 1 });
     await vi.waitFor(() => {
       expect(runs.activeCount).toBe(0);
     });
 
-    runs.forget('a');
+    runs.forget('global/a');
 
     expect(runs.list()).toEqual([]);
   });

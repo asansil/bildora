@@ -1,37 +1,54 @@
 import { BrowserWindow, Menu, dialog, ipcMain, nativeTheme } from 'electron';
 import type { IpcMainInvokeEvent, MenuItemConstructorOptions, OpenDialogOptions } from 'electron';
-import { LOGO_EXTENSIONS, readPreferences, writePreferences } from '@bildora/core';
+import {
+  LOGO_EXTENSIONS,
+  readPathVariables,
+  readPreferences,
+  removePathVariable,
+  setPathVariable,
+  toolKey,
+  writePreferences,
+} from '@bildora/core';
 import type { RunHistory } from '@bildora/core';
 import type { ZodType, z } from 'zod';
 import { CHANNELS } from '../shared/channels.js';
 import { t } from '../shared/i18n/translate.js';
 import {
   categoryMenuSchema,
+  createWorkspaceSchema,
   detectPathsSchema,
   editCommandSchema,
   historyListSchema,
   importManifestsSchema,
   noInputSchema,
+  pathVariableNameSchema,
+  pathVariableSchema,
   pickFolderSchema,
   preferencesSchema,
   registerToolsSchema,
   removeProfileSchema,
+  renameWorkspaceSchema,
   runIdSchema,
   runInputSchema,
   runResizeSchema,
   saveProfileSchema,
+  setToolScopeSchema,
   startRunSchema,
   toolIdSchema,
   updateToolSchema,
+  updateWorkspaceSchema,
+  workspaceIdSchema,
 } from '../shared/ipc-contract.js';
 import type { RunService } from './run-service.js';
 import type { ToolService } from './tool-service.js';
 import { isTrustedSender } from './trusted-sender.js';
+import type { WorkspaceService } from './workspace-service.js';
 
 export interface IpcContext {
   readonly dataDir: string;
   readonly rendererUrl: string;
   readonly tools: ToolService;
+  readonly workspaces: WorkspaceService;
   readonly runs: RunService;
   readonly history: RunHistory;
   readonly historyProblem: string | undefined;
@@ -44,7 +61,13 @@ type Handler<Schema extends ZodType> = (
   event: IpcMainInvokeEvent,
 ) => unknown;
 
-type LogoAction = 'change' | 'remove';
+type CategoryAction = 'up' | 'down' | 'change' | 'remove';
+
+interface CategoryMenuState {
+  readonly hasLogo: boolean;
+  readonly canMoveUp: boolean;
+  readonly canMoveDown: boolean;
+}
 
 /** Tools listed in the Recent section. */
 const RECENT_TOOLS_LIMIT = 5;
@@ -53,15 +76,28 @@ const RECENT_TOOLS_LIMIT = 5;
 const MENU_CLICK_GRACE_MS = 100;
 
 /** Shows the native menu of a category, and resolves with what the user picked, if anything. */
-function askLogoAction(window: BrowserWindow, hasLogo: boolean): Promise<LogoAction | undefined> {
+function askCategoryAction(
+  window: BrowserWindow,
+  { hasLogo, canMoveUp, canMoveDown }: CategoryMenuState,
+): Promise<CategoryAction | undefined> {
   return new Promise((resolve) => {
-    const item = (label: string, action: LogoAction): MenuItemConstructorOptions => ({
+    const item = (
+      label: string,
+      action: CategoryAction,
+      enabled = true,
+    ): MenuItemConstructorOptions => ({
       label,
+      enabled,
       click: () => {
         resolve(action);
       },
     });
-    const items = [item(t('category.changeLogo'), 'change')];
+    const items: MenuItemConstructorOptions[] = [
+      item(t('category.moveUp'), 'up', canMoveUp),
+      item(t('category.moveDown'), 'down', canMoveDown),
+      { type: 'separator' },
+      item(t('category.changeLogo'), 'change'),
+    ];
     if (hasLogo) {
       items.push(item(t('category.removeLogo'), 'remove'));
     }
@@ -76,7 +112,7 @@ function askLogoAction(window: BrowserWindow, hasLogo: boolean): Promise<LogoAct
 
 /** Registers every channel. Each call checks who is asking, then what is being asked. */
 export function registerIpc(context: IpcContext): void {
-  const { dataDir, rendererUrl, tools, runs, history, historyProblem } = context;
+  const { dataDir, rendererUrl, tools, workspaces, runs, history, historyProblem } = context;
 
   function handle<Schema extends ZodType>(
     channel: string,
@@ -154,21 +190,47 @@ export function registerIpc(context: IpcContext): void {
   );
   handle(CHANNELS.toolsDetectPaths, detectPathsSchema, ({ paths }) => tools.detect(paths));
   handle(CHANNELS.toolsRegister, registerToolsSchema, (input) => tools.register(input));
-  handle(CHANNELS.toolsImportManifests, importManifestsSchema, ({ paths }) =>
-    tools.importManifests(paths),
+  handle(CHANNELS.toolsImportManifests, importManifestsSchema, ({ paths, scope }) =>
+    tools.importManifests(paths, scope),
   );
   handle(CHANNELS.toolsUpdate, updateToolSchema, ({ id, details }) => tools.update(id, details));
   handle(CHANNELS.toolsRemove, toolIdSchema, async ({ id }) => {
-    if (runs.isRunning(id)) {
+    const tool = await tools.get(id);
+    const key = toolKey(tool);
+    if (runs.isRunning(key)) {
       throw new Error(`Tool "${id}" is running`);
     }
-    await tools.remove(id);
-    runs.forget(id);
+    await tools.remove(tool);
+    runs.forget(key);
+  });
+  handle(CHANNELS.toolsSetScope, setToolScopeSchema, async ({ id, scope }) => {
+    const tool = await tools.get(id);
+    const key = toolKey(tool);
+    if (runs.isRunning(key)) {
+      throw new Error(`Tool "${id}" is running`);
+    }
+    await tools.setScope(tool, scope);
+    runs.forget(key);
   });
 
   handle(CHANNELS.categoriesOpenMenu, categoryMenuSchema, async ({ category }, event) => {
     const window = dialogWindow(event);
-    const action = await askLogoAction(window, await tools.hasLogo(category));
+    const [hasLogo, moveUp, moveDown] = await Promise.all([
+      tools.hasLogo(category),
+      tools.movedCategoryOrder(category, -1),
+      tools.movedCategoryOrder(category, 1),
+    ]);
+    const action = await askCategoryAction(window, {
+      hasLogo,
+      canMoveUp: moveUp !== undefined,
+      canMoveDown: moveDown !== undefined,
+    });
+    if (action === 'up' || action === 'down') {
+      await workspaces.update({
+        layout: { categoryOrder: action === 'up' ? moveUp : moveDown },
+      });
+      return true;
+    }
     if (action === 'remove') {
       await tools.removeLogo(category);
       return true;
@@ -194,10 +256,10 @@ export function registerIpc(context: IpcContext): void {
     if (tool.manifest.level === 2) {
       throw new Error(`Tool "${id}" needs a later version of Bildora`);
     }
-    if (tool.manifest.level === 1 && runs.isRunning(id)) {
+    if (tool.manifest.level === 1 && runs.isRunning(toolKey(tool))) {
       throw new Error(`Tool "${id}" is already running`);
     }
-    return runs.start(tool, request);
+    return runs.start(tool, workspaces.activeId, request);
   });
   handle(CHANNELS.runsCancel, runIdSchema, ({ runId }) => {
     runs.cancel(runId);
@@ -217,24 +279,69 @@ export function registerIpc(context: IpcContext): void {
     tools.removeProfile(toolId, id),
   );
 
-  handle(CHANNELS.historyList, historyListSchema, ({ toolId }) => history.list(toolId));
-  handle(CHANNELS.historyGet, runIdSchema, ({ runId }) => history.get(runId));
-  handle(CHANNELS.historyRecent, noInputSchema, () => history.recentToolIds(RECENT_TOOLS_LIMIT));
+  handle(CHANNELS.historyList, historyListSchema, ({ toolId }) =>
+    history.list(workspaces.activeId, toolId),
+  );
+  handle(CHANNELS.historyGet, runIdSchema, ({ runId }) => history.get(workspaces.activeId, runId));
+  handle(CHANNELS.historyRecent, noInputSchema, () =>
+    history.recentToolIds(workspaces.activeId, RECENT_TOOLS_LIMIT),
+  );
   handle(CHANNELS.historyClear, noInputSchema, () => {
-    history.clear();
+    history.clear(workspaces.activeId);
   });
 
-  handle(CHANNELS.preferencesGet, noInputSchema, () => readPreferences(dataDir));
-  handle(CHANNELS.preferencesSet, preferencesSchema, async ({ theme, historyRunLimit }) => {
-    await writePreferences(dataDir, {
-      ...(theme === undefined ? {} : { theme }),
-      ...(historyRunLimit === undefined ? {} : { historyRunLimit }),
-    });
-    if (theme !== undefined) {
-      nativeTheme.themeSource = theme;
-    }
+  handle(CHANNELS.preferencesGet, noInputSchema, async () => {
+    const { historyRunLimit } = await readPreferences(dataDir);
+    return { historyRunLimit };
+  });
+  handle(CHANNELS.preferencesSet, preferencesSchema, async ({ historyRunLimit }) => {
     if (historyRunLimit !== undefined) {
+      await writePreferences(dataDir, { historyRunLimit });
       history.pruneAll(historyRunLimit);
     }
   });
+
+  function followTheme(): void {
+    nativeTheme.themeSource = workspaces.current.theme;
+  }
+
+  handle(CHANNELS.workspacesList, noInputSchema, () => workspaces.list());
+  handle(CHANNELS.workspacesSwitch, workspaceIdSchema, async ({ id }) => {
+    const list = await workspaces.switchTo(id);
+    followTheme();
+    return list;
+  });
+  handle(CHANNELS.workspacesCreate, createWorkspaceSchema, async ({ name }) => {
+    const list = await workspaces.create(name);
+    followTheme();
+    return list;
+  });
+  handle(CHANNELS.workspacesRename, renameWorkspaceSchema, ({ id, name }) =>
+    workspaces.rename(id, name),
+  );
+  handle(CHANNELS.workspacesRemove, workspaceIdSchema, async ({ id }) => {
+    if (runs.isWorkspaceBusy(id)) {
+      throw new Error('This Workspace has tools running');
+    }
+    const list = await workspaces.remove(id);
+    followTheme();
+    return list;
+  });
+  handle(CHANNELS.workspacesUpdate, updateWorkspaceSchema, async (changes) => {
+    const workspace = await workspaces.update(changes);
+    followTheme();
+    return workspace;
+  });
+
+  handle(CHANNELS.pathVariablesList, noInputSchema, async () =>
+    [...(await readPathVariables(dataDir))]
+      .map(([name, value]) => ({ name, value }))
+      .sort((first, second) => first.name.localeCompare(second.name)),
+  );
+  handle(CHANNELS.pathVariablesSet, pathVariableSchema, ({ name, value }) =>
+    setPathVariable(dataDir, name, value),
+  );
+  handle(CHANNELS.pathVariablesRemove, pathVariableNameSchema, ({ name }) =>
+    removePathVariable(dataDir, name),
+  );
 }
