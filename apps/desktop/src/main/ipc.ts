@@ -1,10 +1,11 @@
-import { BrowserWindow, dialog, ipcMain, nativeTheme } from 'electron';
-import type { IpcMainInvokeEvent, OpenDialogOptions } from 'electron';
-import { readPreferences, writePreferences } from '@bildora/core';
+import { BrowserWindow, Menu, dialog, ipcMain, nativeTheme } from 'electron';
+import type { IpcMainInvokeEvent, MenuItemConstructorOptions, OpenDialogOptions } from 'electron';
+import { LOGO_EXTENSIONS, readPreferences, writePreferences } from '@bildora/core';
 import type { ZodType, z } from 'zod';
 import { CHANNELS } from '../shared/channels.js';
 import { t } from '../shared/i18n/translate.js';
 import {
+  categoryMenuSchema,
   detectPathsSchema,
   editCommandSchema,
   noInputSchema,
@@ -32,6 +33,33 @@ type Handler<Schema extends ZodType> = (
   input: z.output<Schema>,
   event: IpcMainInvokeEvent,
 ) => unknown;
+
+type LogoAction = 'change' | 'remove';
+
+/** How long a closing menu waits for a click, which can arrive just after it closes. */
+const MENU_CLICK_GRACE_MS = 100;
+
+/** Shows the native menu of a category, and resolves with what the user picked, if anything. */
+function askLogoAction(window: BrowserWindow, hasLogo: boolean): Promise<LogoAction | undefined> {
+  return new Promise((resolve) => {
+    const item = (label: string, action: LogoAction): MenuItemConstructorOptions => ({
+      label,
+      click: () => {
+        resolve(action);
+      },
+    });
+    const items = [item(t('category.changeLogo'), 'change')];
+    if (hasLogo) {
+      items.push(item(t('category.removeLogo'), 'remove'));
+    }
+    Menu.buildFromTemplate(items).popup({
+      window,
+      callback: () => {
+        setTimeout(resolve, MENU_CLICK_GRACE_MS, undefined);
+      },
+    });
+  });
+}
 
 /** Registers every channel. Each call checks who is asking, then what is being asked. */
 export function registerIpc(context: IpcContext): void {
@@ -109,6 +137,29 @@ export function registerIpc(context: IpcContext): void {
     }
     await tools.remove(id);
     runs.forget(id);
+  });
+
+  handle(CHANNELS.categoriesOpenMenu, categoryMenuSchema, async ({ category }, event) => {
+    const window = dialogWindow(event);
+    const action = await askLogoAction(window, await tools.hasLogo(category));
+    if (action === 'remove') {
+      await tools.removeLogo(category);
+      return true;
+    }
+    if (action === undefined) {
+      return false;
+    }
+    const { filePaths } = await dialog.showOpenDialog(window, {
+      title: t('dialog.pickLogo'),
+      properties: ['openFile'],
+      filters: [{ name: t('dialog.images'), extensions: [...LOGO_EXTENSIONS] }],
+    });
+    const [source] = filePaths;
+    if (source === undefined) {
+      return false;
+    }
+    await tools.setLogo(category, source);
+    return true;
   });
 
   handle(CHANNELS.runsStart, toolIdSchema, async ({ id }) => {

@@ -29,6 +29,9 @@ export const en = {
   'nav.problems': 'Problems',
   'nav.settings': 'Settings',
 
+  'category.changeLogo': 'Change logo…',
+  'category.removeLogo': 'Remove logo',
+
   'state.idle': 'Idle',
   'state.running': 'Running',
   'state.completed': 'Completed',
@@ -141,6 +144,8 @@ export const en = {
   'dialog.pickFiles': 'Choose programs to add',
   'dialog.pickFolder': 'Choose a folder to import',
   'dialog.programs': 'Programs and scripts',
+  'dialog.pickLogo': 'Choose a logo',
+  'dialog.images': 'Images',
 
   'close.title': 'Close Bildora',
   'close.message': {

@@ -25,6 +25,8 @@ export interface ShellApi {
   registerTools(input: RegisterTools): Promise<RegistrationView>;
   updateTool(id: string, details: ToolDetailsInput): Promise<void>;
   removeTool(id: string): Promise<void>;
+  /** Offers to change a category's logo, and tells whether the user changed anything. */
+  openCategoryMenu(category: string): Promise<boolean>;
   startRun(toolId: string): Promise<RunView>;
   cancelRun(runId: string): Promise<void>;
   listRuns(): Promise<readonly RunView[]>;

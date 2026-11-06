@@ -1,8 +1,12 @@
 import {
+  categoryKey,
   checkRuntime,
   detectPrograms,
   groupByCategory,
+  readCategoryLogos,
   registerPrograms,
+  removeCategoryLogo,
+  setCategoryLogo,
   updateToolDetails,
 } from '@bildora/core';
 import type { Detection, RegisteredTool, ToolGroup, ToolRegistry } from '@bildora/core';
@@ -31,25 +35,52 @@ async function viewOfTool(tool: RegisteredTool): Promise<ToolView> {
   };
 }
 
-async function viewOfGroup({ category, tools }: ToolGroup): Promise<ToolGroupView> {
+async function viewOfGroup(
+  { category, tools }: ToolGroup,
+  logos: ReadonlyMap<string, string>,
+): Promise<ToolGroupView> {
   const views = await Promise.all(tools.map(viewOfTool));
-  return { ...(category === undefined ? {} : { category }), tools: views };
+  const logo = category === undefined ? undefined : logos.get(categoryKey(category));
+  return {
+    ...(category === undefined ? {} : { category }),
+    ...(logo === undefined ? {} : { logo }),
+    tools: views,
+  };
 }
 
 /** What the shell can do with installed tools. Rules stay in core; this only shapes the results. */
 export class ToolService {
   private readonly registry: ToolRegistry;
+  private readonly dataDir: string;
 
-  constructor(registry: ToolRegistry) {
+  constructor(registry: ToolRegistry, dataDir: string) {
     this.registry = registry;
+    this.dataDir = dataDir;
   }
 
   async catalog(): Promise<ToolCatalog> {
-    const { tools, problems } = await this.registry.list();
+    const [{ tools, problems }, logos] = await Promise.all([
+      this.registry.list(),
+      // Logos are decoration: an unreadable file must never cost the user their tools.
+      readCategoryLogos(this.dataDir).catch(() => new Map<string, string>()),
+    ]);
     return {
-      groups: await Promise.all(groupByCategory(tools).map(viewOfGroup)),
+      groups: await Promise.all(groupByCategory(tools).map((group) => viewOfGroup(group, logos))),
       problems: problems.map(({ folder, message }) => ({ folder, message })),
     };
+  }
+
+  async hasLogo(category: string): Promise<boolean> {
+    const logos = await readCategoryLogos(this.dataDir);
+    return logos.has(categoryKey(category));
+  }
+
+  async setLogo(category: string, source: string): Promise<void> {
+    await setCategoryLogo(this.dataDir, category, source);
+  }
+
+  async removeLogo(category: string): Promise<void> {
+    await removeCategoryLogo(this.dataDir, category);
   }
 
   /** Looks at paths only. Nothing is opened or executed. */

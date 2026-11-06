@@ -41,6 +41,11 @@ function byName(first: RegisteredTool, second: RegisteredTool): number {
   return first.manifest.name.localeCompare(second.manifest.name);
 }
 
+/** Names differing only in case are one category, and this is what they share. */
+export function categoryKey(category: string): string {
+  return category.toLocaleLowerCase('en');
+}
+
 /**
  * Derives categories from the tools themselves, so they appear and disappear with what is
  * installed. Names differing only in case are one category, shown as the first spelling found.
@@ -54,7 +59,7 @@ export function groupByCategory(tools: readonly RegisteredTool[]): readonly Tool
       uncategorized.push(tool);
       continue;
     }
-    const key = category.toLocaleLowerCase('en');
+    const key = categoryKey(category);
     const group = groups.get(key);
     if (group === undefined) {
       groups.set(key, { label: category, tools: [tool] });

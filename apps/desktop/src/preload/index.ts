@@ -24,6 +24,7 @@ const api: ShellApi = {
   registerTools: (input) => invoke(CHANNELS.toolsRegister, input),
   updateTool: (id, details) => invoke(CHANNELS.toolsUpdate, { id, details }),
   removeTool: (id) => invoke(CHANNELS.toolsRemove, { id }),
+  openCategoryMenu: (category) => invoke(CHANNELS.categoriesOpenMenu, { category }),
   startRun: (toolId) => invoke(CHANNELS.runsStart, { id: toolId }),
   cancelRun: (runId) => invoke(CHANNELS.runsCancel, { runId }),
   listRuns: () => invoke(CHANNELS.runsList),

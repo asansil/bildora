@@ -10,6 +10,7 @@ export const CHANNELS = {
   toolsRegister: 'tools:register',
   toolsUpdate: 'tools:update',
   toolsRemove: 'tools:remove',
+  categoriesOpenMenu: 'categories:open-menu',
   runsStart: 'runs:start',
   runsCancel: 'runs:cancel',
   runsList: 'runs:list',

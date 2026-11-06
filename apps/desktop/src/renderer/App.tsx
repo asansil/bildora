@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { DragEvent } from 'react';
-import { Folder, Search, Settings, TriangleAlert, X } from 'lucide-react';
+import { Search, X } from 'lucide-react';
 import { t } from '../shared/i18n/translate.js';
 import type {
   DetectionView,
@@ -10,7 +10,6 @@ import type {
   RunView,
   ShellTheme,
   ToolCatalog,
-  ToolGroupView,
   ToolView,
 } from '../shared/ipc-contract.js';
 import { ImportReview } from './import/ImportReview.js';
@@ -18,6 +17,7 @@ import { CommandPalette } from './palette/CommandPalette.js';
 import type { Command } from './palette/CommandPalette.js';
 import { SettingsView, THEME_LABELS } from './settings/SettingsView.js';
 import { BildoraMark } from './shell/BildoraMark.js';
+import { CategoryRail, TOOL_PANEL_ID } from './shell/CategoryRail.js';
 import { Dialog } from './shell/Dialog.js';
 import { MenuBar } from './shell/MenuBar.js';
 import type { Menu } from './shell/MenuBar.js';
@@ -25,6 +25,7 @@ import { RunStateBadge, RunStateIcon, runStateLabel } from './shell/RunStateBadg
 import { ToolDetails } from './tools/ToolDetails.js';
 import { ToolForm } from './tools/ToolForm.js';
 import { Welcome } from './tools/Welcome.js';
+import { groupKey, groupLabel, toggleCategory } from './tools/category-rail.js';
 import { countRunning, summarizeRuns } from './tools/run-state.js';
 
 const api = window.bildora;
@@ -40,14 +41,6 @@ type Modal =
   | { readonly kind: 'remove'; readonly tool: ToolView }
   | { readonly kind: 'review'; readonly detection: DetectionView };
 
-function groupKey(group: ToolGroupView): string {
-  return group.category ?? '';
-}
-
-function groupLabel(group: ToolGroupView): string {
-  return group.category ?? t('nav.uncategorized');
-}
-
 function messageOf(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   // Electron wraps what a handler throws with the name of the channel.
@@ -61,7 +54,7 @@ export function App() {
   const [version, setVersion] = useState('');
   const [theme, setTheme] = useState<ShellTheme>('system');
   const [screen, setScreen] = useState<Screen>('tools');
-  const [selectedGroup, setSelectedGroup] = useState<string | undefined>(undefined);
+  const [openCategory, setOpenCategory] = useState<string | undefined>(undefined);
   const [selectedTool, setSelectedTool] = useState<string | undefined>(undefined);
   const [modal, setModal] = useState<Modal | undefined>(undefined);
   const [banner, setBanner] = useState<string | undefined>(undefined);
@@ -123,18 +116,32 @@ export function App() {
   }, []);
 
   const allTools = useMemo(() => catalog.groups.flatMap((group) => group.tools), [catalog]);
-  const group =
-    catalog.groups.find((candidate) => groupKey(candidate) === selectedGroup) ?? catalog.groups[0];
-  const tool = group?.tools.find((candidate) => candidate.id === selectedTool) ?? group?.tools[0];
+  const panelGroup = catalog.groups.find((candidate) => groupKey(candidate) === openCategory);
+  const tool = allTools.find((candidate) => candidate.id === selectedTool) ?? allTools[0];
   const running = countRunning(runs);
 
   function showTool(id: string, list: ToolCatalog = catalog): void {
     const owner = list.groups.find((candidate) => candidate.tools.some((item) => item.id === id));
     if (owner !== undefined) {
-      setSelectedGroup(groupKey(owner));
+      setOpenCategory((open) => (open === undefined ? undefined : groupKey(owner)));
       setSelectedTool(id);
       setScreen('tools');
     }
+  }
+
+  function pressCategory(key: string): void {
+    const next = toggleCategory(openCategory, key);
+    setOpenCategory(next);
+    if (next !== undefined) {
+      setScreen('tools');
+    }
+  }
+
+  function openCategoryMenu(category: string): void {
+    void api
+      .openCategoryMenu(category)
+      .then((changed) => (changed ? reload() : undefined))
+      .catch(report);
   }
 
   async function finishRegistration({ registeredIds, failures }: RegistrationView): Promise<void> {
@@ -329,69 +336,25 @@ export function App() {
       </header>
 
       <div className="body">
-        <nav className="sidebar" aria-label={t('nav.categories')}>
-          <ul className="nav-list">
-            {catalog.groups.map((item) => {
-              const current = screen === 'tools' && item === group;
-              return (
-                <li key={groupKey(item)}>
-                  <button
-                    type="button"
-                    className="row"
-                    aria-current={current ? 'true' : undefined}
-                    title={groupLabel(item)}
-                    onClick={() => {
-                      setSelectedGroup(groupKey(item));
-                      setSelectedTool(undefined);
-                      setScreen('tools');
-                    }}
-                  >
-                    <Folder className="icon muted" aria-hidden="true" />
-                    <span className="truncate">{groupLabel(item)}</span>
-                    <span className="row-count">{item.tools.length}</span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-          <ul className="nav-list nav-bottom">
-            {catalog.problems.length === 0 ? null : (
-              <li>
-                <button
-                  type="button"
-                  className="row"
-                  aria-current={screen === 'problems' ? 'true' : undefined}
-                  onClick={() => {
-                    setScreen('problems');
-                  }}
-                >
-                  <TriangleAlert className="icon state-warning" aria-hidden="true" />
-                  <span className="truncate">{t('nav.problems')}</span>
-                  <span className="row-count">{catalog.problems.length}</span>
-                </button>
-              </li>
-            )}
-            <li>
-              <button
-                type="button"
-                className="row"
-                aria-current={screen === 'settings' ? 'true' : undefined}
-                onClick={() => {
-                  setScreen('settings');
-                }}
-              >
-                <Settings className="icon muted" aria-hidden="true" />
-                <span className="truncate">{t('nav.settings')}</span>
-              </button>
-            </li>
-          </ul>
-        </nav>
+        <CategoryRail
+          groups={catalog.groups}
+          openCategory={openCategory}
+          currentTool={tool}
+          screen={screen}
+          problemCount={catalog.problems.length}
+          onToggleCategory={pressCategory}
+          onCategoryMenu={openCategoryMenu}
+          onScreen={setScreen}
+        />
 
-        {screen === 'tools' && group !== undefined ? (
-          <aside className="context-panel" aria-label={t('nav.tools')}>
-            <h2>{groupLabel(group)}</h2>
+        {panelGroup === undefined ? null : (
+          <aside className="context-panel" id={TOOL_PANEL_ID} aria-label={t('nav.tools')}>
+            <h2>
+              <span className="truncate">{groupLabel(panelGroup)}</span>
+              <span className="row-count">{panelGroup.tools.length}</span>
+            </h2>
             <ul className="nav-list">
-              {group.tools.map((item) => {
+              {panelGroup.tools.map((item) => {
                 const { state } = summarizeRuns(runs, item.id);
                 return (
                   <li key={item.id}>
@@ -399,9 +362,10 @@ export function App() {
                       type="button"
                       className="row"
                       title={item.name}
-                      aria-current={item === tool ? 'true' : undefined}
+                      aria-current={screen === 'tools' && item === tool ? 'true' : undefined}
                       onClick={() => {
                         setSelectedTool(item.id);
+                        setScreen('tools');
                       }}
                     >
                       <span className="truncate">{item.name}</span>
@@ -417,7 +381,7 @@ export function App() {
               })}
             </ul>
           </aside>
-        ) : null}
+        )}
 
         <main className="work-area">
           {banner === undefined ? null : (

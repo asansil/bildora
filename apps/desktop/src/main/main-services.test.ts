@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RegisteredTool, RunResult, ToolRun } from '@bildora/core';
 import {
+  categoryMenuSchema,
   detectPathsSchema,
   editCommandSchema,
   noInputSchema,
@@ -47,6 +48,8 @@ describe('IPC schemas', () => {
     ['an update that moves the program', updateToolSchema, { id: 'a', details: program }],
     ['a launch by path', toolIdSchema, { path: 'C:\\evil.exe' }],
     ['an unknown theme', preferencesSchema, { theme: 'pink' }],
+    ['a menu for no category', categoryMenuSchema, { category: '' }],
+    ['a logo path sent by the page', categoryMenuSchema, { category: 'A', source: 'C:\\a.png' }],
   ])('rejects %s', (_label, schema, input) => {
     expect(schema.safeParse(input).success).toBe(false);
   });

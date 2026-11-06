@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isMissingFile, writeFileAtomic } from './data-directory.js';
-import { migrateDefinition } from './migrations.js';
-import type { DefinitionDocument, VersionedFormat } from './migrations.js';
+import { migrateDefinition, parseDefinitionDocument } from './migrations.js';
+import type { VersionedFormat } from './migrations.js';
 
 export const THEMES = ['system', 'light', 'dark'] as const;
 export type Theme = (typeof THEMES)[number];
@@ -26,17 +26,6 @@ function isTheme(value: unknown): value is Theme {
   return THEMES.some((theme) => theme === value);
 }
 
-function parseDocument(text: string): DefinitionDocument | undefined {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      ? { ...parsed }
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * Reads the preferences. Losing them is no reason to stop the app, so a damaged file or a bad value
  * gives the default. A file from a newer build throws instead, so it can never be overwritten.
@@ -51,7 +40,7 @@ export async function readPreferences(dataDir: string): Promise<Preferences> {
     }
     throw error;
   }
-  const document = parseDocument(text);
+  const document = parseDefinitionDocument(text);
   if (document === undefined || document['formatVersion'] === undefined) {
     return DEFAULT_PREFERENCES;
   }

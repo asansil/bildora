@@ -100,7 +100,7 @@ async function start(): Promise<void> {
   registerIpc({
     dataDir,
     rendererUrl: developmentUrl ?? pathToFileURL(rendererFile).href,
-    tools: new ToolService(await ToolRegistry.open({ dataDir })),
+    tools: new ToolService(await ToolRegistry.open({ dataDir }), dataDir),
     runs,
     version: app.getVersion(),
     quit: () => {

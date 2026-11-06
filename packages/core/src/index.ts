@@ -49,7 +49,7 @@ export type {
   RegistrationReport,
   ToolDetails,
 } from './import/register-program.js';
-export { checkRuntime, groupByCategory } from './tools/tool-status.js';
+export { categoryKey, checkRuntime, groupByCategory } from './tools/tool-status.js';
 export type { RuntimeCheckOptions, RuntimeStatus, ToolGroup } from './tools/tool-status.js';
 export {
   DEFAULT_PREFERENCES,
@@ -58,3 +58,10 @@ export {
   writePreferences,
 } from './storage/preferences.js';
 export type { Preferences, Theme } from './storage/preferences.js';
+export {
+  LOGO_EXTENSIONS,
+  LOGO_MAX_BYTES,
+  readCategoryLogos,
+  removeCategoryLogo,
+  setCategoryLogo,
+} from './storage/category-logos.js';

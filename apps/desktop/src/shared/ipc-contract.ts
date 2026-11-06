@@ -35,6 +35,7 @@ export const updateToolSchema = z.strictObject({
   id: idSchema,
   details: z.strictObject(toolDetailsFields),
 });
+export const categoryMenuSchema = z.strictObject({ category: textSchema.min(1) });
 export const toolIdSchema = z.strictObject({ id: idSchema });
 export const runIdSchema = z.strictObject({ runId: idSchema });
 export const preferencesSchema = z.strictObject({ theme: z.enum(['system', 'light', 'dark']) });
@@ -69,6 +70,8 @@ export interface ToolView {
 export interface ToolGroupView {
   /** Absent for the tools with no category, shown as Uncategorized. */
   readonly category?: string;
+  /** Data URL of the image the user chose. Absent means the default logo. */
+  readonly logo?: string;
   readonly tools: readonly ToolView[];
 }
 

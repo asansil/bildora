@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { _electron as electron, expect, test } from '@playwright/test';
-import type { ElectronApplication, Page } from '@playwright/test';
+import type { ElectronApplication, Locator, Page } from '@playwright/test';
 
 /** VS Code leaks ELECTRON_RUN_AS_NODE to child processes, which stops Electron opening a window. */
 function electronEnvironment(extra: Record<string, string> = {}): Record<string, string> {
@@ -50,11 +50,41 @@ async function stubCloseAnswer(app: ElectronApplication, response: number): Prom
   }, response);
 }
 
-async function addTool(session: Session, program: string, name: string): Promise<void> {
+/** Native menus cannot be driven from a page, so this picks the item as soon as one pops up. */
+async function stubMenuChoice(app: ElectronApplication, label: string): Promise<void> {
+  await app.evaluate(({ Menu }, choice) => {
+    Menu.prototype.popup = function popup(this: Electron.Menu, options) {
+      this.items.find((item) => item.label === choice)?.click();
+      options?.callback?.();
+    };
+  }, label);
+}
+
+function categoryButton(window: Page, name: string): Locator {
+  return window.getByRole('navigation').getByRole('button', { name });
+}
+
+async function workAreaWidth(window: Page): Promise<number> {
+  const box = await window.getByRole('main').boundingBox();
+  if (box === null) {
+    throw new Error('The work area is not on screen');
+  }
+  return box.width;
+}
+
+async function addTool(
+  session: Session,
+  program: string,
+  name: string,
+  category?: string,
+): Promise<void> {
   await stubPicker(session.app, [program]);
   await session.window.getByRole('menuitem', { name: 'File' }).click();
   await session.window.getByRole('menuitem', { name: 'Add a tool…' }).click();
   await session.window.getByLabel('Name').fill(name);
+  if (category !== undefined) {
+    await session.window.getByLabel('Category').fill(category);
+  }
   await session.window.getByRole('button', { name: 'Add tool' }).click();
   await expect(session.window.getByRole('heading', { name, level: 1 })).toBeVisible();
 }
@@ -198,11 +228,105 @@ test('importing a folder asks for review, and runs nothing', async () => {
   await review.getByRole('button', { name: 'Import 1 tool' }).click();
 
   await expect(window.getByRole('heading', { name: 'Keep Me', level: 1 })).toBeVisible();
-  await expect(
-    window.getByRole('navigation').getByRole('button', { name: /Scripts/ }),
-  ).toBeVisible();
+  await categoryButton(window, 'Scripts').click();
+  await expect(window.getByRole('complementary').getByText('Keep Me')).toBeVisible();
   await expect(window.getByRole('complementary').getByText('Leave Out')).toHaveCount(0);
   expect(existsSync(marker)).toBe(false);
+});
+
+test('the side panel starts closed, and a category opens and closes it', async () => {
+  const program = join(folder, 'tool.bat');
+  await writeFile(program, '@echo off\r\n');
+  const session = await launchShell();
+  await addTool(session, program, 'Alpha Tool', 'Alpha');
+  await addTool(session, program, 'Beta Tool', 'Beta');
+  const { window } = session;
+  const panel = window.getByRole('complementary');
+  const alpha = categoryButton(window, 'Alpha');
+  const shown = window.getByRole('heading', { name: 'Beta Tool', level: 1 });
+
+  await expect(panel).toHaveCount(0);
+  const closedWidth = await workAreaWidth(window);
+
+  await alpha.click();
+  await expect(alpha).toHaveAttribute('aria-expanded', 'true');
+  await expect(panel.getByRole('button', { name: 'Alpha Tool' })).toBeVisible();
+  expect(await workAreaWidth(window)).toBeLessThan(closedWidth);
+  await expect(shown).toBeVisible();
+
+  await categoryButton(window, 'Beta').click();
+  await expect(alpha).toHaveAttribute('aria-expanded', 'false');
+  await expect(panel.getByRole('button', { name: 'Beta Tool' })).toBeVisible();
+
+  await categoryButton(window, 'Beta').click();
+  await expect(panel).toHaveCount(0);
+  expect(await workAreaWidth(window)).toBe(closedWidth);
+  await expect(shown).toBeVisible();
+
+  await alpha.click();
+  await panel.getByRole('button', { name: 'Alpha Tool' }).click();
+  await expect(window.getByRole('heading', { name: 'Alpha Tool', level: 1 })).toBeVisible();
+  await expect(panel).toBeVisible();
+});
+
+test('the panel is left alone by Settings, and a category comes back from there', async () => {
+  const program = join(folder, 'tool.bat');
+  await writeFile(program, '@echo off\r\n');
+  const session = await launchShell();
+  await addTool(session, program, 'Alpha Tool', 'Alpha');
+  const { window } = session;
+
+  await categoryButton(window, 'Alpha').click();
+  await categoryButton(window, 'Settings').click();
+  await expect(window.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
+  await expect(window.getByRole('complementary')).toBeVisible();
+
+  await categoryButton(window, 'Alpha').click();
+  await expect(window.getByRole('complementary')).toHaveCount(0);
+  await categoryButton(window, 'Alpha').click();
+  await expect(window.getByRole('heading', { name: 'Alpha Tool', level: 1 })).toBeVisible();
+});
+
+test('a category shows its initial until it is given a logo, which is remembered', async () => {
+  const program = join(folder, 'tool.bat');
+  await writeFile(program, '@echo off\r\n');
+  const onePixelPng =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  const logo = join(folder, 'logo.png');
+  await writeFile(logo, Buffer.from(onePixelPng, 'base64'));
+  const broken = join(folder, 'broken.png');
+  await writeFile(broken, 'not an image');
+
+  const first = await launchShell();
+  await addTool(first, program, 'Alpha Tool', 'alpha');
+  const image = (window: Page): Locator => categoryButton(window, 'alpha').locator('img');
+
+  await expect(categoryButton(first.window, 'alpha')).toContainText('A');
+  await expect(image(first.window)).toHaveCount(0);
+
+  await stubPicker(first.app, [broken]);
+  await stubMenuChoice(first.app, 'Change logo…');
+  await categoryButton(first.window, 'alpha').click({ button: 'right' });
+  await expect(first.window.getByRole('alert')).toContainText('damaged');
+  await expect(image(first.window)).toHaveCount(0);
+
+  await stubPicker(first.app, [logo]);
+  await categoryButton(first.window, 'alpha').click({ button: 'right' });
+  await expect(image(first.window)).toBeVisible();
+  await expect
+    .poll(() =>
+      image(first.window).evaluate((element) => Reflect.get(element, 'naturalWidth') as number),
+    )
+    .toBe(1);
+  await first.app.close();
+
+  const second = await launchShell();
+  await expect(image(second.window)).toBeVisible();
+
+  await stubMenuChoice(second.app, 'Remove logo');
+  await categoryButton(second.window, 'alpha').click({ button: 'right' });
+  await expect(image(second.window)).toHaveCount(0);
+  await expect(categoryButton(second.window, 'alpha')).toContainText('A');
 });
 
 test('a tool already added starts excluded on import', async () => {

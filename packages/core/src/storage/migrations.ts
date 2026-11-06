@@ -16,6 +16,18 @@ export interface VersionedFormat {
   readonly migrations: readonly Migration[];
 }
 
+/** Reads a JSON object from text. Anything else gives undefined, for callers that can start over. */
+export function parseDefinitionDocument(text: string): DefinitionDocument | undefined {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? { ...parsed }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Brings a definition to the format this build uses. The caller's document is left alone, and a
  * definition from a newer build is refused rather than guessed at, so nothing can rewrite it.

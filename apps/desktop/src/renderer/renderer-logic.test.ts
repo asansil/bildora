@@ -3,7 +3,43 @@ import { en } from '../shared/i18n/en.js';
 import { t } from '../shared/i18n/translate.js';
 import type { RunView } from '../shared/ipc-contract.js';
 import { matchCommands } from './palette/match-commands.js';
+import { categoryInitial, toggleCategory } from './tools/category-rail.js';
 import { countRunning, summarizeRuns } from './tools/run-state.js';
+
+describe('categoryInitial', () => {
+  it.each([
+    ['Analysis', 'A'],
+    ['regression', 'R'],
+    ['  spaced', 'S'],
+    ['ñandú', 'Ñ'],
+    ['études', 'É'],
+    ['📊 Charts', '📊'],
+    ['👩‍💻 Dev', '👩‍💻'],
+    ['3D tools', '3'],
+    ['', ''],
+  ])('for %s', (label, expected) => {
+    expect(categoryInitial(label)).toBe(expected);
+  });
+});
+
+describe('toggleCategory', () => {
+  it('opens a category when the panel is closed', () => {
+    expect(toggleCategory(undefined, 'a')).toBe('a');
+  });
+
+  it('closes the category that is open', () => {
+    expect(toggleCategory('a', 'a')).toBeUndefined();
+  });
+
+  it('switches to another category', () => {
+    expect(toggleCategory('a', 'b')).toBe('b');
+  });
+
+  it('treats Uncategorized, whose key is empty, like any other', () => {
+    expect(toggleCategory(undefined, '')).toBe('');
+    expect(toggleCategory('', '')).toBeUndefined();
+  });
+});
 
 describe('t', () => {
   it('fills in parameters', () => {
