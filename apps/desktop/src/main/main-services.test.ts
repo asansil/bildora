@@ -23,7 +23,9 @@ describe('isTrustedSender', () => {
   it.each([
     ['the shell page', rendererUrl, true],
     ['the shell page with a hash', `${rendererUrl}#tool`, true],
+    ['the shell page with its drive in lowercase', 'file:///c:/app/out/renderer/index.html', true],
     ['another local file', 'file:///C:/temp/evil.html', false],
+    ['another drive', 'file:///D:/app/out/renderer/index.html', false],
     ['a remote page', 'https://example.com/index.html', false],
     ['a tool panel', 'bildora-panel://acme.tool/index.html', false],
     ['nothing', undefined, false],

@@ -1,7 +1,17 @@
+/**
+ * Windows drive letters have no case, yet the two URLs compared here can spell one differently: a
+ * start from a shell in `c:\` gives a lowercase module path, and Chromium reports the uppercase.
+ */
+function withDriveLetterInCapitals({ protocol, pathname }: URL): string {
+  return protocol === 'file:'
+    ? pathname.replace(/^\/[a-z]:/, (drive) => drive.toUpperCase())
+    : pathname;
+}
+
 function withoutQueryOrHash(url: string): string | undefined {
   try {
     const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
+    return `${parsed.origin}${withDriveLetterInCapitals(parsed)}`;
   } catch {
     return undefined;
   }
