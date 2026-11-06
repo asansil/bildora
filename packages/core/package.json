@@ -1,0 +1,27 @@
+{
+  "name": "@bildora/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Headless domain logic, with no Electron dependency.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@bildora/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@bildora/typescript-config": "workspace:*"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "extends": "@bildora/typescript-config/preload.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "outDir": "node_modules/.cache/tsc/preload"
+  },
+  "include": ["src/preload"]
+}

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+out/
+release/
+coverage/
+*.tsbuildinfo
+*.log
+
+test-results/
+playwright-report/
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

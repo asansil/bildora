@@ -1,0 +1,10 @@
+{
+  "extends": "@bildora/typescript-config/node.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "outDir": "node_modules/.cache/tsc/main"
+  },
+  "include": ["electron.vite.config.ts", "src/main"]
+}

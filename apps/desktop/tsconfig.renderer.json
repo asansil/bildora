@@ -1,0 +1,10 @@
+{
+  "extends": "@bildora/typescript-config/browser.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "outDir": "node_modules/.cache/tsc/renderer"
+  },
+  "include": ["src/preload/api.ts", "src/renderer"]
+}

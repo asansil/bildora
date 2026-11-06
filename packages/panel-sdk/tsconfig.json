@@ -1,0 +1,7 @@
+{
+  "extends": "@bildora/typescript-config/browser.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src"]
+}

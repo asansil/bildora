@@ -1,0 +1,7 @@
+/** Current version of the tool protocol. */
+export const PROTOCOL_VERSION = 1;
+
+/** Tells whether a value received from a tool names a protocol version this build speaks. */
+export function isSupportedProtocolVersion(version: unknown): boolean {
+  return version === PROTOCOL_VERSION;
+}

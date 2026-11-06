@@ -1,0 +1,38 @@
+{
+  "name": "bildora",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@12.18.0",
+  "engines": {
+    "node": ">=24.0.0 <25.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "deps:check": "depcruise apps packages --config .dependency-cruiser.cjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm -r typecheck",
+    "verify": "pnpm format:check && pnpm build && pnpm deps:check && pnpm typecheck && pnpm lint && pnpm test && pnpm test:e2e"
+  },
+  "devDependencies": {
+    "@bildora/typescript-config": "workspace:*",
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "~1.64.1",
+    "@types/node": "catalog:",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "dependency-cruiser": "^18.7.2",
+    "eslint": "^10.14.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "jiti": "^2.7.0",
+    "prettier": "^3.9.10",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.1.0"
+  }
+}

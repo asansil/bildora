@@ -1,0 +1,24 @@
+{
+  "name": "@bildora/cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The bildora command.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "bildora": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@bildora/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@bildora/typescript-config": "workspace:*"
+  }
+}
