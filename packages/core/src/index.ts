@@ -22,3 +22,15 @@ export type {
   RegistryProblem,
   ToolList,
 } from './registry/tool-registry.js';
+export { ParameterError } from './runner/command-line.js';
+export type { ParameterValue, ParameterValues } from './runner/command-line.js';
+export { resolveExecutable } from './runner/resolve-executable.js';
+export type { ResolveOptions } from './runner/resolve-executable.js';
+export { startRun } from './runner/run-tool.js';
+export type {
+  RunFailure,
+  RunFailureKind,
+  RunOptions,
+  RunResult,
+  ToolRun,
+} from './runner/run-tool.js';
