@@ -1,0 +1,82 @@
+/*
+ * Bildora theme tokens, shared by the shell and by tool panels.
+ *
+ * Colors follow `color-scheme`, so one definition covers both themes: the app sets the scheme, and
+ * every `light-dark()` below answers it. Components use the semantic names here, never raw colors.
+ * tokens.test.ts checks every text and background pairing against WCAG AA.
+ */
+:root {
+  color-scheme: light dark;
+
+  /* Surfaces, from the frame inward. */
+  --bildora-surface-frame: light-dark(oklch(0.945 0.006 235), oklch(0.185 0.008 235));
+  --bildora-surface-panel: light-dark(oklch(0.97 0.004 235), oklch(0.205 0.008 235));
+  --bildora-surface-base: light-dark(oklch(0.995 0.002 235), oklch(0.225 0.008 235));
+  --bildora-surface-raised: light-dark(oklch(1 0 0), oklch(0.265 0.009 235));
+  --bildora-surface-hover: light-dark(oklch(0.92 0.007 235), oklch(0.285 0.01 235));
+  --bildora-surface-selected: light-dark(oklch(0.905 0.03 195), oklch(0.33 0.04 195));
+  --bildora-surface-scrim: light-dark(oklch(0.3 0.01 235 / 0.28), oklch(0.08 0.01 235 / 0.55));
+
+  --bildora-border: light-dark(oklch(0.875 0.007 235), oklch(0.32 0.009 235));
+  --bildora-border-strong: light-dark(oklch(0.56 0.012 235), oklch(0.64 0.012 235));
+
+  /* Text. */
+  --bildora-text: light-dark(oklch(0.25 0.012 235), oklch(0.93 0.005 235));
+  --bildora-text-muted: light-dark(oklch(0.46 0.014 235), oklch(0.74 0.01 235));
+
+  /* Verdigris: the only color used for selection, focus and the main action. */
+  --bildora-accent: light-dark(oklch(0.47 0.085 195), oklch(0.78 0.1 190));
+  --bildora-accent-hover: light-dark(oklch(0.41 0.08 195), oklch(0.84 0.09 190));
+  --bildora-on-accent: light-dark(oklch(0.995 0.002 195), oklch(0.2 0.02 195));
+  --bildora-focus-ring: var(--bildora-accent);
+
+  /* Run states and warnings. Always paired with an icon and a word, never color alone. */
+  --bildora-status-running: light-dark(oklch(0.48 0.14 255), oklch(0.78 0.11 250));
+  --bildora-status-completed: light-dark(oklch(0.46 0.11 150), oklch(0.8 0.13 150));
+  --bildora-status-failed: light-dark(oklch(0.5 0.17 27), oklch(0.76 0.13 25));
+  --bildora-status-cancelled: var(--bildora-text-muted);
+  --bildora-status-warning: light-dark(oklch(0.48 0.095 75), oklch(0.82 0.12 85));
+
+  /* Type. System faces, so the app sits naturally beside Windows 11 applications. */
+  --bildora-font-ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --bildora-font-mono: 'Cascadia Mono', Consolas, ui-monospace, monospace;
+  --bildora-text-xs: 11px;
+  --bildora-text-sm: 12px;
+  --bildora-text-md: 13px;
+  --bildora-text-lg: 15px;
+  --bildora-text-xl: 20px;
+  --bildora-weight-regular: 400;
+  --bildora-weight-medium: 500;
+  --bildora-weight-semibold: 600;
+  --bildora-line-tight: 1.25;
+  --bildora-line-normal: 1.45;
+
+  /* Spacing, on a 4px grid. */
+  --bildora-space-1: 4px;
+  --bildora-space-2: 8px;
+  --bildora-space-3: 12px;
+  --bildora-space-4: 16px;
+  --bildora-space-6: 24px;
+  --bildora-space-8: 32px;
+
+  /* Shape and density. */
+  --bildora-radius-sm: 3px;
+  --bildora-radius-md: 5px;
+  --bildora-radius-lg: 8px;
+  --bildora-row-height: 28px;
+  --bildora-control-height: 28px;
+  --bildora-shadow-overlay: 0 8px 28px
+    light-dark(oklch(0.3 0.01 235 / 0.18), oklch(0.05 0.01 235 / 0.55));
+
+  /* Motion: brief, and only on opacity and transform. */
+  --bildora-motion-fast: 80ms;
+  --bildora-motion-normal: 150ms;
+  --bildora-ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --bildora-motion-fast: 0ms;
+    --bildora-motion-normal: 0ms;
+  }
+}
