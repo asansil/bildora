@@ -15,3 +15,10 @@ export { DefinitionError } from './storage/definition-error.js';
 export type { DefinitionIssue } from './storage/definition-error.js';
 export { GLOBAL_SCOPE, openDataDirectory, resolveDataDir } from './storage/data-directory.js';
 export type { DataDirectoryOptions, InstallScope } from './storage/data-directory.js';
+export { ToolRegistry } from './registry/tool-registry.js';
+export type {
+  RegisterOptions,
+  RegisteredTool,
+  RegistryProblem,
+  ToolList,
+} from './registry/tool-registry.js';
