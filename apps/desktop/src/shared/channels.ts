@@ -1,0 +1,19 @@
+/** Every IPC channel. Each one is a public API. */
+export const CHANNELS = {
+  shellInfo: 'shell:info',
+  shellQuit: 'shell:quit',
+  shellEdit: 'shell:edit',
+  toolsList: 'tools:list',
+  toolsPickFiles: 'tools:pick-files',
+  toolsPickFolder: 'tools:pick-folder',
+  toolsDetectPaths: 'tools:detect-paths',
+  toolsRegister: 'tools:register',
+  toolsUpdate: 'tools:update',
+  toolsRemove: 'tools:remove',
+  runsStart: 'runs:start',
+  runsCancel: 'runs:cancel',
+  runsList: 'runs:list',
+  runsChanged: 'runs:changed',
+  preferencesGet: 'preferences:get',
+  preferencesSet: 'preferences:set',
+} as const;

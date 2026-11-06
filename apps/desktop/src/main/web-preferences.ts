@@ -16,3 +16,21 @@ export function shellWebPreferences(preload: string): ShellWebPreferences {
     webSecurity: true,
   };
 }
+
+/** Height of the top bar, which the window's native caption buttons must match. */
+export const TOP_BAR_HEIGHT = 36;
+
+export interface TitleBarOverlay {
+  readonly color: string;
+  readonly symbolColor: string;
+  readonly height: number;
+}
+
+/** Native caption buttons, drawn over the top bar. Transparent, so the theme's frame shows. */
+export function titleBarOverlay(dark: boolean): TitleBarOverlay {
+  return {
+    color: '#00000000',
+    symbolColor: dark ? '#e6e9eb' : '#2a2e31',
+    height: TOP_BAR_HEIGHT,
+  };
+}
