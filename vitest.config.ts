@@ -4,7 +4,15 @@ export default defineConfig({
   test: {
     projects: [
       { test: { name: 'protocol', root: 'packages/protocol', include: ['src/**/*.test.ts'] } },
-      { test: { name: 'core', root: 'packages/core', include: ['src/**/*.test.ts'] } },
+      {
+        test: {
+          name: 'core',
+          root: 'packages/core',
+          include: ['src/**/*.test.ts'],
+          // These start real processes, which take far longer when every project runs at once.
+          testTimeout: 30_000,
+        },
+      },
       {
         test: {
           name: 'panel-sdk',
