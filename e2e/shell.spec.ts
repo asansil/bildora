@@ -274,6 +274,73 @@ test('the theme changes, and is remembered', async () => {
   expect(await isDark(second.app)).toBe(false);
 });
 
+test('a damaged tool is reported, and an empty list still offers a way in', async () => {
+  const broken = join(dataDir, 'tools', 'broken-tool');
+  await mkdir(broken, { recursive: true });
+  await writeFile(join(broken, 'tool.yaml'), 'not: [valid');
+
+  const { window } = await launchShell();
+
+  await expect(window.getByTestId('welcome')).toBeVisible();
+  await window.getByRole('button', { name: /Problems/ }).click();
+  await expect(window.getByRole('heading', { name: 'Tools that cannot be read' })).toBeVisible();
+  await expect(window.getByRole('main')).toContainText('broken-tool');
+});
+
+test('a program that moves is explained, and found again when it returns', async () => {
+  const program = join(folder, 'tool.bat');
+  await writeFile(program, '@echo off\r\n');
+  const session = await launchShell();
+  await addTool(session, program, 'Tool');
+  const { window } = session;
+
+  await rm(program);
+  await window.evaluate("window.dispatchEvent(new Event('focus'))");
+
+  await expect(window.getByTestId('runtime-warning')).toContainText(
+    'The program is no longer there',
+  );
+  await expect(window.getByRole('button', { name: 'Launch' })).toBeDisabled();
+
+  await writeFile(program, '@echo off\r\n');
+  await window.getByRole('button', { name: 'Check again' }).click();
+
+  await expect(window.getByTestId('runtime-warning')).toHaveCount(0);
+  await expect(window.getByRole('button', { name: 'Launch' })).toBeEnabled();
+});
+
+test('removing a tool forgets it and leaves the program alone', async () => {
+  const program = join(folder, 'tool.bat');
+  await writeFile(program, '@echo off\r\n');
+  const session = await launchShell();
+  await addTool(session, program, 'Tool');
+  const { window } = session;
+
+  await window.getByRole('button', { name: 'Remove' }).click();
+  const confirm = window.getByRole('dialog', { name: 'Remove Tool?' });
+  await expect(confirm).toContainText('nothing is deleted from your files');
+  await confirm.getByRole('button', { name: 'Remove tool' }).click();
+
+  await expect(window.getByTestId('welcome')).toBeVisible();
+  expect(existsSync(program)).toBe(true);
+  expect(existsSync(join(dataDir, 'tools', 'tool'))).toBe(false);
+});
+
+test('a second instance leaves and keeps the first one open', async () => {
+  const { app, window } = await launchShell();
+  await expect(window.getByTestId('welcome')).toBeVisible();
+  const electronPath = createRequire(resolve('apps/desktop/package.json'))('electron') as string;
+
+  await promisify(execFile)(electronPath, ['.'], {
+    cwd: resolve('apps/desktop'),
+    env: electronEnvironment({ BILDORA_DATA_DIR: dataDir }),
+    timeout: 15_000,
+  });
+
+  await expect(window.getByTestId('welcome')).toBeVisible();
+  expect(app.windows()).toHaveLength(1);
+});
+
 test.describe('closing with a tool running', () => {
   async function runningTool(): Promise<Session & { pid: number }> {
     const { program, pidFile } = await hangingScript();

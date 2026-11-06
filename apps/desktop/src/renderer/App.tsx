@@ -298,7 +298,7 @@ export function App() {
     })),
   ];
 
-  const empty = loaded && allTools.length === 0 && catalog.problems.length === 0;
+  const empty = loaded && allTools.length === 0;
 
   return (
     <div
