@@ -1,4 +1,4 @@
-import { Play, RefreshCw, Square, TriangleAlert } from 'lucide-react';
+import { Play, RefreshCw, Square, Star, TriangleAlert } from 'lucide-react';
 import { t } from '../../shared/i18n/translate.js';
 import type { RunView, ToolRuntime, ToolView } from '../../shared/ipc-contract.js';
 import { RunStateBadge } from '../shell/RunStateBadge.js';
@@ -39,27 +39,65 @@ function resultText(run: RunView | undefined): string {
   return t('tool.exitCode', { code: run.exitCode });
 }
 
+interface FavoriteButtonProps {
+  readonly tool: ToolView;
+  readonly favorite: boolean;
+  readonly onToggle: () => void;
+}
+
+/** Marks a tool in this Workspace. Filled or hollow, so that it never relies on color. */
+export function FavoriteButton({ tool, favorite, onToggle }: FavoriteButtonProps) {
+  const label = t(favorite ? 'tool.unfavorite' : 'tool.favorite', { name: tool.name });
+  return (
+    <button
+      type="button"
+      className="icon-button favorite-button"
+      aria-pressed={favorite}
+      aria-label={label}
+      title={label}
+      onClick={onToggle}
+    >
+      <Star className="icon" aria-hidden="true" />
+    </button>
+  );
+}
+
+function runtimeText(runtime: Exclude<ToolRuntime, { status: 'ready' }>): {
+  title: string;
+  body: string;
+} {
+  switch (runtime.status) {
+    case 'missing-variable':
+      return {
+        title: t('runtime.variableTitle', { variable: runtime.variable }),
+        body: t('runtime.variableBody', { variable: runtime.variable }),
+      };
+    case 'missing-interpreter':
+      return {
+        title: t('runtime.interpreterTitle', { interpreter: runtime.interpreter }),
+        body: t('runtime.interpreterBody', { interpreter: runtime.interpreter }),
+      };
+    case 'missing-program':
+      return {
+        title: t('runtime.programTitle'),
+        body: t('runtime.programBody', { program: runtime.program }),
+      };
+  }
+}
+
 interface RuntimeWarningProps {
   readonly runtime: Exclude<ToolRuntime, { status: 'ready' }>;
   readonly onCheckAgain: () => void;
 }
 
 export function RuntimeWarning({ runtime, onCheckAgain }: RuntimeWarningProps) {
-  const missingInterpreter = runtime.status === 'missing-interpreter';
+  const { title, body } = runtimeText(runtime);
   return (
     <div className="notice notice-warning" role="status" data-testid="runtime-warning">
       <TriangleAlert className="icon" aria-hidden="true" />
       <div>
-        <strong>
-          {missingInterpreter
-            ? t('runtime.interpreterTitle', { interpreter: runtime.interpreter })
-            : t('runtime.programTitle')}
-        </strong>
-        <p>
-          {missingInterpreter
-            ? t('runtime.interpreterBody', { interpreter: runtime.interpreter })
-            : t('runtime.programBody', { program: runtime.program })}
-        </p>
+        <strong>{title}</strong>
+        <p>{body}</p>
       </div>
       <button type="button" onClick={onCheckAgain}>
         <RefreshCw className="icon" aria-hidden="true" />
@@ -76,7 +114,10 @@ interface ToolDetailsProps {
   readonly onStop: (runId: string) => void;
   readonly onEdit: () => void;
   readonly onRemove: () => void;
+  readonly onMove: () => void;
   readonly onCheckAgain: () => void;
+  readonly favorite: boolean;
+  readonly onToggleFavorite: () => void;
 }
 
 /** A tool in the work area. A level 0 program opens in its own window, so this shows its state. */
@@ -87,9 +128,12 @@ export function ToolDetails({
   onStop,
   onEdit,
   onRemove,
+  onMove,
   onCheckAgain,
+  favorite,
+  onToggleFavorite,
 }: ToolDetailsProps) {
-  const summary = summarizeRuns(runs, tool.id);
+  const summary = summarizeRuns(runs, tool.key);
   const launchable = tool.level === 0 && tool.runtime.status === 'ready';
   const isRunning = summary.running.length > 0;
   const failure = summary.last === undefined ? undefined : failureText(summary.last, tool);
@@ -98,6 +142,7 @@ export function ToolDetails({
     <article className="tool" data-testid="tool-details">
       <header className="tool-header">
         <h1 title={tool.name}>{tool.name}</h1>
+        <FavoriteButton tool={tool} favorite={favorite} onToggle={onToggleFavorite} />
         <RunStateBadge
           state={summary.state}
           {...(summary.running.length > 1
@@ -134,6 +179,9 @@ export function ToolDetails({
         <button type="button" onClick={onEdit}>
           {t('tool.edit')}
         </button>
+        <button type="button" disabled={isRunning} onClick={onMove}>
+          {t(tool.scope === 'global' ? 'tool.moveToWorkspace' : 'tool.moveToGlobal')}
+        </button>
         <button type="button" disabled={isRunning} onClick={onRemove}>
           {t('tool.remove')}
         </button>
@@ -154,6 +202,8 @@ export function ToolDetails({
       )}
 
       <dl className="facts">
+        <dt>{t('tool.scope')}</dt>
+        <dd>{t(tool.scope === 'global' ? 'tool.scopeGlobal' : 'tool.scopeWorkspace')}</dd>
         <dt>{t('tool.category')}</dt>
         <dd>{tool.category ?? t('nav.uncategorized')}</dd>
         <dt>{t('tool.interpreter')}</dt>
