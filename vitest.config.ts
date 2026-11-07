@@ -22,7 +22,15 @@ export default defineConfig({
           css: true,
         },
       },
-      { test: { name: 'cli', root: 'apps/cli', include: ['src/**/*.test.ts'] } },
+      {
+        test: {
+          name: 'cli',
+          root: 'apps/cli',
+          include: ['src/**/*.test.ts'],
+          // These start real processes too.
+          testTimeout: 30_000,
+        },
+      },
       { test: { name: 'desktop', root: 'apps/desktop', include: ['src/**/*.test.ts'] } },
     ],
   },

@@ -245,15 +245,24 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
     devDependencies:
+      '@bildora/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       '@bildora/typescript-config':
         specifier: workspace:*
         version: link:../../packages/typescript-config
 
   apps/desktop:
     dependencies:
+      '@bildora/cli':
+        specifier: workspace:*
+        version: link:../cli
       '@bildora/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@bildora/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       zod:
         specifier: ^4.6.7
         version: 4.6.7
