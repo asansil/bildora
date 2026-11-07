@@ -4,13 +4,14 @@ import type { RecordedParameter } from '../runner/resolve-values.js';
 import { DefinitionError } from '../storage/definition-error.js';
 
 const HISTORY_FILE = 'history.db';
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 /** Rows a listing returns at most. */
 const LIST_LIMIT = 500;
 
 const SCHEMA = `
   CREATE TABLE runs (
     id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
     tool_id TEXT NOT NULL,
     tool_name TEXT NOT NULL,
     level INTEGER NOT NULL,
@@ -24,8 +25,17 @@ const SCHEMA = `
     output TEXT,
     output_truncated INTEGER NOT NULL DEFAULT 0
   );
-  CREATE INDEX runs_by_tool ON runs (tool_id, started_at DESC);
-  CREATE INDEX runs_by_time ON runs (started_at DESC);
+  CREATE INDEX runs_by_tool ON runs (workspace_id, tool_id, started_at DESC);
+  CREATE INDEX runs_by_time ON runs (workspace_id, started_at DESC);
+`;
+
+/** Runs older than Workspaces belong to the one every upgraded installation starts with. */
+const UPGRADE_TO_WORKSPACES = `
+  ALTER TABLE runs ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default';
+  DROP INDEX runs_by_tool;
+  DROP INDEX runs_by_time;
+  CREATE INDEX runs_by_tool ON runs (workspace_id, tool_id, started_at DESC);
+  CREATE INDEX runs_by_time ON runs (workspace_id, started_at DESC);
 `;
 
 const SUMMARY_COLUMNS =
@@ -55,6 +65,7 @@ export interface RunRecord extends RunSummary {
 
 export interface RunStart {
   readonly runId: string;
+  readonly workspaceId: string;
   readonly toolId: string;
   readonly toolName: string;
   readonly level: number;
@@ -145,9 +156,9 @@ export class RunHistory {
         );
       }
       database.pragma('journal_mode = WAL');
-      if (version === 0) {
+      if (version < SCHEMA_VERSION) {
         database.transaction(() => {
-          database.exec(SCHEMA);
+          database.exec(version === 0 ? SCHEMA : UPGRADE_TO_WORKSPACES);
           database.pragma(`user_version = ${String(SCHEMA_VERSION)}`);
         })();
       }
@@ -166,11 +177,13 @@ export class RunHistory {
   start(run: RunStart): void {
     this.database
       .prepare(
-        `INSERT INTO runs (id, tool_id, tool_name, level, started_at, status, parameters)
-         VALUES (?, ?, ?, ?, ?, 'running', ?)`,
+        `INSERT INTO runs
+           (id, workspace_id, tool_id, tool_name, level, started_at, status, parameters)
+         VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
       )
       .run(
         run.runId,
+        run.workspaceId,
         run.toolId,
         run.toolName,
         run.level,
@@ -204,20 +217,22 @@ export class RunHistory {
       .run().changes;
   }
 
-  /** Lists runs, newest first, leaving out what is too large to show in a list. */
-  list(toolId?: string): readonly RunSummary[] {
-    const filter = toolId === undefined ? '' : 'WHERE tool_id = ?';
+  /** Lists a Workspace's runs, newest first, leaving out what is too large to show in a list. */
+  list(workspaceId: string, toolId?: string): readonly RunSummary[] {
+    const filter = toolId === undefined ? '' : 'AND tool_id = ?';
     const statement = this.database.prepare<unknown[], SummaryRow>(
-      `SELECT ${SUMMARY_COLUMNS} FROM runs ${filter}
+      `SELECT ${SUMMARY_COLUMNS} FROM runs WHERE workspace_id = ? ${filter}
        ORDER BY started_at DESC, rowid DESC LIMIT ${String(LIST_LIMIT)}`,
     );
-    return (toolId === undefined ? statement.all() : statement.all(toolId)).map(summaryOf);
+    const rows =
+      toolId === undefined ? statement.all(workspaceId) : statement.all(workspaceId, toolId);
+    return rows.map(summaryOf);
   }
 
-  get(runId: string): RunRecord | undefined {
+  get(workspaceId: string, runId: string): RunRecord | undefined {
     const row = this.database
-      .prepare<[string], RecordRow>('SELECT * FROM runs WHERE id = ?')
-      .get(runId);
+      .prepare<[string, string], RecordRow>('SELECT * FROM runs WHERE id = ? AND workspace_id = ?')
+      .get(runId, workspaceId);
     return row === undefined
       ? undefined
       : {
@@ -228,41 +243,52 @@ export class RunHistory {
         };
   }
 
-  /** The tools run most recently, newest first. */
-  recentToolIds(limit: number): readonly string[] {
+  /** The tools a Workspace ran most recently, newest first. */
+  recentToolIds(workspaceId: string, limit: number): readonly string[] {
     return this.database
-      .prepare<[number], { tool_id: string }>(
-        `SELECT tool_id FROM runs GROUP BY tool_id ORDER BY MAX(started_at) DESC LIMIT ?`,
+      .prepare<[string, number], { tool_id: string }>(
+        `SELECT tool_id FROM runs WHERE workspace_id = ?
+         GROUP BY tool_id ORDER BY MAX(started_at) DESC LIMIT ?`,
       )
-      .all(limit)
+      .all(workspaceId, limit)
       .map((row) => row.tool_id);
   }
 
-  /** Keeps the newest finished runs of a tool. A run still going is never removed. */
-  prune(toolId: string, keep: number): number {
+  /** Keeps a Workspace's newest finished runs of a tool. A run still going is never removed. */
+  prune(workspaceId: string, toolId: string, keep: number): number {
     return this.database
       .prepare(
         `DELETE FROM runs WHERE id IN (
-           SELECT id FROM runs WHERE tool_id = ? AND status != 'running'
+           SELECT id FROM runs WHERE workspace_id = ? AND tool_id = ? AND status != 'running'
            ORDER BY started_at DESC, rowid DESC LIMIT -1 OFFSET ?
          )`,
       )
-      .run(toolId, keep).changes;
+      .run(workspaceId, toolId, keep).changes;
   }
 
   /** Applies a run limit to every tool, for when the user lowers it. */
   pruneAll(keep: number): void {
     const tools = this.database
-      .prepare<[], { tool_id: string }>('SELECT DISTINCT tool_id FROM runs')
+      .prepare<[], { workspace_id: string; tool_id: string }>(
+        'SELECT DISTINCT workspace_id, tool_id FROM runs',
+      )
       .all();
-    for (const { tool_id: toolId } of tools) {
-      this.prune(toolId, keep);
+    for (const { workspace_id: workspaceId, tool_id: toolId } of tools) {
+      this.prune(workspaceId, toolId, keep);
     }
   }
 
-  /** Forgets every finished run, and gives the space back to the disk. */
-  clear(): void {
-    this.database.prepare(`DELETE FROM runs WHERE status != 'running'`).run();
+  /** Forgets a Workspace's finished runs, and gives the space back to the disk. */
+  clear(workspaceId: string): void {
+    this.database
+      .prepare(`DELETE FROM runs WHERE workspace_id = ? AND status != 'running'`)
+      .run(workspaceId);
+    this.database.exec('VACUUM');
+  }
+
+  /** Forgets everything a deleted Workspace ran. */
+  removeWorkspace(workspaceId: string): void {
+    this.database.prepare('DELETE FROM runs WHERE workspace_id = ?').run(workspaceId);
     this.database.exec('VACUUM');
   }
 }

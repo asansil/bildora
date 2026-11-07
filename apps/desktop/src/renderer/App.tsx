@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
 import { Search, X } from 'lucide-react';
 import { t } from '../shared/i18n/translate.js';
@@ -12,8 +12,13 @@ import type {
   ShellPreferences,
   ShellTheme,
   ToolCatalog,
+  ToolScopeChoice,
   ToolView,
+  WorkspaceListView,
+  WorkspaceUpdate,
+  WorkspaceView,
 } from '../shared/ipc-contract.js';
+import { PANEL_WIDTH_DEFAULT } from '../shared/ipc-contract.js';
 import { HistoryView } from './history/HistoryView.js';
 import { ImportReview } from './import/ImportReview.js';
 import { CommandPalette } from './palette/CommandPalette.js';
@@ -24,20 +29,24 @@ import { CategoryRail, TOOL_PANEL_ID } from './shell/CategoryRail.js';
 import { Dialog } from './shell/Dialog.js';
 import { MenuBar } from './shell/MenuBar.js';
 import type { Menu } from './shell/MenuBar.js';
+import { PanelResizer } from './shell/PanelResizer.js';
 import { RunStateBadge, RunStateIcon, runStateLabel } from './shell/RunStateBadge.js';
 import { ToolDetails } from './tools/ToolDetails.js';
 import { ToolForm } from './tools/ToolForm.js';
 import { ToolRunner } from './tools/ToolRunner.js';
 import { Welcome } from './tools/Welcome.js';
-import { groupKey, groupLabel, toggleCategory } from './tools/category-rail.js';
+import { groupKey, groupLabel, placeCategory, toggleCategory } from './tools/category-rail.js';
 import { countRunning, summarizeRuns } from './tools/run-state.js';
+import { WorkspaceNameDialog } from './workspaces/WorkspaceNameDialog.js';
+import { WorkspacesView } from './workspaces/WorkspacesView.js';
 
 const api = window.bildora;
 const EMPTY_CATALOG: ToolCatalog = { groups: [], problems: [] };
 
 const EMPTY_RECENT: readonly string[] = [];
+const NO_WORKSPACES: WorkspaceListView = { activeId: '', workspaces: [], problems: [] };
 
-type Screen = 'tools' | 'problems' | 'history' | 'settings';
+type Screen = 'tools' | 'problems' | 'history' | 'settings' | 'workspaces';
 
 type Modal =
   | { readonly kind: 'palette' }
@@ -45,6 +54,8 @@ type Modal =
   | { readonly kind: 'add'; readonly proposal: ProposalView }
   | { readonly kind: 'edit'; readonly tool: ToolView }
   | { readonly kind: 'remove'; readonly tool: ToolView }
+  | { readonly kind: 'move'; readonly tool: ToolView }
+  | { readonly kind: 'create-workspace' }
   | { readonly kind: 'review'; readonly detection: DetectionView };
 
 function messageOf(error: unknown): string {
@@ -58,7 +69,8 @@ export function App() {
   const [loaded, setLoaded] = useState(false);
   const [runs, setRuns] = useState<readonly RunView[]>([]);
   const [version, setVersion] = useState('');
-  const [theme, setTheme] = useState<ShellTheme>('system');
+  const [workspaces, setWorkspaces] = useState(NO_WORKSPACES);
+  const [panelWidth, setPanelWidth] = useState(PANEL_WIDTH_DEFAULT);
   const [historyRunLimit, setHistoryRunLimit] = useState(200);
   const [recent, setRecent] = useState(EMPTY_RECENT);
   const [historyTool, setHistoryTool] = useState<string | undefined>(undefined);
@@ -68,6 +80,15 @@ export function App() {
   const [modal, setModal] = useState<Modal | undefined>(undefined);
   const [banner, setBanner] = useState<string | undefined>(undefined);
   const [dropping, setDropping] = useState(false);
+  /** Grows with each switch, so that an answer about the previous Workspace can be told apart. */
+  const generation = useRef(0);
+
+  const workspace: WorkspaceView | undefined = workspaces.workspaces.find(
+    ({ id }) => id === workspaces.activeId,
+  );
+  const theme: ShellTheme = workspace?.theme ?? 'system';
+  const favorites = workspace?.favorites ?? EMPTY_RECENT;
+  const workspaceName = workspace?.name ?? '';
 
   const applyCatalog = useCallback((next: ToolCatalog): ToolCatalog => {
     setCatalog(next);
@@ -75,18 +96,30 @@ export function App() {
     return next;
   }, []);
 
-  const reload = useCallback(
-    (): Promise<ToolCatalog> => api.listTools().then(applyCatalog),
-    [applyCatalog],
-  );
+  const reload = useCallback((): Promise<ToolCatalog> => {
+    const asked = generation.current;
+    return api
+      .listTools()
+      .then((next) => (asked === generation.current ? applyCatalog(next) : next));
+  }, [applyCatalog]);
 
   const report = useCallback((error: unknown) => {
     setBanner(messageOf(error));
   }, []);
 
   useEffect(() => {
-    void api.listTools().then(applyCatalog).catch(report);
+    void reload().catch(report);
     void api.listRuns().then(setRuns).catch(report);
+    void api
+      .listWorkspaces()
+      .then((list) => {
+        setWorkspaces(list);
+        // The panel stays closed at launch, so only the tool and the width come back.
+        const layout = list.workspaces.find(({ id }) => id === list.activeId)?.layout;
+        setSelectedTool(layout?.selectedTool);
+        setPanelWidth(layout?.panelWidth ?? PANEL_WIDTH_DEFAULT);
+      })
+      .catch(report);
     void api
       .shellInfo()
       .then(({ version: value, historyProblem }) => {
@@ -99,21 +132,20 @@ export function App() {
     void api
       .getPreferences()
       .then((preferences) => {
-        setTheme(preferences.theme);
         setHistoryRunLimit(preferences.historyRunLimit);
       })
       .catch(report);
     const stopListening = api.onRunsChanged(setRuns);
     // A program may have been installed or moved while the user was elsewhere.
     const onFocus = (): void => {
-      void api.listTools().then(applyCatalog).catch(report);
+      void reload().catch(report);
     };
     window.addEventListener('focus', onFocus);
     return () => {
       stopListening();
       window.removeEventListener('focus', onFocus);
     };
-  }, [applyCatalog, report]);
+  }, [reload, report]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -129,20 +161,122 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    void api.recentTools().then(setRecent).catch(report);
-  }, [runs, report]);
+    let current = true;
+    void api
+      .recentTools()
+      .then((ids) => {
+        if (current) {
+          setRecent(ids);
+        }
+      })
+      .catch(report);
+    return () => {
+      current = false;
+    };
+  }, [runs, workspaces.activeId, report]);
 
   const allTools = useMemo(() => catalog.groups.flatMap((group) => group.tools), [catalog]);
   const panelGroup = catalog.groups.find((candidate) => groupKey(candidate) === openCategory);
   const tool = allTools.find((candidate) => candidate.id === selectedTool) ?? allTools[0];
   const running = countRunning(runs);
   const recentTools = recent.flatMap((id) => allTools.filter((item) => item.id === id));
+  const favoriteTools = favorites.flatMap((id) => allTools.filter((item) => item.id === id));
+
+  function saveWorkspace(changes: WorkspaceUpdate): void {
+    const asked = generation.current;
+    void api
+      .updateWorkspace(changes)
+      .then((updated) => {
+        if (asked === generation.current) {
+          setWorkspaces((list) => ({
+            ...list,
+            workspaces: list.workspaces.map((item) => (item.id === updated.id ? updated : item)),
+          }));
+        }
+      })
+      .catch(report);
+  }
+
+  function chooseTool(id: string): void {
+    setSelectedTool(id);
+    saveWorkspace({ layout: { selectedTool: id } });
+  }
+
+  /** Enters what `list` says is active, with the view that Workspace was left in. */
+  function enterWorkspace(list: WorkspaceListView): Promise<ToolCatalog> {
+    generation.current += 1;
+    const layout = list.workspaces.find(({ id }) => id === list.activeId)?.layout;
+    setWorkspaces(list);
+    setSelectedTool(layout?.selectedTool);
+    setOpenCategory(layout?.openCategory);
+    setPanelWidth(layout?.panelWidth ?? PANEL_WIDTH_DEFAULT);
+    setHistoryTool(undefined);
+    setModal(undefined);
+    setLoaded(false);
+    setCatalog(EMPTY_CATALOG);
+    setRecent(EMPTY_RECENT);
+    return reload();
+  }
+
+  function switchWorkspace(id: string): void {
+    if (id === workspaces.activeId) {
+      setScreen('tools');
+      return;
+    }
+    generation.current += 1;
+    void api
+      .switchWorkspace(id)
+      .then((list) => {
+        setScreen('tools');
+        return enterWorkspace(list);
+      })
+      .catch(report);
+  }
+
+  function createWorkspace(name: string): void {
+    setModal(undefined);
+    generation.current += 1;
+    void api
+      .createWorkspace(name)
+      .then((list) => {
+        setScreen('tools');
+        return enterWorkspace(list);
+      })
+      .catch(report);
+  }
+
+  function renameWorkspace(id: string, name: string): void {
+    void api.renameWorkspace(id, name).then(setWorkspaces).catch(report);
+  }
+
+  function removeWorkspace(id: string): void {
+    void api
+      .removeWorkspace(id)
+      .then(async (list) => {
+        if (list.activeId === workspaces.activeId) {
+          setWorkspaces(list);
+        } else {
+          await enterWorkspace(list);
+        }
+      })
+      .catch(report);
+  }
+
+  function toggleFavorite(id: string): void {
+    saveWorkspace({
+      favorites: favorites.includes(id)
+        ? favorites.filter((item) => item !== id)
+        : [...favorites, id],
+    });
+  }
 
   function showTool(id: string, list: ToolCatalog = catalog): void {
     const owner = list.groups.find((candidate) => candidate.tools.some((item) => item.id === id));
     if (owner !== undefined) {
-      setOpenCategory((open) => (open === undefined ? undefined : groupKey(owner)));
+      const nextOpen = openCategory === undefined ? undefined : groupKey(owner);
+      setOpenCategory(nextOpen);
       setSelectedTool(id);
+      saveWorkspace({ layout: { selectedTool: id, openCategory: nextOpen ?? null } });
       setScreen('tools');
     }
   }
@@ -150,15 +284,33 @@ export function App() {
   function pressCategory(key: string): void {
     const next = toggleCategory(openCategory, key);
     setOpenCategory(next);
+    saveWorkspace({ layout: { openCategory: next ?? null } });
     if (next !== undefined) {
       setScreen('tools');
     }
   }
 
+  function placeRailCategory(dragged: string, target: string): void {
+    const stored = workspace?.layout.categoryOrder ?? [];
+    const categoryOrder = placeCategory(catalog.groups, stored, dragged, target);
+    void api
+      .saveLayout({ categoryOrder: [...categoryOrder] })
+      .then(() => api.listWorkspaces())
+      .then(setWorkspaces)
+      .then(reload)
+      .catch(report);
+  }
+
   function openCategoryMenu(category: string): void {
     void api
       .openCategoryMenu(category)
-      .then((changed) => (changed ? reload() : undefined))
+      .then(async (changed) => {
+        if (changed) {
+          // The menu can reorder the rail, which main stores in the Workspace.
+          setWorkspaces(await api.listWorkspaces());
+          await reload();
+        }
+      })
       .catch(report);
   }
 
@@ -180,24 +332,29 @@ export function App() {
   async function registerAll(
     programs: RegisterTools['programs'],
     manifests: readonly string[],
+    scope: ToolScopeChoice,
   ): Promise<RegistrationView> {
     const fromPrograms: RegistrationView =
       programs.length === 0
         ? { registeredIds: [], failures: [] }
-        : await api.registerTools({ programs });
+        : await api.registerTools({ programs, scope });
     const fromManifests: RegistrationView =
       manifests.length === 0
         ? { registeredIds: [], failures: [] }
-        : await api.importManifests(manifests);
+        : await api.importManifests(manifests, scope);
     return {
       registeredIds: [...fromManifests.registeredIds, ...fromPrograms.registeredIds],
       failures: [...fromPrograms.failures, ...fromManifests.failures],
     };
   }
 
-  function register(programs: RegisterTools['programs'], manifests: readonly string[] = []): void {
+  function register(
+    programs: RegisterTools['programs'],
+    manifests: readonly string[],
+    scope: ToolScopeChoice,
+  ): void {
     setModal(undefined);
-    void registerAll(programs, manifests).then(finishRegistration).catch(report);
+    void registerAll(programs, manifests, scope).then(finishRegistration).catch(report);
   }
 
   function reviewDetection(detection: DetectionView | undefined): void {
@@ -235,8 +392,14 @@ export function App() {
   }
 
   function changeTheme(next: ShellTheme): void {
-    setTheme(next);
-    void api.setPreferences({ theme: next }).catch(report);
+    // A radio button must answer at once, before main has stored the change.
+    setWorkspaces((list) => ({
+      ...list,
+      workspaces: list.workspaces.map((item) =>
+        item.id === list.activeId ? { ...item, theme: next } : item,
+      ),
+    }));
+    saveWorkspace({ theme: next });
   }
 
   function changeHistoryRunLimit(next: ShellPreferences['historyRunLimit']): void {
@@ -336,6 +499,32 @@ export function App() {
         }
       },
     })),
+    ...workspaces.workspaces
+      .filter(({ id }) => id !== workspaces.activeId)
+      .map((item): Command => ({
+        id: `workspace-${item.id}`,
+        label: t('palette.switchWorkspace', { name: item.name }),
+        detail: t('nav.workspaces'),
+        run: () => {
+          switchWorkspace(item.id);
+        },
+      })),
+    {
+      id: 'create-workspace',
+      label: t('palette.createWorkspace'),
+      detail: t('nav.workspaces'),
+      run: () => {
+        setModal({ kind: 'create-workspace' });
+      },
+    },
+    {
+      id: 'manage-workspaces',
+      label: t('palette.manageWorkspaces'),
+      detail: t('nav.workspaces'),
+      run: () => {
+        setScreen('workspaces');
+      },
+    },
     { id: 'add', label: t('menu.addTool'), detail: t('palette.action'), run: addTool },
     {
       id: 'import',
@@ -406,8 +595,15 @@ export function App() {
           currentTool={tool}
           screen={screen}
           problemCount={catalog.problems.length}
+          workspaces={workspaces.workspaces}
+          activeWorkspace={workspaces.activeId}
           onToggleCategory={pressCategory}
           onCategoryMenu={openCategoryMenu}
+          onPlaceCategory={placeRailCategory}
+          onSwitchWorkspace={switchWorkspace}
+          onCreateWorkspace={() => {
+            setModal({ kind: 'create-workspace' });
+          }}
           onScreen={(next) => {
             if (next === 'history') {
               showHistory();
@@ -418,7 +614,12 @@ export function App() {
         />
 
         {panelGroup === undefined ? null : (
-          <aside className="context-panel" id={TOOL_PANEL_ID} aria-label={t('nav.tools')}>
+          <aside
+            className="context-panel"
+            id={TOOL_PANEL_ID}
+            aria-label={t('nav.tools')}
+            style={{ width: panelWidth }}
+          >
             <h2>
               <span className="truncate">{groupLabel(panelGroup)}</span>
               <span className="row-count">{panelGroup.tools.length}</span>
@@ -434,7 +635,7 @@ export function App() {
                       title={item.name}
                       aria-current={screen === 'tools' && item === tool ? 'true' : undefined}
                       onClick={() => {
-                        setSelectedTool(item.id);
+                        chooseTool(item.id);
                         setScreen('tools');
                       }}
                     >
@@ -450,6 +651,27 @@ export function App() {
                 );
               })}
             </ul>
+            {favoriteTools.length === 0 ? null : (
+              <>
+                <h2>{t('nav.favorites')}</h2>
+                <ul className="nav-list" data-testid="favorite-tools">
+                  {favoriteTools.map((item) => (
+                    <li key={item.key}>
+                      <button
+                        type="button"
+                        className="row"
+                        title={item.name}
+                        onClick={() => {
+                          showTool(item.id);
+                        }}
+                      >
+                        <span className="truncate">{item.name}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
             {recentTools.length === 0 ? null : (
               <>
                 <h2>{t('nav.recent')}</h2>
@@ -473,6 +695,15 @@ export function App() {
             )}
           </aside>
         )}
+        {panelGroup === undefined ? null : (
+          <PanelResizer
+            width={panelWidth}
+            onResize={setPanelWidth}
+            onCommit={(width) => {
+              saveWorkspace({ layout: { panelWidth: width } });
+            }}
+          />
+        )}
 
         <main className="work-area">
           {banner === undefined ? null : (
@@ -493,11 +724,24 @@ export function App() {
           {screen === 'settings' ? (
             <SettingsView
               key={historyRunLimit}
+              workspaceName={workspaceName}
               theme={theme}
               historyRunLimit={historyRunLimit}
               onTheme={changeTheme}
               onHistoryRunLimit={changeHistoryRunLimit}
               onClearHistory={clearHistory}
+              onPathVariablesChanged={() => {
+                void reload().catch(report);
+              }}
+              onError={report}
+            />
+          ) : null}
+          {screen === 'workspaces' ? (
+            <WorkspacesView
+              list={workspaces}
+              onSwitch={switchWorkspace}
+              onRename={renameWorkspace}
+              onRemove={removeWorkspace}
             />
           ) : null}
           {screen === 'history' ? (
@@ -515,7 +759,7 @@ export function App() {
               <p className="muted">{t('problems.body')}</p>
               <dl className="facts">
                 {catalog.problems.map((problem) => (
-                  <div key={problem.folder}>
+                  <div key={`${problem.scope}/${problem.folder}`}>
                     <dt>{problem.folder}</dt>
                     <dd>{problem.message}</dd>
                   </div>
@@ -526,9 +770,16 @@ export function App() {
           {screen === 'tools' && empty ? <Welcome onAdd={addTool} onImport={importFolder} /> : null}
           {screen === 'tools' && tool?.level === 1 ? (
             <ToolRunner
-              key={tool.id}
+              key={tool.key}
               tool={tool}
               runs={runs}
+              favorite={favorites.includes(tool.id)}
+              onToggleFavorite={() => {
+                toggleFavorite(tool.id);
+              }}
+              onMove={() => {
+                setModal({ kind: 'move', tool });
+              }}
               onRun={(request) => {
                 launch(tool, request);
               }}
@@ -554,6 +805,13 @@ export function App() {
             <ToolDetails
               tool={tool}
               runs={runs}
+              favorite={favorites.includes(tool.id)}
+              onToggleFavorite={() => {
+                toggleFavorite(tool.id);
+              }}
+              onMove={() => {
+                setModal({ kind: 'move', tool });
+              }}
               onLaunch={() => {
                 launch(tool);
               }}
@@ -575,6 +833,9 @@ export function App() {
       </div>
 
       <footer className="status-bar">
+        <span className="truncate" data-testid="status-workspace">
+          {t('status.workspace', { name: workspaceName })}
+        </span>
         {running === 0 ? (
           <span data-testid="status">{t('status.ready')}</span>
         ) : (
@@ -625,6 +886,7 @@ export function App() {
         <ToolForm
           mode="add"
           program={modal.proposal.path}
+          workspaceName={workspaceName}
           initial={{
             name: modal.proposal.name,
             ...(modal.proposal.category === undefined ? {} : { category: modal.proposal.category }),
@@ -632,8 +894,8 @@ export function App() {
               ? {}
               : { interpreter: modal.proposal.interpreter }),
           }}
-          onSubmit={(details) => {
-            register([{ ...details, program: modal.proposal.path }]);
+          onSubmit={(details, scope) => {
+            register([{ ...details, program: modal.proposal.path }], [], scope);
           }}
           onClose={() => {
             setModal(undefined);
@@ -644,6 +906,7 @@ export function App() {
         <ToolForm
           mode="edit"
           program={modal.tool.program}
+          workspaceName={workspaceName}
           initial={{
             name: modal.tool.name,
             ...(modal.tool.category === undefined ? {} : { category: modal.tool.category }),
@@ -677,7 +940,7 @@ export function App() {
             setModal(undefined);
           }}
         >
-          <p>{t('remove.body')}</p>
+          <p>{t(modal.tool.scope === 'global' ? 'remove.bodyGlobal' : 'remove.body')}</p>
           <div className="dialog-actions">
             <button
               type="button"
@@ -702,9 +965,57 @@ export function App() {
           </div>
         </Dialog>
       ) : null}
+      {modal?.kind === 'move' ? (
+        <Dialog
+          title={t(modal.tool.scope === 'global' ? 'move.toWorkspaceTitle' : 'move.toGlobalTitle', {
+            name: modal.tool.name,
+          })}
+          onClose={() => {
+            setModal(undefined);
+          }}
+        >
+          <p>{t(modal.tool.scope === 'global' ? 'move.toWorkspaceBody' : 'move.toGlobalBody')}</p>
+          <div className="dialog-actions">
+            <button
+              type="button"
+              autoFocus
+              onClick={() => {
+                setModal(undefined);
+              }}
+            >
+              {t('form.cancel')}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                const { id, scope } = modal.tool;
+                setModal(undefined);
+                void api
+                  .setToolScope(id, scope === 'global' ? 'workspace' : 'global')
+                  .then(reload)
+                  .catch(report);
+              }}
+            >
+              {t('move.confirm')}
+            </button>
+          </div>
+        </Dialog>
+      ) : null}
+      {modal?.kind === 'create-workspace' ? (
+        <WorkspaceNameDialog
+          title={t('workspace.createTitle')}
+          confirm={t('workspace.createConfirm')}
+          onSubmit={createWorkspace}
+          onClose={() => {
+            setModal(undefined);
+          }}
+        />
+      ) : null}
       {modal?.kind === 'review' ? (
         <ImportReview
           detection={modal.detection}
+          workspaceName={workspaceName}
           onConfirm={register}
           onClose={() => {
             setModal(undefined);

@@ -6,22 +6,27 @@ import type { Profile } from '../profiles/profile-store.js';
 import type { RegisteredTool } from '../registry/tool-registry.js';
 import type { SecretStore } from '../secrets/secret-store.js';
 import type { ParameterValues } from './command-line.js';
+import { MissingPathVariableError, expandToolCommand } from './expand-paths.js';
+import type { PathVariables } from './expand-paths.js';
 import { resolveRunValues } from './resolve-values.js';
 import type { ResolvedValues } from './resolve-values.js';
 import { TERMINAL_COLUMNS, TERMINAL_ROWS, startRun, startWindowRun } from './run-tool.js';
-import type { RunOptions, RunResult, ToolRun } from './run-tool.js';
+import type { RunFailure, RunOptions, RunResult, ToolRun } from './run-tool.js';
 
 export interface RecordedRunOptions extends Pick<
   RunOptions,
   'columns' | 'cwd' | 'env' | 'launcherPath' | 'onOutput' | 'onProgress' | 'rows'
 > {
   readonly history: RunHistory;
+  /** Whose history this run joins, whichever scope the tool came from. */
+  readonly workspaceId: string;
   readonly store: SecretStore;
   /** Runs kept for this tool afterwards. */
   readonly historyRunLimit: number;
   readonly runId?: string;
   readonly profile?: Profile | undefined;
   readonly values?: ParameterValues | undefined;
+  readonly pathVariables?: PathVariables | undefined;
 }
 
 function finishedRecord(result: RunResult, output: RenderedOutput | undefined): RunFinish {
@@ -78,6 +83,15 @@ function startByLevel(
   });
 }
 
+function preparationFailure(error: unknown): RunFailure {
+  return error instanceof MissingPathVariableError
+    ? { kind: 'path-variable', message: error.message }
+    : {
+        kind: 'credentials',
+        message: 'A saved secret could not be read from the credential store',
+      };
+}
+
 function settledRun(runId: string, result: RunResult): ToolRun & { readonly runId: string } {
   return {
     runId,
@@ -97,23 +111,22 @@ export async function startRecordedRun(
   tool: RegisteredTool,
   options: RecordedRunOptions,
 ): Promise<ToolRun & { readonly runId: string }> {
-  const { history, store, historyRunLimit, profile, values } = options;
+  const { history, workspaceId, store, historyRunLimit, profile, values, pathVariables } = options;
   const runId = options.runId ?? randomUUID();
   const startedAt = Date.now();
   const { id: toolId, name: toolName, level } = tool.manifest;
-  const shared = { runId, toolId, toolName, level, startedAt };
+  const shared = { runId, workspaceId, toolId, toolName, level, startedAt };
 
   let resolved: ResolvedValues;
+  let expanded: RegisteredTool;
   try {
-    resolved = await resolveRunValues(tool, { profile, values, store });
-  } catch {
+    expanded = expandToolCommand(tool, pathVariables ?? new Map<string, string>());
+    resolved = await resolveRunValues(tool, { profile, values, store, pathVariables });
+  } catch (error) {
     const result: RunResult = {
       status: 'failed',
       durationMs: Date.now() - startedAt,
-      failure: {
-        kind: 'credentials',
-        message: 'A saved secret could not be read from the credential store',
-      },
+      failure: preparationFailure(error),
     };
     history.start({ ...shared, parameters: [] });
     history.finish(runId, finishedRecord(result, undefined));
@@ -130,7 +143,7 @@ export async function startRecordedRun(
   history.start({ ...shared, parameters: resolved.recorded });
 
   const redactor = createStreamRedactor(resolved.secrets);
-  const run = startByLevel(tool, options, resolved.values, recorder, redactor);
+  const run = startByLevel(expanded, options, resolved.values, recorder, redactor);
   const result = run.result.then(async (ended) => {
     const rest = redactor.end();
     if (rest !== '') {
@@ -139,7 +152,7 @@ export async function startRecordedRun(
     try {
       const output = await recorder?.finish(resolved.secrets);
       history.finish(runId, finishedRecord(ended, output));
-      history.prune(toolId, historyRunLimit);
+      history.prune(workspaceId, toolId, historyRunLimit);
     } catch {
       // The run has ended either way. Its row stays as running, and becomes interrupted later.
     }

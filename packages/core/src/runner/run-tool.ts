@@ -26,6 +26,7 @@ export type RunFailureKind =
   | 'unsupported'
   | 'launcher'
   | 'credentials'
+  | 'path-variable'
   | 'exit-code';
 
 export interface RunFailure {

@@ -1,6 +1,14 @@
-import { MANIFEST_SCHEMA_VERSION, toolManifestSchema } from '@bildora/protocol';
+import { isAbsolute, win32 } from 'node:path';
+import {
+  MANIFEST_SCHEMA_VERSION,
+  startsWithPathVariable,
+  toolManifestSchema,
+} from '@bildora/protocol';
 import type { ToolManifest } from '@bildora/protocol';
 import type { RegisteredTool, ToolRegistry } from '../registry/tool-registry.js';
+import { GLOBAL_SCOPE } from '../storage/data-directory.js';
+import type { InstallScope } from '../storage/data-directory.js';
+import { DefinitionError } from '../storage/definition-error.js';
 import { identifierFromName } from './identifier.js';
 
 export { identifierFromName };
@@ -68,23 +76,31 @@ export interface RegistrationReport {
   readonly failures: readonly RegistrationFailure[];
 }
 
-/** Registers programs in the global scope. One bad entry does not stop the others. */
+/** Ids in use, in a scope and in the global one it sees. A broken tool still holds its folder. */
+async function takenIds(registry: ToolRegistry, scope: InstallScope): Promise<Set<string>> {
+  const scopes = scope.kind === 'global' ? [scope] : [scope, GLOBAL_SCOPE];
+  const lists = await Promise.all(scopes.map((item) => registry.list(item)));
+  return new Set(
+    lists.flatMap(({ tools, problems }) => [
+      ...tools.map((tool) => tool.manifest.id),
+      ...problems.map((problem) => problem.folder),
+    ]),
+  );
+}
+
+/** Registers programs in one scope. One bad entry does not stop the others. */
 export async function registerPrograms(
   registry: ToolRegistry,
   programs: readonly ProgramDetails[],
+  scope: InstallScope = GLOBAL_SCOPE,
 ): Promise<RegistrationReport> {
-  const { tools, problems } = await registry.list();
-  // A broken tool still holds its folder, so its id is taken too.
-  const taken = new Set([
-    ...tools.map((tool) => tool.manifest.id),
-    ...problems.map((problem) => problem.folder),
-  ]);
+  const taken = await takenIds(registry, scope);
   const registered: RegisteredTool[] = [];
   const failures: RegistrationFailure[] = [];
   for (const details of programs) {
     try {
       const id = uniqueIdentifier(details.name, taken);
-      const tool = await registry.register(createRegisteredManifest(details, id));
+      const tool = await registry.register(createRegisteredManifest(details, id), { scope });
       taken.add(id);
       registered.push(tool);
     } catch (error) {
@@ -97,13 +113,29 @@ export async function registerPrograms(
   return { registered, failures };
 }
 
+export interface ToolChanges extends ToolDetails {
+  /** A new path, which lets a registered program point through a path variable. */
+  readonly program?: string | undefined;
+}
+
+function changedRun(manifest: ToolManifest, program: string | undefined): object {
+  if (program === undefined || manifest.level === 2 || program === manifest.run.program) {
+    return {};
+  }
+  if (!isAbsolute(program) && !win32.isAbsolute(program) && !startsWithPathVariable(program)) {
+    throw new DefinitionError('A program must be an absolute path or start with a path variable');
+  }
+  return { run: { ...manifest.run, program } };
+}
+
 /** Changes what the user can edit about a tool. Its id, and so its folder, stays the same. */
 export async function updateToolDetails(
   registry: ToolRegistry,
   id: string,
-  details: ToolDetails,
+  details: ToolChanges,
+  scope: InstallScope = GLOBAL_SCOPE,
 ): Promise<RegisteredTool | undefined> {
-  const tool = await registry.get(id);
+  const tool = await registry.get(id, scope);
   if (tool === undefined) {
     return undefined;
   }
@@ -111,6 +143,10 @@ export async function updateToolDetails(
   delete kept['category'];
   delete kept['description'];
   delete kept['interpreter'];
-  const manifest = toolManifestSchema.parse({ ...kept, ...textFields(details) });
-  return registry.register(manifest, { replace: true });
+  const manifest = toolManifestSchema.parse({
+    ...kept,
+    ...textFields(details),
+    ...changedRun(tool.manifest, details.program),
+  });
+  return registry.register(manifest, { replace: true, scope });
 }

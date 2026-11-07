@@ -30,7 +30,12 @@ export const en = {
   'nav.settings': 'Settings',
   'nav.history': 'Run history',
   'nav.recent': 'Recent',
+  'nav.favorites': 'Favorites',
+  'nav.workspaces': 'Workspaces',
+  'nav.resizePanel': 'Resize panel',
 
+  'category.moveUp': 'Move up',
+  'category.moveDown': 'Move down',
   'category.changeLogo': 'Change logo…',
   'category.removeLogo': 'Remove logo',
 
@@ -40,6 +45,7 @@ export const en = {
   'state.failed': 'Failed',
   'state.cancelled': 'Cancelled',
 
+  'status.workspace': 'Workspace: {name}',
   'status.ready': 'Ready',
   'status.tasksRunning': { one: '{count} task running', other: '{count} tasks running' },
   'status.version': 'v{version}',
@@ -55,6 +61,13 @@ export const en = {
   'tool.stop': 'Stop',
   'tool.edit': 'Edit details',
   'tool.remove': 'Remove',
+  'tool.favorite': 'Add {name} to favorites',
+  'tool.unfavorite': 'Remove {name} from favorites',
+  'tool.moveToGlobal': 'Move to Global',
+  'tool.moveToWorkspace': 'Move to this Workspace',
+  'tool.scope': 'Installed in',
+  'tool.scopeGlobal': 'Global, in every Workspace',
+  'tool.scopeWorkspace': 'This Workspace',
   'tool.category': 'Category',
   'tool.interpreter': 'Interpreter',
   'tool.none': 'None',
@@ -121,6 +134,9 @@ export const en = {
   'runtime.programTitle': 'The program is no longer there',
   'runtime.programBody':
     'Bildora expected it at {program}. Move it back, or remove this tool and add it again.',
+  'runtime.variableTitle': 'Path variable {variable} has no value',
+  'runtime.variableBody':
+    'This tool expects a folder on this computer. Set {variable} in Settings, then check again.',
   'runtime.checkAgain': 'Check again',
 
   'failure.exitCode': 'The tool exited with code {code}.',
@@ -140,6 +156,10 @@ export const en = {
   'form.interpreterHint':
     'The program that runs this file, such as python. Empty for .exe and .bat.',
   'form.program': 'Program',
+  'form.programHint': 'An absolute path, or one starting with a path variable, such as {example}.',
+  'form.scope': 'Install in',
+  'form.scopeWorkspace': 'Current Workspace ({name})',
+  'form.scopeGlobal': 'Global, in every Workspace',
   'form.save': 'Save',
   'form.add': 'Add tool',
   'form.cancel': 'Cancel',
@@ -147,7 +167,17 @@ export const en = {
   'remove.title': 'Remove {name}?',
   'remove.body':
     'Bildora forgets this tool. The program stays where it is, and nothing is deleted from your files.',
+  'remove.bodyGlobal':
+    'Bildora forgets this tool in every Workspace, because it is global. The program stays where it is, and nothing is deleted from your files.',
   'remove.confirm': 'Remove tool',
+
+  'move.toGlobalTitle': 'Move {name} to Global?',
+  'move.toGlobalBody':
+    'It appears in every Workspace, with its profiles and secrets. Its past runs stay in this Workspace.',
+  'move.toWorkspaceTitle': 'Move {name} to this Workspace?',
+  'move.toWorkspaceBody':
+    'Other Workspaces lose this tool. Its profiles and secrets come along, and past runs stay where they are.',
+  'move.confirm': 'Move tool',
 
   'import.title': 'Review what to import',
   'import.declared': 'Declared tools',
@@ -184,11 +214,41 @@ export const en = {
   'palette.action': 'Action',
   'palette.theme': 'Theme: {theme}',
 
+  'palette.switchWorkspace': 'Switch to {name}',
+  'palette.createWorkspace': 'Create Workspace…',
+  'palette.manageWorkspaces': 'Manage Workspaces',
+
   'problems.title': 'Tools that cannot be read',
   'problems.body':
     'These folders are in the Bildora data folder, but their tool definition is damaged or unreadable. The rest of your tools are not affected.',
 
+  'workspace.switch': 'Switch Workspace',
+  'workspace.current': 'Current Workspace',
+  'workspace.create': 'Create Workspace…',
+  'workspace.manage': 'Manage Workspaces',
+  'workspace.createTitle': 'Create Workspace',
+  'workspace.createConfirm': 'Create',
+  'workspace.name': 'Workspace name',
+  'workspace.manageTitle': 'Workspaces',
+  'workspace.manageBody':
+    'Each Workspace has its own tools, favorites, run history, theme and layout. Global tools appear in all of them.',
+  'workspace.open': 'Open',
+  'workspace.active': 'Open now',
+  'workspace.rename': 'Rename',
+  'workspace.renameTitle': 'Rename {name}',
+  'workspace.renameConfirm': 'Rename',
+  'workspace.remove': 'Delete',
+  'workspace.removeTitle': 'Delete {name}?',
+  'workspace.removeBody':
+    'Its tools, their profiles and secrets, and its run history are deleted. Global tools and the programs themselves are not touched. This cannot be undone.',
+  'workspace.removeLast': 'The last Workspace cannot be deleted.',
+  'workspace.problems': 'Workspaces that cannot be read',
+  'workspace.problemsBody':
+    'These folders are in the Bildora data folder, but their definition is damaged or comes from a newer version.',
+
   'settings.title': 'Settings',
+  'settings.workspace': 'This Workspace: {name}',
+  'settings.computer': 'This computer',
   'settings.theme': 'Theme',
   'settings.themeSystem': 'Follow Windows',
   'settings.themeLight': 'Light',
@@ -198,7 +258,16 @@ export const en = {
     'Older runs are deleted once a tool passes this number. Each run keeps up to 1 MiB of output.',
   'settings.clearHistory': 'Clear run history',
   'settings.clearHistoryTitle': 'Clear run history?',
-  'settings.clearHistoryBody': 'Every finished run is deleted. This cannot be undone.',
+  'settings.clearHistoryBody':
+    'Every finished run in this Workspace is deleted. This cannot be undone.',
+  'settings.pathVariables': 'Path variables',
+  'settings.pathVariablesHint':
+    'Folders on this computer that tools can refer to, as {example}. Their values are never shared.',
+  'settings.pathVariablesEmpty': 'No path variables yet.',
+  'settings.pathVariableName': 'Variable name',
+  'settings.pathVariableValue': 'Absolute path',
+  'settings.pathVariableAdd': 'Set variable',
+  'settings.pathVariableRemove': 'Remove {name}',
 
   'about.title': 'About Bildora',
   'about.body': 'A home for your tools and scripts. Version {version}.',

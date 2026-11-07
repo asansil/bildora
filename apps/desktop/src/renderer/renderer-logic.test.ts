@@ -11,7 +11,7 @@ import { en } from '../shared/i18n/en.js';
 import { t } from '../shared/i18n/translate.js';
 import type { RunView } from '../shared/ipc-contract.js';
 import { matchCommands } from './palette/match-commands.js';
-import { categoryInitial, toggleCategory } from './tools/category-rail.js';
+import { categoryInitial, placeCategory, toggleCategory } from './tools/category-rail.js';
 import { countRunning, summarizeRuns } from './tools/run-state.js';
 
 describe('categoryInitial', () => {
@@ -27,6 +27,34 @@ describe('categoryInitial', () => {
     ['', ''],
   ])('for %s', (label, expected) => {
     expect(categoryInitial(label)).toBe(expected);
+  });
+});
+
+describe('placeCategory', () => {
+  const tool = { tools: [] };
+  const groups = [
+    { ...tool, category: 'Alpha' },
+    { ...tool, category: 'Beta' },
+    { ...tool, category: 'Gamma' },
+    tool,
+  ];
+
+  it('puts a dragged category in the place of the target', () => {
+    expect(placeCategory(groups, [], 'Gamma', 'Alpha')).toEqual(['gamma', 'alpha', 'beta']);
+    expect(placeCategory(groups, [], 'Alpha', 'Gamma')).toEqual(['beta', 'gamma', 'alpha']);
+  });
+
+  it('keeps the place of a category that is not shown now', () => {
+    expect(placeCategory(groups, ['gone'], 'Beta', 'Alpha')).toEqual([
+      'beta',
+      'alpha',
+      'gamma',
+      'gone',
+    ]);
+  });
+
+  it('changes nothing for a drop on itself', () => {
+    expect(placeCategory(groups, ['beta'], 'Beta', 'Beta')).toEqual(['beta']);
   });
 });
 
@@ -75,6 +103,7 @@ describe('summarizeRuns', () => {
   const run = (runId: string, toolId: string, status: RunView['status']): RunView => ({
     runId,
     toolId,
+    toolKey: toolId,
     status,
   });
 

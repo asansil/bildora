@@ -177,7 +177,15 @@ test('keeps values in a profile and secrets out of it', async () => {
   await window.getByRole('dialog').getByRole('button', { name: 'Save' }).click();
   await expect(window.getByLabel('Profile')).toHaveValue('nightly');
 
-  const file = join(dataDir, 'tools', 'bildora.sample.file-report', 'profiles', 'nightly.yaml');
+  const file = join(
+    dataDir,
+    'workspaces',
+    'default',
+    'tools',
+    'bildora.sample.file-report',
+    'profiles',
+    'nightly.yaml',
+  );
   const text = await readFile(file, 'utf8');
   expect(text).toContain('Saved title');
   expect(text).not.toContain(SECRET);

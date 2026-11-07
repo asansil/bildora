@@ -1,20 +1,32 @@
 import { useId, useState } from 'react';
 import type { SyntheticEvent } from 'react';
 import { t } from '../../shared/i18n/translate.js';
-import type { ToolDetailsInput } from '../../shared/ipc-contract.js';
+import type { ToolDetailsInput, ToolScopeChoice } from '../../shared/ipc-contract.js';
 import { Dialog } from '../shell/Dialog.js';
+import { ScopeChoice } from './ScopeChoice.js';
 
 interface ToolFormProps {
   readonly mode: 'add' | 'edit';
-  /** Shown read-only: a tool's program is fixed once it is registered. */
+  /** Read-only when adding, and editable afterwards so it can point through a path variable. */
   readonly program?: string | undefined;
+  /** Names the current Workspace in the scope choice, which only adding shows. */
+  readonly workspaceName: string;
   readonly initial: ToolDetailsInput;
-  readonly onSubmit: (details: ToolDetailsInput) => void;
+  readonly onSubmit: (details: ToolDetailsInput, scope: ToolScopeChoice) => void;
   readonly onClose: () => void;
 }
 
 /** Details of a tool, for registering a program or changing one that is registered. */
-export function ToolForm({ mode, program, initial, onSubmit, onClose }: ToolFormProps) {
+export function ToolForm({
+  mode,
+  program,
+  workspaceName,
+  initial,
+  onSubmit,
+  onClose,
+}: ToolFormProps) {
+  const [path, setPath] = useState(program ?? '');
+  const [scope, setScope] = useState<ToolScopeChoice>('workspace');
   const [name, setName] = useState(initial.name);
   const [category, setCategory] = useState(initial.category ?? '');
   const [description, setDescription] = useState(initial.description ?? '');
@@ -23,13 +35,17 @@ export function ToolForm({ mode, program, initial, onSubmit, onClose }: ToolForm
 
   function submit(event: SyntheticEvent): void {
     event.preventDefault();
-    onSubmit({ name, category, description, interpreter });
+    const changed = mode === 'edit' && program !== undefined && path.trim() !== program;
+    onSubmit(
+      { name, category, description, interpreter, ...(changed ? { program: path.trim() } : {}) },
+      scope,
+    );
   }
 
   return (
     <Dialog title={t(mode === 'add' ? 'form.addTitle' : 'form.editTitle')} onClose={onClose}>
       <form className="form" onSubmit={submit}>
-        {program === undefined ? null : (
+        {program === undefined || mode === 'edit' ? null : (
           <div className="field">
             <span className="field-label">{t('form.program')}</span>
             <code className="path" title={program}>
@@ -37,6 +53,26 @@ export function ToolForm({ mode, program, initial, onSubmit, onClose }: ToolForm
             </code>
           </div>
         )}
+        {program !== undefined && mode === 'edit' ? (
+          <div className="field">
+            <label className="field-label" htmlFor={`${id}-program`}>
+              {t('form.program')}
+            </label>
+            <input
+              id={`${id}-program`}
+              value={path}
+              required
+              spellCheck={false}
+              aria-describedby={`${id}-program-hint`}
+              onChange={(event) => {
+                setPath(event.target.value);
+              }}
+            />
+            <span className="field-hint" id={`${id}-program-hint`}>
+              {t('form.programHint', { example: '{{paths.tools}}\\run.exe' })}
+            </span>
+          </div>
+        ) : null}
         <div className="field">
           <label className="field-label" htmlFor={`${id}-name`}>
             {t('form.name')}
@@ -100,6 +136,9 @@ export function ToolForm({ mode, program, initial, onSubmit, onClose }: ToolForm
             {t('form.interpreterHint')}
           </span>
         </div>
+        {mode === 'add' ? (
+          <ScopeChoice scope={scope} workspaceName={workspaceName} onChange={setScope} />
+        ) : null}
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>
             {t('form.cancel')}

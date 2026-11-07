@@ -148,6 +148,7 @@ test('the shell opens sandboxed, with a welcome and no categories', async () => 
   await expect(window.getByTestId('welcome')).toBeVisible();
   await expect(window.getByTestId('status')).toHaveText('Ready');
   await expect(window.getByRole('navigation').getByRole('button')).toHaveText([
+    'Workspaces',
     'Run history',
     'Settings',
   ]);
@@ -395,8 +396,8 @@ test('the theme changes, and is remembered', async () => {
   await expect.poll(() => isDark(first.app)).toBe(false);
   await first.app.close();
 
-  const stored: unknown = JSON.parse(await readFile(join(dataDir, 'preferences.json'), 'utf8'));
-  expect(stored).toMatchObject({ theme: 'light' });
+  const stored = await readFile(join(dataDir, 'workspaces', 'default', 'workspace.yaml'), 'utf8');
+  expect(stored).toContain('theme: light');
   const second = await launchShell();
   expect(await isDark(second.app)).toBe(false);
 });
@@ -450,7 +451,7 @@ test('removing a tool forgets it and leaves the program alone', async () => {
 
   await expect(window.getByTestId('welcome')).toBeVisible();
   expect(existsSync(program)).toBe(true);
-  expect(existsSync(join(dataDir, 'tools', 'tool'))).toBe(false);
+  expect(existsSync(join(dataDir, 'workspaces', 'default', 'tools', 'tool'))).toBe(false);
 });
 
 test('a second instance leaves and keeps the first one open', async () => {

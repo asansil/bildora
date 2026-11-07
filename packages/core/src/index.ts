@@ -15,7 +15,7 @@ export { DefinitionError } from './storage/definition-error.js';
 export type { DefinitionIssue } from './storage/definition-error.js';
 export { GLOBAL_SCOPE, openDataDirectory, resolveDataDir } from './storage/data-directory.js';
 export type { DataDirectoryOptions, InstallScope } from './storage/data-directory.js';
-export { ToolRegistry } from './registry/tool-registry.js';
+export { ToolRegistry, toolKey } from './registry/tool-registry.js';
 export type {
   RegisterOptions,
   RegisteredTool,
@@ -30,6 +30,8 @@ export type { ResolveOptions } from './runner/resolve-executable.js';
 export { startRun, startWindowRun } from './runner/run-tool.js';
 export { startRecordedRun } from './runner/recorded-run.js';
 export type { RecordedRunOptions } from './runner/recorded-run.js';
+export { MissingPathVariableError, expandPath } from './runner/expand-paths.js';
+export type { PathVariables } from './runner/expand-paths.js';
 export { resolveRunValues } from './runner/resolve-values.js';
 export type { RecordedParameter, ResolvedValues } from './runner/resolve-values.js';
 export type { RunProgress } from './runner/progress-lines.js';
@@ -61,6 +63,7 @@ export type {
   ManifestProposal,
   RefusedManifest,
 } from './import/import-manifest.js';
+export { moveTool } from './tools/move-tool.js';
 export { removeTool } from './tools/remove-tool.js';
 export type {
   RunFailure,
@@ -82,9 +85,16 @@ export type {
   ProgramDetails,
   RegistrationFailure,
   RegistrationReport,
+  ToolChanges,
   ToolDetails,
 } from './import/register-program.js';
-export { categoryKey, checkRuntime, groupByCategory } from './tools/tool-status.js';
+export {
+  categoryKey,
+  checkRuntime,
+  groupByCategory,
+  moveCategory,
+  orderGroups,
+} from './tools/tool-status.js';
 export type { RuntimeCheckOptions, RuntimeStatus, ToolGroup } from './tools/tool-status.js';
 export {
   DEFAULT_HISTORY_RUN_LIMIT,
@@ -102,3 +112,30 @@ export {
   removeCategoryLogo,
   setCategoryLogo,
 } from './storage/category-logos.js';
+export {
+  readPathVariables,
+  removePathVariable,
+  setPathVariable,
+} from './storage/path-variables.js';
+export { findVisibleTool, listVisibleTools, workspaceScope } from './workspaces/visible-tools.js';
+export { removeWorkspace } from './workspaces/remove-workspace.js';
+export {
+  DEFAULT_WORKSPACE_ID,
+  DEFAULT_WORKSPACE_NAME,
+  PANEL_WIDTH_MAX,
+  PANEL_WIDTH_MIN,
+  WORKSPACE_NAME_MAX_LENGTH,
+  createWorkspace,
+  getWorkspace,
+  listWorkspaces,
+  openWorkspaces,
+  updateWorkspace,
+} from './workspaces/workspace-store.js';
+export type {
+  LayoutChanges,
+  Workspace,
+  WorkspaceChanges,
+  WorkspaceLayout,
+  WorkspaceList,
+  WorkspaceProblem,
+} from './workspaces/workspace-store.js';

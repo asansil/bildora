@@ -3,6 +3,7 @@ import { t } from '../../shared/i18n/translate.js';
 import type { MessageKey } from '../../shared/i18n/translate.js';
 import type { ShellTheme } from '../../shared/ipc-contract.js';
 import { Dialog } from '../shell/Dialog.js';
+import { PathVariablesEditor } from './PathVariablesEditor.js';
 
 export const THEME_LABELS: readonly { value: ShellTheme; label: MessageKey }[] = [
   { value: 'system', label: 'settings.themeSystem' },
@@ -13,19 +14,25 @@ export const THEME_LABELS: readonly { value: ShellTheme; label: MessageKey }[] =
 const HISTORY_RUN_LIMIT_MAX = 100_000;
 
 interface SettingsViewProps {
+  readonly workspaceName: string;
   readonly theme: ShellTheme;
   readonly historyRunLimit: number;
   readonly onTheme: (theme: ShellTheme) => void;
   readonly onHistoryRunLimit: (limit: number) => void;
   readonly onClearHistory: () => void;
+  readonly onPathVariablesChanged: () => void;
+  readonly onError: (error: unknown) => void;
 }
 
 export function SettingsView({
+  workspaceName,
   theme,
   historyRunLimit,
   onTheme,
   onHistoryRunLimit,
   onClearHistory,
+  onPathVariablesChanged,
+  onError,
 }: SettingsViewProps) {
   const id = useId();
   const [limit, setLimit] = useState(String(historyRunLimit));
@@ -45,6 +52,7 @@ export function SettingsView({
   return (
     <section className="settings">
       <h1>{t('settings.title')}</h1>
+      <h2>{t('settings.workspace', { name: workspaceName })}</h2>
       <fieldset className="radio-group">
         <legend>{t('settings.theme')}</legend>
         {THEME_LABELS.map(({ value, label }) => (
@@ -63,6 +71,18 @@ export function SettingsView({
         ))}
       </fieldset>
 
+      <div className="actions">
+        <button
+          type="button"
+          onClick={() => {
+            setClearing(true);
+          }}
+        >
+          {t('settings.clearHistory')}
+        </button>
+      </div>
+
+      <h2>{t('settings.computer')}</h2>
       <div className="field settings-field">
         <label className="field-label" htmlFor={id}>
           {t('settings.historyLimit')}
@@ -78,16 +98,7 @@ export function SettingsView({
         />
         <span className="field-hint">{t('settings.historyLimitHint')}</span>
       </div>
-      <div className="actions">
-        <button
-          type="button"
-          onClick={() => {
-            setClearing(true);
-          }}
-        >
-          {t('settings.clearHistory')}
-        </button>
-      </div>
+      <PathVariablesEditor onChanged={onPathVariablesChanged} onError={onError} />
 
       {clearing ? (
         <Dialog

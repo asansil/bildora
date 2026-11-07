@@ -6,8 +6,10 @@ import type {
   ManifestProposalView,
   ProposalView,
   RegisterTools,
+  ToolScopeChoice,
 } from '../../shared/ipc-contract.js';
 import { Dialog } from '../shell/Dialog.js';
+import { ScopeChoice } from '../tools/ScopeChoice.js';
 
 interface Row {
   readonly path: string;
@@ -31,7 +33,12 @@ function rowOf(proposal: ProposalView): Row {
 
 interface ImportReviewProps {
   readonly detection: DetectionView;
-  readonly onConfirm: (programs: RegisterTools['programs'], manifests: readonly string[]) => void;
+  readonly workspaceName: string;
+  readonly onConfirm: (
+    programs: RegisterTools['programs'],
+    manifests: readonly string[],
+    scope: ToolScopeChoice,
+  ) => void;
   readonly onClose: () => void;
 }
 
@@ -72,7 +79,8 @@ function ManifestRow({ manifest, included, onChange }: ManifestRowProps) {
 }
 
 /** The last step of assisted import: nothing becomes a tool until the user confirms it here. */
-export function ImportReview({ detection, onConfirm, onClose }: ImportReviewProps) {
+export function ImportReview({ detection, workspaceName, onConfirm, onClose }: ImportReviewProps) {
+  const [scope, setScope] = useState<ToolScopeChoice>('workspace');
   const [rows, setRows] = useState(() => detection.proposals.map(rowOf));
   const included = rows.filter((row) => row.included && row.name.trim() !== '');
   const [manifests, setManifests] = useState<readonly string[]>(() =>
@@ -95,6 +103,7 @@ export function ImportReview({ detection, onConfirm, onClose }: ImportReviewProp
         interpreter,
       })),
       manifests,
+      scope,
     );
   }
 
@@ -198,6 +207,9 @@ export function ImportReview({ detection, onConfirm, onClose }: ImportReviewProp
               ))}
             </div>
           </div>
+        )}
+        {found === 0 ? null : (
+          <ScopeChoice scope={scope} workspaceName={workspaceName} onChange={setScope} />
         )}
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>

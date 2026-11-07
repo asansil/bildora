@@ -1,5 +1,5 @@
-import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readFile, readdir, rename, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { isValidIdentifier } from '@bildora/protocol';
 import type { ToolManifest } from '@bildora/protocol';
 import { parseManifest, serializeManifest } from '../manifest/parse-manifest.js';
@@ -22,6 +22,13 @@ export interface RegisteredTool {
   readonly scope: InstallScope;
   /** Tool folder, which relative paths in the manifest start from. */
   readonly directory: string;
+}
+
+/** Tells tools apart across scopes, where they can share an id. */
+export function toolKey(tool: Pick<RegisteredTool, 'manifest' | 'scope'>): string {
+  const { scope, manifest } = tool;
+  const prefix = scope.kind === 'global' ? 'global' : `workspace/${scope.workspaceId}`;
+  return `${prefix}/${manifest.id}`;
 }
 
 /** A stored tool that cannot be used. It never hides the healthy tools around it. */
@@ -119,6 +126,21 @@ export class ToolRegistry {
     const existed = await this.exists(directory);
     await rm(directory, { recursive: true, force: true });
     return existed;
+  }
+
+  /** Tells whether a scope holds this id, even in a folder that cannot be read as a tool. */
+  async has(id: string, scope: InstallScope = GLOBAL_SCOPE): Promise<boolean> {
+    return this.exists(toolDirectory(this.dataDir, scope, id));
+  }
+
+  /** Moves a tool's folder, and so its profiles, to another scope. */
+  async move(id: string, from: InstallScope, to: InstallScope): Promise<void> {
+    const target = toolDirectory(this.dataDir, to, id);
+    if (await this.exists(target)) {
+      throw new DefinitionError(`Tool "${id}" is already registered in that scope`);
+    }
+    await mkdir(dirname(target), { recursive: true });
+    await rename(toolDirectory(this.dataDir, from, id), target);
   }
 
   private async exists(directory: string): Promise<boolean> {

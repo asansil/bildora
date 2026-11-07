@@ -11,8 +11,8 @@ export interface ToolRunSummary {
 }
 
 /** Reduces every run the app knows about to what one tool shows. */
-export function summarizeRuns(runs: readonly RunView[], toolId: string): ToolRunSummary {
-  const own = runs.filter((run) => run.toolId === toolId);
+export function summarizeRuns(runs: readonly RunView[], toolKey: string): ToolRunSummary {
+  const own = runs.filter((run) => run.toolKey === toolKey);
   const running = own.filter((run) => run.status === 'running');
   const last = own.find((run) => run.status !== 'running');
   return {

@@ -13,7 +13,7 @@ import { ConsolePane } from './ConsolePane.js';
 import type { ConsoleSize } from './ConsolePane.js';
 import { ParameterForm } from './ParameterForm.js';
 import { ProfileBar } from './ProfileBar.js';
-import { RuntimeWarning, failureText } from './ToolDetails.js';
+import { FavoriteButton, RuntimeWarning, failureText } from './ToolDetails.js';
 import { formProblems, initialValues, submittedValues } from './parameter-form.js';
 import type { FormValue, FormValues } from './parameter-form.js';
 import { summarizeRuns } from './run-state.js';
@@ -28,8 +28,11 @@ interface ToolRunnerProps {
   readonly onStop: (runId: string) => void;
   readonly onEdit: () => void;
   readonly onRemove: () => void;
+  readonly onMove: () => void;
   readonly onCheckAgain: () => void;
   readonly onHistory: () => void;
+  readonly favorite: boolean;
+  readonly onToggleFavorite: () => void;
   readonly onError: (error: unknown) => void;
 }
 
@@ -41,8 +44,11 @@ export function ToolRunner({
   onStop,
   onEdit,
   onRemove,
+  onMove,
   onCheckAgain,
   onHistory,
+  favorite,
+  onToggleFavorite,
   onError,
 }: ToolRunnerProps) {
   const parameters = tool.parameters ?? NO_PARAMETERS;
@@ -71,7 +77,7 @@ export function ToolRunner({
     };
   }, [tool.id, onError]);
 
-  const summary = summarizeRuns(runs, tool.id);
+  const summary = summarizeRuns(runs, tool.key);
   const [active] = summary.running;
   const isRunning = active !== undefined;
   const shownRun = active ?? summary.last;
@@ -162,6 +168,7 @@ export function ToolRunner({
     <article className="tool tool-runner" data-testid="tool-runner">
       <header className="tool-header">
         <h1 title={tool.name}>{tool.name}</h1>
+        <FavoriteButton tool={tool} favorite={favorite} onToggle={onToggleFavorite} />
         <RunStateBadge state={summary.state} />
       </header>
       {tool.description === undefined ? null : (
@@ -223,6 +230,9 @@ export function ToolRunner({
         </button>
         <button type="button" onClick={onEdit}>
           {t('tool.edit')}
+        </button>
+        <button type="button" disabled={isRunning} onClick={onMove}>
+          {t(tool.scope === 'global' ? 'tool.moveToWorkspace' : 'tool.moveToGlobal')}
         </button>
         <button type="button" disabled={isRunning} onClick={onRemove}>
           {t('tool.remove')}

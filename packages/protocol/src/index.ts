@@ -21,3 +21,8 @@ export type {
   ToolOutput,
   ToolParameter,
 } from './manifest.js';
+export {
+  isPathVariableName,
+  replacePathVariables,
+  startsWithPathVariable,
+} from './path-variables.js';

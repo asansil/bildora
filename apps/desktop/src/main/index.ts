@@ -9,6 +9,7 @@ import {
   createCredentialStore,
   defaultLauncherPath,
   getProfile,
+  readPathVariables,
   readPreferences,
   resolveDataDir,
   startRecordedRun,
@@ -20,6 +21,7 @@ import { RunService } from './run-service.js';
 import type { RunContext } from './run-service.js';
 import { ToolService } from './tool-service.js';
 import { shellWebPreferences, titleBarOverlay } from './web-preferences.js';
+import { WorkspaceService } from './workspace-service.js';
 
 const moduleDirectory = fileURLToPath(new URL('.', import.meta.url));
 const rendererFile = join(moduleDirectory, '../renderer/index.html');
@@ -123,23 +125,26 @@ async function start(): Promise<void> {
     callback(false);
   });
 
-  const preferences = await readPreferences(dataDir).catch(() => DEFAULT_PREFERENCES);
-  nativeTheme.themeSource = preferences.theme;
-
   const { history, problem: historyProblem } = await openHistory();
   history.recoverInterrupted();
   const secrets = createCredentialStore(dataDir);
+  const registry = await ToolRegistry.open({ dataDir });
+  const workspaces = await WorkspaceService.open(registry, secrets, history);
+  nativeTheme.themeSource = workspaces.current.theme;
 
   async function startTool(tool: RegisteredTool, context: RunContext): Promise<ToolRun> {
-    const { runId, request, onOutput, onProgress } = context;
+    const { runId, workspaceId, request, onOutput, onProgress } = context;
     const { profileId, values, columns, rows } = request;
     const { historyRunLimit } = await readPreferences(dataDir).catch(() => DEFAULT_PREFERENCES);
     const profile = profileId === undefined ? undefined : await getProfile(tool, profileId);
     if (profileId !== undefined && profile === undefined) {
       throw new Error('The chosen profile no longer exists');
     }
+    const pathVariables = await readPathVariables(dataDir).catch(() => undefined);
     return startRecordedRun(tool, {
       history,
+      workspaceId,
+      pathVariables,
       store: secrets,
       historyRunLimit,
       runId,
@@ -165,7 +170,8 @@ async function start(): Promise<void> {
   registerIpc({
     dataDir,
     rendererUrl: developmentUrl ?? pathToFileURL(rendererFile).href,
-    tools: new ToolService(await ToolRegistry.open({ dataDir }), dataDir, secrets),
+    tools: new ToolService(registry, dataDir, secrets, () => workspaces.activeId),
+    workspaces,
     runs,
     history,
     historyProblem,

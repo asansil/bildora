@@ -3,6 +3,8 @@ import type {
   EditCommand,
   HistoryRecordView,
   HistorySummaryView,
+  LayoutUpdate,
+  PathVariableView,
   ProfileView,
   RegisterTools,
   RegistrationView,
@@ -15,6 +17,10 @@ import type {
   ShellPreferencesChange,
   ToolCatalog,
   ToolDetailsInput,
+  ToolScopeChoice,
+  WorkspaceListView,
+  WorkspaceUpdate,
+  WorkspaceView,
 } from '../shared/ipc-contract.js';
 
 /** The only surface the renderer can reach. Every addition is reviewed as a public API. */
@@ -32,10 +38,12 @@ export interface ShellApi {
   /** Finds a dropped file's path, which a sandboxed page cannot read by itself. */
   pathForFile(file: File): string;
   registerTools(input: RegisterTools): Promise<RegistrationView>;
-  importManifests(paths: readonly string[]): Promise<RegistrationView>;
+  importManifests(paths: readonly string[], scope: ToolScopeChoice): Promise<RegistrationView>;
   updateTool(id: string, details: ToolDetailsInput): Promise<void>;
   removeTool(id: string): Promise<void>;
-  /** Offers to change a category's logo, and tells whether the user changed anything. */
+  /** Moves a tool between Global and the active Workspace, with its profiles and secrets. */
+  setToolScope(id: string, scope: ToolScopeChoice): Promise<void>;
+  /** Offers to move a category or change its logo, and tells whether anything changed. */
   openCategoryMenu(category: string): Promise<boolean>;
   startRun(toolId: string, request?: RunRequest): Promise<RunView>;
   cancelRun(runId: string): Promise<void>;
@@ -56,4 +64,15 @@ export interface ShellApi {
   clearHistory(): Promise<void>;
   getPreferences(): Promise<ShellPreferences>;
   setPreferences(preferences: ShellPreferencesChange): Promise<void>;
+  listWorkspaces(): Promise<WorkspaceListView>;
+  switchWorkspace(id: string): Promise<WorkspaceListView>;
+  createWorkspace(name: string): Promise<WorkspaceListView>;
+  renameWorkspace(id: string, name: string): Promise<WorkspaceListView>;
+  removeWorkspace(id: string): Promise<WorkspaceListView>;
+  /** Changes the active Workspace. */
+  updateWorkspace(changes: WorkspaceUpdate): Promise<WorkspaceView>;
+  saveLayout(layout: LayoutUpdate): Promise<WorkspaceView>;
+  listPathVariables(): Promise<readonly PathVariableView[]>;
+  setPathVariable(name: string, value: string): Promise<void>;
+  removePathVariable(name: string): Promise<void>;
 }
