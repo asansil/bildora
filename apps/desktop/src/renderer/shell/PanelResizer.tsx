@@ -22,26 +22,29 @@ interface PanelResizerProps {
 
 /** The handle between the panel and the work area, for the pointer and for the arrow keys. */
 export function PanelResizer({ width, onResize, onCommit }: PanelResizerProps) {
-  const drag = useRef<{ readonly startX: number; readonly startWidth: number } | undefined>(
-    undefined,
-  );
+  // The end of a drag can arrive before the last move is drawn, so `width` may be behind it.
+  const drag = useRef<
+    { readonly startX: number; readonly startWidth: number; latest: number } | undefined
+  >(undefined);
 
   function onPointerDown(event: PointerEvent<HTMLDivElement>): void {
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { startX: event.clientX, startWidth: width };
+    drag.current = { startX: event.clientX, startWidth: width, latest: width };
   }
 
   function onPointerMove(event: PointerEvent): void {
     if (drag.current !== undefined) {
-      onResize(clamped(drag.current.startWidth + event.clientX - drag.current.startX));
+      drag.current.latest = clamped(drag.current.startWidth + event.clientX - drag.current.startX);
+      onResize(drag.current.latest);
     }
   }
 
   function onPointerUp(): void {
     if (drag.current !== undefined) {
+      const { latest } = drag.current;
       drag.current = undefined;
-      onCommit(width);
+      onCommit(latest);
     }
   }
 

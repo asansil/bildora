@@ -337,6 +337,32 @@ test('the rail reorders by dragging, and the panel resizes with the pointer', as
   await expect(window.locator('#tool-panel')).toHaveCSS('width', '348px');
 });
 
+test('a resize stores where the pointer ended, even if the page has not drawn it yet', async () => {
+  const session = await launchShell();
+  const { window } = session;
+  await addTool(session, 'Alpha Tool', 'alpha');
+  await rail(window, 'alpha').click();
+  const handle = window.getByRole('separator', { name: 'Resize panel' });
+  const box = await handle.boundingBox();
+  if (box === null) {
+    throw new Error('The panel handle is not on screen');
+  }
+  await window.mouse.move(box.x + 2, box.y + 100);
+  await window.mouse.down();
+
+  // A slow machine can deliver both of these before React draws the first one.
+  await window.evaluate(`{
+    const element = document.querySelector('[role="separator"]');
+    const options = { bubbles: true, pointerId: 1, clientX: ${String(box.x + 102)} };
+    element.dispatchEvent(new PointerEvent('pointermove', options));
+    element.dispatchEvent(new PointerEvent('pointerup', options));
+  }`);
+  await window.mouse.up();
+
+  const file = join(dataDir, 'workspaces', 'default', 'workspace.yaml');
+  await expect.poll(() => readFile(file, 'utf8')).toContain('panelWidth: 348');
+});
+
 test('a data folder from before Workspaces keeps everything', async () => {
   const toolFolder = join(dataDir, 'tools', 'old-tool');
   await mkdir(toolFolder, { recursive: true });

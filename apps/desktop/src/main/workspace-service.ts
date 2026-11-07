@@ -91,15 +91,20 @@ export class WorkspaceService {
     this.active = workspace;
   }
 
-  async list(): Promise<WorkspaceListView> {
+  private async read(): Promise<WorkspaceListView> {
     const { workspaces, problems } = await openWorkspaces(this.dataDir);
     return { activeId: this.active.id, workspaces, problems };
+  }
+
+  /** Waits for its turn too, so that it reflects every change asked for before it. */
+  list(): Promise<WorkspaceListView> {
+    return this.inTurn(() => this.read());
   }
 
   switchTo(id: string): Promise<WorkspaceListView> {
     return this.inTurn(async () => {
       await this.enter(id);
-      return this.list();
+      return this.read();
     });
   }
 
@@ -108,7 +113,7 @@ export class WorkspaceService {
     return this.inTurn(async () => {
       const workspace = await createWorkspace(this.dataDir, name, this.active.theme);
       await this.enter(workspace.id);
-      return this.list();
+      return this.read();
     });
   }
 
@@ -118,7 +123,7 @@ export class WorkspaceService {
       if (id === this.active.id) {
         this.active = workspace;
       }
-      return this.list();
+      return this.read();
     });
   }
 
@@ -139,7 +144,7 @@ export class WorkspaceService {
         await this.enter(other.id);
       }
       await removeWorkspace(this.registry, id, this.secrets, this.history);
-      return this.list();
+      return this.read();
     });
   }
 }
