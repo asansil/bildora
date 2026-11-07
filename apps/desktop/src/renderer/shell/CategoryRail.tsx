@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Folder, History, Settings, TriangleAlert } from 'lucide-react';
+import { Folder, History, Settings, TriangleAlert, Workflow } from 'lucide-react';
 import { t } from '../../shared/i18n/translate.js';
 import type { ToolGroupView, ToolView } from '../../shared/ipc-contract.js';
 import type { WorkspaceView } from '../../shared/ipc-contract.js';
@@ -48,7 +48,7 @@ interface CategoryRailProps {
   readonly openCategory: string | undefined;
   /** The tool in the work area, if the work area is showing one. */
   readonly currentTool: ToolView | undefined;
-  readonly screen: 'tools' | 'problems' | 'history' | 'settings' | 'workspaces';
+  readonly screen: 'tools' | 'problems' | 'history' | 'settings' | 'workspaces' | 'automations';
   readonly problemCount: number;
   readonly workspaces: readonly WorkspaceView[];
   readonly activeWorkspace: string | undefined;
@@ -56,7 +56,9 @@ interface CategoryRailProps {
   readonly onCategoryMenu: (category: string) => void;
   /** A category was dragged onto another. */
   readonly onPlaceCategory: (dragged: string, target: string) => void;
-  readonly onScreen: (screen: 'problems' | 'history' | 'settings' | 'workspaces') => void;
+  readonly onScreen: (
+    screen: 'problems' | 'history' | 'settings' | 'workspaces' | 'automations',
+  ) => void;
   readonly onSwitchWorkspace: (id: string) => void;
   readonly onCreateWorkspace: () => void;
 }
@@ -165,6 +167,20 @@ export function CategoryRail({
               onScreen('workspaces');
             }}
           />
+        </li>
+        <li>
+          <button
+            type="button"
+            className="rail-button"
+            title={t('nav.automations')}
+            aria-current={screen === 'automations' ? 'true' : undefined}
+            onClick={() => {
+              onScreen('automations');
+            }}
+          >
+            <Workflow className="icon" aria-hidden="true" />
+            <span className="visually-hidden">{t('nav.automations')}</span>
+          </button>
         </li>
         <li>
           <button

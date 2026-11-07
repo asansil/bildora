@@ -3,6 +3,9 @@ import type { DragEvent } from 'react';
 import { Search, X } from 'lucide-react';
 import { t } from '../shared/i18n/translate.js';
 import type {
+  AutomationDraft,
+  AutomationListView,
+  AutomationRunStateView,
   DetectionView,
   ProposalView,
   RegisterTools,
@@ -19,6 +22,7 @@ import type {
   WorkspaceView,
 } from '../shared/ipc-contract.js';
 import { PANEL_WIDTH_DEFAULT } from '../shared/ipc-contract.js';
+import { AutomationsView } from './automations/AutomationsView.js';
 import { HistoryView } from './history/HistoryView.js';
 import { ImportReview } from './import/ImportReview.js';
 import { CommandPalette } from './palette/CommandPalette.js';
@@ -45,8 +49,9 @@ const EMPTY_CATALOG: ToolCatalog = { groups: [], problems: [] };
 
 const EMPTY_RECENT: readonly string[] = [];
 const NO_WORKSPACES: WorkspaceListView = { activeId: '', workspaces: [], problems: [] };
+const NO_AUTOMATIONS: AutomationListView = { automations: [], problems: [] };
 
-type Screen = 'tools' | 'problems' | 'history' | 'settings' | 'workspaces';
+type Screen = 'tools' | 'problems' | 'history' | 'settings' | 'workspaces' | 'automations';
 
 type Modal =
   | { readonly kind: 'palette' }
@@ -68,6 +73,9 @@ export function App() {
   const [catalog, setCatalog] = useState(EMPTY_CATALOG);
   const [loaded, setLoaded] = useState(false);
   const [runs, setRuns] = useState<readonly RunView[]>([]);
+  const [automations, setAutomations] = useState(NO_AUTOMATIONS);
+  const [automationRuns, setAutomationRuns] = useState<readonly AutomationRunStateView[]>([]);
+  const [selectedAutomation, setSelectedAutomation] = useState<string | undefined>(undefined);
   const [version, setVersion] = useState('');
   const [workspaces, setWorkspaces] = useState(NO_WORKSPACES);
   const [panelWidth, setPanelWidth] = useState(PANEL_WIDTH_DEFAULT);
@@ -98,6 +106,14 @@ export function App() {
 
   const reload = useCallback((): Promise<ToolCatalog> => {
     const asked = generation.current;
+    void api
+      .listAutomations()
+      .then((next) => {
+        if (asked === generation.current) {
+          setAutomations(next);
+        }
+      })
+      .catch(() => undefined);
     return api
       .listTools()
       .then((next) => (asked === generation.current ? applyCatalog(next) : next));
@@ -110,6 +126,7 @@ export function App() {
   useEffect(() => {
     void reload().catch(report);
     void api.listRuns().then(setRuns).catch(report);
+    void api.listAutomationRuns().then(setAutomationRuns).catch(report);
     void api
       .listWorkspaces()
       .then((list) => {
@@ -136,6 +153,7 @@ export function App() {
       })
       .catch(report);
     const stopListening = api.onRunsChanged(setRuns);
+    const stopFollowingAutomations = api.onAutomationsChanged(setAutomationRuns);
     // A program may have been installed or moved while the user was elsewhere.
     const onFocus = (): void => {
       void reload().catch(report);
@@ -143,6 +161,7 @@ export function App() {
     window.addEventListener('focus', onFocus);
     return () => {
       stopListening();
+      stopFollowingAutomations();
       window.removeEventListener('focus', onFocus);
     };
   }, [reload, report]);
@@ -178,7 +197,9 @@ export function App() {
   const allTools = useMemo(() => catalog.groups.flatMap((group) => group.tools), [catalog]);
   const panelGroup = catalog.groups.find((candidate) => groupKey(candidate) === openCategory);
   const tool = allTools.find((candidate) => candidate.id === selectedTool) ?? allTools[0];
-  const running = countRunning(runs);
+  const runningAutomations = automationRuns.filter(({ status }) => status === 'running').length;
+  // An automation between steps has no tool running, but it still counts as work going on.
+  const running = countRunning(runs) || runningAutomations;
   const recentTools = recent.flatMap((id) => allTools.filter((item) => item.id === id));
   const favoriteTools = favorites.flatMap((id) => allTools.filter((item) => item.id === id));
 
@@ -211,6 +232,8 @@ export function App() {
     setOpenCategory(layout?.openCategory);
     setPanelWidth(layout?.panelWidth ?? PANEL_WIDTH_DEFAULT);
     setHistoryTool(undefined);
+    setSelectedAutomation(undefined);
+    setAutomations(NO_AUTOMATIONS);
     setModal(undefined);
     setLoaded(false);
     setCatalog(EMPTY_CATALOG);
@@ -386,6 +409,21 @@ export function App() {
     void api.startRun(target.id, request).catch(report);
   }
 
+  async function saveAutomation(draft: AutomationDraft) {
+    const saved = await api.saveAutomation(draft);
+    await reload();
+    return saved;
+  }
+
+  function runAutomation(id: string): void {
+    void api.startAutomation(id).catch(report);
+  }
+
+  function removeAutomation(id: string): void {
+    setSelectedAutomation(undefined);
+    void api.removeAutomation(id).then(reload).catch(report);
+  }
+
   function showHistory(toolId?: string): void {
     setHistoryTool(toolId);
     setScreen('history');
@@ -499,6 +537,18 @@ export function App() {
         }
       },
     })),
+    ...automations.automations.map((item): Command => ({
+      id: `automation-${item.id}`,
+      label: item.name,
+      detail: t('nav.automations'),
+      run: () => {
+        setSelectedAutomation(item.id);
+        setScreen('automations');
+        if (item.problems.length === 0) {
+          runAutomation(item.id);
+        }
+      },
+    })),
     ...workspaces.workspaces
       .filter(({ id }) => id !== workspaces.activeId)
       .map((item): Command => ({
@@ -609,6 +659,10 @@ export function App() {
               showHistory();
             } else {
               setScreen(next);
+            }
+            if (next === 'automations') {
+              // The CLI, or a hand-edited file, can change these while the app stays focused.
+              void reload().catch(report);
             }
           }}
         />
@@ -742,6 +796,23 @@ export function App() {
               onSwitch={switchWorkspace}
               onRename={renameWorkspace}
               onRemove={removeWorkspace}
+            />
+          ) : null}
+          {screen === 'automations' ? (
+            <AutomationsView
+              key={workspaces.activeId}
+              list={automations}
+              runs={automationRuns}
+              workspaceId={workspaces.activeId}
+              tools={allTools}
+              selected={selectedAutomation}
+              revision={catalog}
+              onSelect={setSelectedAutomation}
+              onSave={saveAutomation}
+              onRun={runAutomation}
+              onRemove={removeAutomation}
+              onShowTool={showTool}
+              onError={report}
             />
           ) : null}
           {screen === 'history' ? (

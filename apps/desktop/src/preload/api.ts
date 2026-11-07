@@ -1,4 +1,10 @@
 import type {
+  AutomationDraft,
+  AutomationListView,
+  AutomationProblemView,
+  AutomationRunRecordView,
+  AutomationRunStateView,
+  AutomationView,
   DetectionView,
   EditCommand,
   HistoryRecordView,
@@ -55,6 +61,19 @@ export interface ShellApi {
   readRunOutput(runId: string): Promise<RunOutputView | undefined>;
   sendRunInput(runId: string, data: string): Promise<void>;
   resizeRun(runId: string, columns: number, rows: number): Promise<void>;
+  listAutomations(): Promise<AutomationListView>;
+  saveAutomation(draft: AutomationDraft): Promise<AutomationView>;
+  /** Says what keeps a draft from running. Nothing is stored. */
+  checkAutomation(draft: AutomationDraft): Promise<readonly AutomationProblemView[]>;
+  removeAutomation(id: string): Promise<void>;
+  startAutomation(id: string): Promise<AutomationRunStateView>;
+  cancelAutomation(runId: string): Promise<void>;
+  /** Answers the manual step a run is waiting on. */
+  confirmAutomation(runId: string): Promise<void>;
+  listAutomationRuns(): Promise<readonly AutomationRunStateView[]>;
+  /** Calls back on every automation run change, and returns how to stop listening. */
+  onAutomationsChanged(listener: (runs: readonly AutomationRunStateView[]) => void): () => void;
+  automationHistory(id: string): Promise<readonly AutomationRunRecordView[]>;
   listProfiles(toolId: string): Promise<readonly ProfileView[]>;
   saveProfile(input: SaveProfileInput): Promise<ProfileView>;
   removeProfile(toolId: string, id: string): Promise<void>;

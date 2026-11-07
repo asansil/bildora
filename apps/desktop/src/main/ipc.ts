@@ -5,6 +5,7 @@ import {
   readPathVariables,
   readPreferences,
   removePathVariable,
+  removeRunFolders,
   setPathVariable,
   toolKey,
   writePreferences,
@@ -14,6 +15,9 @@ import type { ZodType, z } from 'zod';
 import { CHANNELS } from '../shared/channels.js';
 import { t } from '../shared/i18n/translate.js';
 import {
+  automationDraftSchema,
+  automationIdSchema,
+  automationRunIdSchema,
   categoryMenuSchema,
   createWorkspaceSchema,
   detectPathsSchema,
@@ -39,6 +43,7 @@ import {
   updateWorkspaceSchema,
   workspaceIdSchema,
 } from '../shared/ipc-contract.js';
+import type { AutomationService } from './automation-service.js';
 import type { RunService } from './run-service.js';
 import type { ToolService } from './tool-service.js';
 import { isTrustedSender } from './trusted-sender.js';
@@ -50,6 +55,7 @@ export interface IpcContext {
   readonly tools: ToolService;
   readonly workspaces: WorkspaceService;
   readonly runs: RunService;
+  readonly automations: AutomationService;
   readonly history: RunHistory;
   readonly historyProblem: string | undefined;
   readonly version: string;
@@ -112,7 +118,8 @@ function askCategoryAction(
 
 /** Registers every channel. Each call checks who is asking, then what is being asked. */
 export function registerIpc(context: IpcContext): void {
-  const { dataDir, rendererUrl, tools, workspaces, runs, history, historyProblem } = context;
+  const { dataDir, rendererUrl, tools, workspaces, runs, automations, history, historyProblem } =
+    context;
 
   function handle<Schema extends ZodType>(
     channel: string,
@@ -273,6 +280,22 @@ export function registerIpc(context: IpcContext): void {
     runs.resize(runId, columns, rows);
   });
 
+  handle(CHANNELS.automationsList, noInputSchema, () => automations.list());
+  handle(CHANNELS.automationsSave, automationDraftSchema, (draft) => automations.save(draft));
+  handle(CHANNELS.automationsCheck, automationDraftSchema, (draft) => automations.check(draft));
+  handle(CHANNELS.automationsRemove, automationIdSchema, ({ id }) => automations.remove(id));
+  handle(CHANNELS.automationsStart, automationIdSchema, ({ id }) => automations.start(id));
+  handle(CHANNELS.automationsCancel, automationRunIdSchema, ({ runId }) => {
+    automations.cancel(runId);
+  });
+  handle(CHANNELS.automationsConfirm, automationRunIdSchema, ({ runId }) => {
+    automations.confirm(runId);
+  });
+  handle(CHANNELS.automationsRuns, noInputSchema, () => automations.views());
+  handle(CHANNELS.automationsHistory, automationIdSchema, ({ id }) =>
+    history.listAutomationRuns(workspaces.activeId, id),
+  );
+
   handle(CHANNELS.profilesList, toolIdSchema, ({ id }) => tools.profiles(id));
   handle(CHANNELS.profilesSave, saveProfileSchema, (input) => tools.saveProfile(input));
   handle(CHANNELS.profilesRemove, removeProfileSchema, ({ toolId, id }) =>
@@ -286,9 +309,9 @@ export function registerIpc(context: IpcContext): void {
   handle(CHANNELS.historyRecent, noInputSchema, () =>
     history.recentToolIds(workspaces.activeId, RECENT_TOOLS_LIMIT),
   );
-  handle(CHANNELS.historyClear, noInputSchema, () => {
-    history.clear(workspaces.activeId);
-  });
+  handle(CHANNELS.historyClear, noInputSchema, () =>
+    removeRunFolders(dataDir, history.clear(workspaces.activeId)),
+  );
 
   handle(CHANNELS.preferencesGet, noInputSchema, async () => {
     const { historyRunLimit } = await readPreferences(dataDir);
@@ -297,7 +320,7 @@ export function registerIpc(context: IpcContext): void {
   handle(CHANNELS.preferencesSet, preferencesSchema, async ({ historyRunLimit }) => {
     if (historyRunLimit !== undefined) {
       await writePreferences(dataDir, { historyRunLimit });
-      history.pruneAll(historyRunLimit);
+      await removeRunFolders(dataDir, history.pruneAll(historyRunLimit));
     }
   });
 
@@ -320,7 +343,7 @@ export function registerIpc(context: IpcContext): void {
     workspaces.rename(id, name),
   );
   handle(CHANNELS.workspacesRemove, workspaceIdSchema, async ({ id }) => {
-    if (runs.isWorkspaceBusy(id)) {
+    if (runs.isWorkspaceBusy(id) || automations.isWorkspaceBusy(id)) {
       throw new Error('This Workspace has tools running');
     }
     const list = await workspaces.remove(id);

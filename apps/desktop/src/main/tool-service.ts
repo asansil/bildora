@@ -81,7 +81,12 @@ async function viewOfTool(tool: RegisteredTool, pathVariables: PathVariables): P
     ...(description === undefined ? {} : { description }),
     ...(interpreter === undefined ? {} : { interpreter }),
     ...(manifest.level === 2 ? {} : { program: manifest.run.program }),
-    ...(manifest.level === 0 ? {} : { parameters: manifest.parameters.map(viewOfParameter) }),
+    ...(manifest.level === 0
+      ? {}
+      : {
+          parameters: manifest.parameters.map(viewOfParameter),
+          outputs: manifest.outputs.map((output) => output.name),
+        }),
     permissions,
     runtime: await checkRuntime(tool, { pathVariables }),
   };

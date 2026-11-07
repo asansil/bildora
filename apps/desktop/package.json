@@ -13,7 +13,9 @@
     "package": "electron-builder --win zip --publish never"
   },
   "dependencies": {
+    "@bildora/cli": "workspace:*",
     "@bildora/core": "workspace:*",
+    "@bildora/protocol": "workspace:*",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -42,6 +44,12 @@
     },
     "files": [
       "out/**"
+    ],
+    "extraFiles": [
+      {
+        "from": "packaging/bildora.cmd",
+        "to": "bildora.cmd"
+      }
     ],
     "asarUnpack": [
       "**/*.node",

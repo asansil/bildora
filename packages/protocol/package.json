@@ -10,13 +10,14 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./schemas/tool-manifest.schema.json": "./dist/schemas/tool-manifest.schema.json"
+    "./schemas/tool-manifest.schema.json": "./dist/schemas/tool-manifest.schema.json",
+    "./schemas/automation.schema.json": "./dist/schemas/automation.schema.json"
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/generate-manifest-schema.mjs",
+    "build": "tsc -p tsconfig.build.json && node scripts/generate-schemas.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

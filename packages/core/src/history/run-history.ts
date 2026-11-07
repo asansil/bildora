@@ -4,7 +4,7 @@ import type { RecordedParameter } from '../runner/resolve-values.js';
 import { DefinitionError } from '../storage/definition-error.js';
 
 const HISTORY_FILE = 'history.db';
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 /** Rows a listing returns at most. */
 const LIST_LIMIT = 500;
 
@@ -27,6 +27,29 @@ const SCHEMA = `
   );
   CREATE INDEX runs_by_tool ON runs (workspace_id, tool_id, started_at DESC);
   CREATE INDEX runs_by_time ON runs (workspace_id, started_at DESC);
+`;
+
+/** What automations add. A step's row in `runs` points back at its automation run. */
+const UPGRADE_TO_AUTOMATIONS = `
+  ALTER TABLE runs ADD COLUMN automation_run_id TEXT;
+  ALTER TABLE runs ADD COLUMN owner_pid INTEGER;
+  CREATE TABLE automation_runs (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    automation_id TEXT NOT NULL,
+    automation_name TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    duration_ms REAL,
+    failure_step TEXT,
+    failure_kind TEXT,
+    failure_message TEXT,
+    steps TEXT NOT NULL,
+    owner_pid INTEGER
+  );
+  CREATE INDEX automation_runs_by_automation
+    ON automation_runs (workspace_id, automation_id, started_at DESC);
 `;
 
 /** Runs older than Workspaces belong to the one every upgraded installation starts with. */
@@ -65,6 +88,8 @@ export interface RunRecord extends RunSummary {
 
 export interface RunStart {
   readonly runId: string;
+  /** The automation run this is a step of. */
+  readonly automationRunId?: string | undefined;
   readonly workspaceId: string;
   readonly toolId: string;
   readonly toolName: string;
@@ -80,6 +105,66 @@ export interface RunFinish {
   readonly failure?: { readonly kind: string; readonly message: string } | undefined;
   readonly output?: string | undefined;
   readonly outputTruncated?: boolean | undefined;
+}
+
+export type AutomationTrigger = 'app' | 'cli';
+
+export type StepState = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface AutomationFailure {
+  readonly stepId: string;
+  readonly kind: string;
+  readonly message: string;
+}
+
+/** One step of an automation run, as it stands. */
+export interface AutomationStepRecord {
+  readonly id: string;
+  readonly state: StepState;
+  /** The tool run of the latest attempt. */
+  readonly toolRunId?: string;
+  /** Which try this is, for a step that retries. */
+  readonly attempt?: number;
+  readonly durationMs?: number;
+  readonly failure?: { readonly kind: string; readonly message: string };
+}
+
+export interface AutomationRunSummary {
+  readonly runId: string;
+  readonly workspaceId: string;
+  readonly automationId: string;
+  readonly automationName: string;
+  readonly trigger: AutomationTrigger;
+  readonly startedAt: number;
+  readonly status: RecordedStatus;
+  readonly durationMs?: number;
+  /** What stopped the run. A step set to continue shows failed in `steps` and is not here. */
+  readonly failure?: AutomationFailure;
+  readonly steps: readonly AutomationStepRecord[];
+}
+
+export interface AutomationRunStart {
+  readonly runId: string;
+  readonly workspaceId: string;
+  readonly automationId: string;
+  readonly automationName: string;
+  readonly trigger: AutomationTrigger;
+  readonly startedAt: number;
+  readonly steps: readonly AutomationStepRecord[];
+}
+
+export interface AutomationRunFinish {
+  readonly status: Exclude<RecordedStatus, 'running' | 'interrupted'>;
+  readonly durationMs: number;
+  readonly failure?: AutomationFailure | undefined;
+  readonly steps: readonly AutomationStepRecord[];
+}
+
+/** Names an automation run whose record went, so that its folder can go too. */
+export interface RemovedAutomationRun {
+  readonly workspaceId: string;
+  readonly automationId: string;
+  readonly runId: string;
 }
 
 export interface HistoryOpenOptions {
@@ -104,6 +189,63 @@ interface RecordRow extends SummaryRow {
   parameters: string;
   output: string | null;
   output_truncated: number;
+}
+
+interface AutomationRow {
+  id: string;
+  workspace_id: string;
+  automation_id: string;
+  automation_name: string;
+  trigger: AutomationTrigger;
+  started_at: number;
+  status: RecordedStatus;
+  duration_ms: number | null;
+  failure_step: string | null;
+  failure_kind: string | null;
+  failure_message: string | null;
+  steps: string;
+}
+
+function stepsOf(text: string): readonly AutomationStepRecord[] {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return Array.isArray(parsed) ? (parsed as AutomationStepRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function automationSummaryOf(row: AutomationRow): AutomationRunSummary {
+  return {
+    runId: row.id,
+    workspaceId: row.workspace_id,
+    automationId: row.automation_id,
+    automationName: row.automation_name,
+    trigger: row.trigger,
+    startedAt: row.started_at,
+    status: row.status,
+    ...(row.duration_ms === null ? {} : { durationMs: row.duration_ms }),
+    ...(row.failure_step === null
+      ? {}
+      : {
+          failure: {
+            stepId: row.failure_step,
+            kind: row.failure_kind ?? '',
+            message: row.failure_message ?? '',
+          },
+        }),
+    steps: stepsOf(row.steps),
+  };
+}
+
+/** Tells whether a process is there. An error other than "no such process" means that it is. */
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(error instanceof Error && 'code' in error && error.code === 'ESRCH');
+  }
 }
 
 function summaryOf(row: SummaryRow): RunSummary {
@@ -158,7 +300,10 @@ export class RunHistory {
       database.pragma('journal_mode = WAL');
       if (version < SCHEMA_VERSION) {
         database.transaction(() => {
-          database.exec(version === 0 ? SCHEMA : UPGRADE_TO_WORKSPACES);
+          if (version < 2) {
+            database.exec(version === 0 ? SCHEMA : UPGRADE_TO_WORKSPACES);
+          }
+          database.exec(UPGRADE_TO_AUTOMATIONS);
           database.pragma(`user_version = ${String(SCHEMA_VERSION)}`);
         })();
       }
@@ -178,8 +323,9 @@ export class RunHistory {
     this.database
       .prepare(
         `INSERT INTO runs
-           (id, workspace_id, tool_id, tool_name, level, started_at, status, parameters)
-         VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
+           (id, workspace_id, tool_id, tool_name, level, started_at, status, parameters,
+            automation_run_id, owner_pid)
+         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
       )
       .run(
         run.runId,
@@ -189,6 +335,8 @@ export class RunHistory {
         run.level,
         run.startedAt,
         JSON.stringify(run.parameters),
+        run.automationRunId ?? null,
+        process.pid,
       );
   }
 
@@ -210,11 +358,123 @@ export class RunHistory {
       );
   }
 
-  /** Marks runs nothing can finish anymore. Call it once, before any run starts. */
-  recoverInterrupted(): number {
+  /**
+   * Marks runs nothing can finish anymore, because the process that started them has gone. Another
+   * process can be working in this file, such as the CLI while the app starts. Call it once, before
+   * this process starts a run: a row with this process's id can only be from a reused id.
+   */
+  recoverInterrupted(isRunning: (pid: number) => boolean = processExists): number {
+    const gone = (pid: number | null): boolean =>
+      pid === null || pid === process.pid || !isRunning(pid);
+    let changes = 0;
+    for (const table of ['runs', 'automation_runs']) {
+      const owners = this.database
+        .prepare<[], { owner_pid: number | null }>(
+          `SELECT DISTINCT owner_pid FROM ${table} WHERE status = 'running'`,
+        )
+        .all();
+      for (const { owner_pid: owner } of owners.filter(({ owner_pid: pid }) => gone(pid))) {
+        changes += this.database
+          .prepare(
+            `UPDATE ${table} SET status = 'interrupted'
+             WHERE status = 'running' AND owner_pid IS ?`,
+          )
+          .run(owner).changes;
+      }
+    }
+    return changes;
+  }
+
+  startAutomationRun(run: AutomationRunStart): void {
+    this.database
+      .prepare(
+        `INSERT INTO automation_runs
+           (id, workspace_id, automation_id, automation_name, trigger, started_at, status, steps,
+            owner_pid)
+         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
+      )
+      .run(
+        run.runId,
+        run.workspaceId,
+        run.automationId,
+        run.automationName,
+        run.trigger,
+        run.startedAt,
+        JSON.stringify(run.steps),
+        process.pid,
+      );
+  }
+
+  /** Stores where a run has got to, so that another process can show it. */
+  updateAutomationSteps(runId: string, steps: readonly AutomationStepRecord[]): void {
+    this.database
+      .prepare('UPDATE automation_runs SET steps = ? WHERE id = ?')
+      .run(JSON.stringify(steps), runId);
+  }
+
+  finishAutomationRun(runId: string, run: AutomationRunFinish): void {
+    this.database
+      .prepare(
+        `UPDATE automation_runs SET status = ?, duration_ms = ?, failure_step = ?, failure_kind = ?,
+         failure_message = ?, steps = ? WHERE id = ?`,
+      )
+      .run(
+        run.status,
+        run.durationMs,
+        run.failure?.stepId ?? null,
+        run.failure?.kind ?? null,
+        run.failure?.message ?? null,
+        JSON.stringify(run.steps),
+        runId,
+      );
+  }
+
+  /** Lists the runs of an automation, newest first, whichever client started them. */
+  listAutomationRuns(workspaceId: string, automationId: string): readonly AutomationRunSummary[] {
     return this.database
-      .prepare(`UPDATE runs SET status = 'interrupted' WHERE status = 'running'`)
-      .run().changes;
+      .prepare<[string, string], AutomationRow>(
+        `SELECT * FROM automation_runs WHERE workspace_id = ? AND automation_id = ?
+         ORDER BY started_at DESC, rowid DESC LIMIT ${String(LIST_LIMIT)}`,
+      )
+      .all(workspaceId, automationId)
+      .map(automationSummaryOf);
+  }
+
+  private removeAutomationRuns(where: string, ...values: unknown[]): RemovedAutomationRun[] {
+    const rows = this.database
+      .prepare<unknown[], { id: string; workspace_id: string; automation_id: string }>(
+        `SELECT id, workspace_id, automation_id FROM automation_runs WHERE ${where}`,
+      )
+      .all(...values);
+    this.database.prepare(`DELETE FROM automation_runs WHERE ${where}`).run(...values);
+    return rows.map((row) => ({
+      workspaceId: row.workspace_id,
+      automationId: row.automation_id,
+      runId: row.id,
+    }));
+  }
+
+  /** Keeps an automation's newest finished runs. A run still going is never removed. */
+  pruneAutomationRuns(
+    workspaceId: string,
+    automationId: string,
+    keep: number,
+  ): readonly RemovedAutomationRun[] {
+    return this.removeAutomationRuns(
+      `id IN (
+         SELECT id FROM automation_runs
+         WHERE workspace_id = ? AND automation_id = ? AND status != 'running'
+         ORDER BY started_at DESC, rowid DESC LIMIT -1 OFFSET ?
+       )`,
+      workspaceId,
+      automationId,
+      keep,
+    );
+  }
+
+  /** Forgets the runs of a deleted automation, which no view could reach anymore. */
+  removeAutomation(workspaceId: string, automationId: string): void {
+    this.removeAutomationRuns('workspace_id = ? AND automation_id = ?', workspaceId, automationId);
   }
 
   /** Lists a Workspace's runs, newest first, leaving out what is too large to show in a list. */
@@ -266,8 +526,8 @@ export class RunHistory {
       .run(workspaceId, toolId, keep).changes;
   }
 
-  /** Applies a run limit to every tool, for when the user lowers it. */
-  pruneAll(keep: number): void {
+  /** Applies a run limit to every tool and automation, for when the user lowers it. */
+  pruneAll(keep: number): readonly RemovedAutomationRun[] {
     const tools = this.database
       .prepare<[], { workspace_id: string; tool_id: string }>(
         'SELECT DISTINCT workspace_id, tool_id FROM runs',
@@ -276,19 +536,33 @@ export class RunHistory {
     for (const { workspace_id: workspaceId, tool_id: toolId } of tools) {
       this.prune(workspaceId, toolId, keep);
     }
+    const automations = this.database
+      .prepare<[], { workspace_id: string; automation_id: string }>(
+        'SELECT DISTINCT workspace_id, automation_id FROM automation_runs',
+      )
+      .all();
+    return automations.flatMap((row) =>
+      this.pruneAutomationRuns(row.workspace_id, row.automation_id, keep),
+    );
   }
 
   /** Forgets a Workspace's finished runs, and gives the space back to the disk. */
-  clear(workspaceId: string): void {
+  clear(workspaceId: string): readonly RemovedAutomationRun[] {
     this.database
       .prepare(`DELETE FROM runs WHERE workspace_id = ? AND status != 'running'`)
       .run(workspaceId);
+    const removed = this.removeAutomationRuns(
+      `workspace_id = ? AND status != 'running'`,
+      workspaceId,
+    );
     this.database.exec('VACUUM');
+    return removed;
   }
 
   /** Forgets everything a deleted Workspace ran. */
   removeWorkspace(workspaceId: string): void {
     this.database.prepare('DELETE FROM runs WHERE workspace_id = ?').run(workspaceId);
+    this.removeAutomationRuns('workspace_id = ?', workspaceId);
     this.database.exec('VACUUM');
   }
 }

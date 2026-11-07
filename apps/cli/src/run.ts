@@ -1,4 +1,57 @@
-import { getCoreInfo } from '@bildora/core';
+import { parseArgs } from 'node:util';
+import {
+  RunHistory,
+  ToolRegistry,
+  checkAutomation,
+  createCredentialStore,
+  findAutomations,
+  findVisibleTool,
+  getCoreInfo,
+  openDataDirectory,
+  readPathVariables,
+  resolveDataDir,
+  startAutomationRun,
+  startToolRun,
+} from '@bildora/core';
+import type {
+  AutomationResult,
+  AutomationRunView,
+  FoundAutomation,
+  ManualAnswer,
+  SecretStore,
+  StepView,
+} from '@bildora/core';
+
+const USAGE = [
+  'Usage: bildora --version',
+  '       bildora run <automation> [--workspace <id or name>]',
+].join('\n');
+
+export const EXIT_CODES = {
+  completed: 0,
+  stopped: 1,
+  usage: 2,
+  continuedPastFailure: 3,
+  nobodyToAnswer: 4,
+  cannotStart: 5,
+  cancelled: 130,
+} as const;
+
+const MS_PER_SECOND = 1000;
+
+/** What the outside world gives a command, so that tests can stand in for it. */
+export interface CliIo {
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly out: (line: string) => void;
+  readonly error: (line: string) => void;
+  /** Whether a person can answer. Under a scheduler nobody can. */
+  readonly interactive: boolean;
+  /** Waits for Enter. It resolves false if input ends, or if the signal aborts. */
+  readonly waitForEnter: (signal: AbortSignal) => Promise<boolean>;
+  /** Calls back when the user asks to stop, and returns how to stop listening. */
+  readonly onInterrupt: (listener: () => void) => () => void;
+  readonly secrets?: SecretStore | undefined;
+}
 
 export interface CliResult {
   readonly exitCode: number;
@@ -6,11 +59,178 @@ export interface CliResult {
   readonly stderr?: string;
 }
 
-/** Runs one CLI invocation and returns what the process should print and exit with. */
-export function runCli(args: readonly string[], version: string): CliResult {
-  const [command] = args;
-  if (command === '--version' || command === '-v') {
-    return { exitCode: 0, stdout: `${getCoreInfo().productName} ${version}` };
+function exitCodeOf({ status, failure, failedSteps }: AutomationResult): number {
+  if (status === 'cancelled') {
+    return EXIT_CODES.cancelled;
   }
-  return { exitCode: 2, stderr: 'Usage: bildora --version' };
+  if (status === 'failed') {
+    return failure?.kind === 'no-user' ? EXIT_CODES.nobodyToAnswer : EXIT_CODES.stopped;
+  }
+  return failedSteps.length > 0 ? EXIT_CODES.continuedPastFailure : EXIT_CODES.completed;
+}
+
+function seconds(durationMs: number | undefined): string {
+  return `${((durationMs ?? 0) / MS_PER_SECOND).toFixed(1)} s`;
+}
+
+function describeStep({ state, durationMs, failure, attempt }: StepView): string {
+  switch (state) {
+    case 'completed':
+      return `completed (${seconds(durationMs)})`;
+    case 'failed':
+      return `failed: ${failure?.message ?? 'unknown reason'}`;
+    case 'running':
+      return attempt === undefined || attempt === 1 ? 'running' : `running, try ${String(attempt)}`;
+    default:
+      return state;
+  }
+}
+
+/** Prints a line each time a step changes state, and nothing for progress within one. */
+function stepPrinter(io: CliIo): (view: AutomationRunView) => void {
+  const shown = new Map<string, string>();
+  return ({ steps }) => {
+    steps.forEach((step, index) => {
+      const text = describeStep(step);
+      if (step.state !== 'idle' && shown.get(step.id) !== text) {
+        shown.set(step.id, text);
+        io.out(`[${String(index + 1)}/${String(steps.length)}] ${step.id}: ${text}`);
+      }
+    });
+  };
+}
+
+function summaryOf(result: AutomationResult): string {
+  const { status, durationMs, failedSteps, runId } = result;
+  const failures = failedSteps.length === 0 ? '' : `, failed steps: ${failedSteps.join(', ')}`;
+  return `Automation ${status} in ${seconds(durationMs)}${failures}. Run ${runId}.`;
+}
+
+async function openHistory(dataDir: string, io: CliIo): Promise<RunHistory> {
+  try {
+    return await RunHistory.open(dataDir);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    io.error(`Warning: this run will not be kept in history. ${detail}`);
+    return RunHistory.open(dataDir, { inMemory: true });
+  }
+}
+
+async function ask(io: CliIo, message: string, signal: AbortSignal): Promise<ManualAnswer> {
+  io.out(`${message}\nPress Enter to continue.`);
+  const answered = await io.waitForEnter(signal);
+  if (signal.aborted) {
+    return 'cancelled';
+  }
+  return answered ? 'confirmed' : 'no-user';
+}
+
+async function runAutomation(
+  dataDir: string,
+  { automation, workspaceId, workspaceName }: FoundAutomation,
+  io: CliIo,
+): Promise<number> {
+  const registry = await ToolRegistry.open({ dataDir });
+  const problems = await checkAutomation(automation, registry, workspaceId);
+  if (problems.length > 0) {
+    io.error(`"${automation.name}" cannot run:`);
+    for (const { stepId, message } of problems) {
+      io.error(`  ${stepId}: ${message}`);
+    }
+    return EXIT_CODES.cannotStart;
+  }
+
+  const history = await openHistory(dataDir, io);
+  try {
+    history.recoverInterrupted();
+    const store = io.secrets ?? createCredentialStore(dataDir);
+    io.out(`Running "${automation.name}" in Workspace "${workspaceName}".`);
+    const run = startAutomationRun({
+      automation,
+      workspaceId,
+      trigger: 'cli',
+      dataDir,
+      history,
+      pathVariables: await readPathVariables(dataDir).catch(() => undefined),
+      findTool: (id) => findVisibleTool(registry, workspaceId, id),
+      startStep: (tool, { automationRunId, profileId, values, onProgress }) =>
+        startToolRun(
+          tool,
+          { workspaceId, automationRunId, profileId, values, onProgress },
+          { dataDir, history, store },
+        ),
+      askForAction: io.interactive ? ({ message, signal }) => ask(io, message, signal) : undefined,
+      onChange: stepPrinter(io),
+    });
+    const stopListening = io.onInterrupt(() => {
+      run.cancel();
+    });
+    const result = await run.result;
+    stopListening();
+    if (result.failure !== undefined) {
+      io.error(`Stopped at "${result.failure.stepId}": ${result.failure.message}`);
+    }
+    io.out(summaryOf(result));
+    return exitCodeOf(result);
+  } finally {
+    history.close();
+  }
+}
+
+async function runCommand(args: readonly string[], io: CliIo): Promise<CliResult> {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: [...args],
+      allowPositionals: true,
+      options: { workspace: { type: 'string', short: 'w' } },
+    });
+  } catch {
+    return { exitCode: EXIT_CODES.usage, stderr: USAGE };
+  }
+  const { positionals, values } = parsed;
+  const [wanted, ...extra] = positionals;
+  if (wanted === undefined || extra.length > 0) {
+    return { exitCode: EXIT_CODES.usage, stderr: USAGE };
+  }
+
+  try {
+    const dataDir = resolveDataDir({ env: io.env });
+    await openDataDirectory(dataDir);
+    const found = await findAutomations(dataDir, wanted, values.workspace);
+    const [first, ...others] = found;
+    if (first === undefined) {
+      const where = values.workspace === undefined ? '' : ` in Workspace "${values.workspace}"`;
+      return { exitCode: EXIT_CODES.cannotStart, stderr: `No automation "${wanted}"${where}.` };
+    }
+    if (others.length > 0) {
+      const names = found.map(({ workspaceName }) => workspaceName).join(', ');
+      return {
+        exitCode: EXIT_CODES.cannotStart,
+        stderr: `Several Workspaces hold "${wanted}": ${names}. Choose one with --workspace.`,
+      };
+    }
+    return { exitCode: await runAutomation(dataDir, first, io) };
+  } catch (error) {
+    return {
+      exitCode: EXIT_CODES.cannotStart,
+      stderr: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/** Runs one CLI invocation and returns what the process should print and exit with. */
+export async function runCli(
+  args: readonly string[],
+  version: string,
+  io: CliIo,
+): Promise<CliResult> {
+  const [command, ...rest] = args;
+  if (command === '--version' || command === '-v') {
+    return { exitCode: EXIT_CODES.completed, stdout: `${getCoreInfo().productName} ${version}` };
+  }
+  if (command === 'run') {
+    return runCommand(rest, io);
+  }
+  return { exitCode: EXIT_CODES.usage, stderr: USAGE };
 }

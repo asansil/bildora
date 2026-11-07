@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RegisteredTool, RunResult, ToolRun } from '@bildora/core';
 import {
+  automationDraftSchema,
+  automationRunIdSchema,
   categoryMenuSchema,
   createWorkspaceSchema,
   detectPathsSchema,
@@ -103,6 +105,15 @@ describe('IPC schemas', () => {
     ['a console far too wide', runResizeSchema, { runId: 'a', columns: 5000, rows: 10 }],
     ['console input too long', runInputSchema, { runId: 'a', data: 'x'.repeat(70_000) }],
     ['a nameless profile', saveProfileSchema, { toolId: 'a', name: '', values: {} }],
+    ['a nameless automation', automationDraftSchema, { name: '', steps: [] }],
+    ['an automation with no steps list', automationDraftSchema, { name: 'A' }],
+    ['an automation with a schema version', automationDraftSchema, { name: 'A', steps: [], x: 1 }],
+    [
+      'an automation with too many steps',
+      automationDraftSchema,
+      { name: 'A', steps: Array<unknown>(201).fill({}) },
+    ],
+    ['an automation run with no id', automationRunIdSchema, { runId: '' }],
     ['a run limit of zero', preferencesSchema, { historyRunLimit: 0 }],
     ['a fractional run limit', preferencesSchema, { historyRunLimit: 1.5 }],
   ])('rejects %s', (_label, schema, input) => {
@@ -436,5 +447,66 @@ describe('RunService', () => {
     runs.forget('global/a');
 
     expect(runs.list()).toEqual([]);
+  });
+});
+
+describe('RunService.startStep', () => {
+  const tool = {
+    manifest: { id: 'sample', level: 1 },
+    scope: { kind: 'global' },
+  } as unknown as RegisteredTool;
+
+  it('hands back the run, with what it ran with and how it ended', async () => {
+    const result: RunResult = { status: 'completed', exitCode: 0, durationMs: 1 };
+    const parameters = [{ name: 'out', label: 'Out', value: 'C:\\a' }];
+    const onChange = vi.fn();
+    const service = new RunService(
+      () => ({
+        result: Promise.resolve(result),
+        parameters,
+        cancel: () => undefined,
+        write: () => undefined,
+        resize: () => undefined,
+      }),
+      onChange,
+    );
+
+    const run = await service.startStep(tool, 'work', {});
+    expect(run.parameters).toEqual(parameters);
+    expect(await run.result).toEqual(result);
+    expect(service.activeCount).toBe(0);
+    expect(service.list().map(({ status }) => status)).toEqual(['completed']);
+  });
+
+  it('reports a run that could not start through its result', async () => {
+    const service = new RunService(() => Promise.reject(new Error('No such profile')), vi.fn());
+    const run = await service.startStep(tool, 'work', {});
+    expect(await run.result).toMatchObject({
+      status: 'failed',
+      failure: { kind: 'launcher', message: 'No such profile' },
+    });
+  });
+
+  it('cancels through the service, so that the run is followed as any other', async () => {
+    let end: (result: RunResult) => void = () => undefined;
+    const cancel = vi.fn(() => {
+      end({ status: 'cancelled', durationMs: 1 });
+    });
+    const service = new RunService(
+      () => ({
+        result: new Promise<RunResult>((resolve) => {
+          end = resolve;
+        }),
+        cancel,
+        write: () => undefined,
+        resize: () => undefined,
+      }),
+      vi.fn(),
+    );
+    const run = await service.startStep(tool, 'work', {});
+    expect(service.isWorkspaceBusy('work')).toBe(true);
+    run.cancel();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect((await run.result).status).toBe('cancelled');
   });
 });

@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { toolKey } from '@bildora/core';
-import type { RegisteredTool, RunProgress, RunResult, ToolRun } from '@bildora/core';
+import type {
+  RecordedParameter,
+  RecordedToolRun,
+  RegisteredTool,
+  RunProgress,
+  RunResult,
+  ToolRun,
+} from '@bildora/core';
 import type { RunOutputView, RunRequest, RunView } from '../shared/ipc-contract.js';
 
 /** Raw console output kept per run, for a console that opens after the run started. */
@@ -8,16 +15,24 @@ const OUTPUT_BUFFER_LIMIT = 2 * 1024 * 1024;
 /** How often output and progress reach the shell. A chatty tool must not flood the page. */
 const SHELL_UPDATE_MS = 33;
 
+/** What the shell asks for, plus the automation run a step belongs to. */
+export interface ServiceRunRequest extends RunRequest {
+  readonly automationRunId?: string | undefined;
+  readonly onProgress?: ((progress: RunProgress) => void) | undefined;
+}
+
 export interface RunContext {
   readonly runId: string;
   /** The Workspace that started the run, whatever the user switches to afterwards. */
   readonly workspaceId: string;
-  readonly request: RunRequest;
+  readonly request: ServiceRunRequest;
   readonly onOutput: (data: string) => void;
   readonly onProgress: (progress: RunProgress) => void;
 }
 
-type StartRun = (tool: RegisteredTool, context: RunContext) => ToolRun | Promise<ToolRun>;
+/** A started run. A recorded one also says what it ran with. */
+type StartedRun = ToolRun & { readonly parameters?: readonly RecordedParameter[] };
+type StartRun = (tool: RegisteredTool, context: RunContext) => StartedRun | Promise<StartedRun>;
 type OutputListener = (output: RunOutputView) => void;
 
 /** The end of a run's output. It keeps whole chunks, so a terminal sequence is rarely cut. */
@@ -58,8 +73,10 @@ interface ActiveRun {
   readonly workspaceId: string;
   readonly toolScope: RegisteredTool['scope'];
   readonly output: OutputBuffer;
-  run?: ToolRun;
+  run?: StartedRun;
   cancelRequested: boolean;
+  /** Settles once the run has started, or has failed to. */
+  announceStart: () => void;
 }
 
 function viewOfResult({ runId, toolId, toolKey: key }: RunView, result: RunResult): RunView {
@@ -106,9 +123,42 @@ export class RunService {
   }
 
   start(tool: RegisteredTool, workspaceId: string, request: RunRequest = {}): RunView {
+    return this.begin(tool, workspaceId, request).view;
+  }
+
+  /** Starts a step of an automation, which needs the run's end as well as its first state. */
+  async startStep(
+    tool: RegisteredTool,
+    workspaceId: string,
+    request: ServiceRunRequest,
+  ): Promise<RecordedToolRun> {
+    const { view, entry, started, finished } = this.begin(tool, workspaceId, request);
+    const { runId } = view;
+    await started;
+    return {
+      runId,
+      parameters: entry.run?.parameters ?? [],
+      result: finished,
+      cancel: () => {
+        this.cancel(runId);
+      },
+      write: (data) => {
+        this.write(runId, data);
+      },
+      resize: (columns, rows) => {
+        this.resize(runId, columns, rows);
+      },
+    };
+  }
+
+  private begin(tool: RegisteredTool, workspaceId: string, request: ServiceRunRequest) {
     const runId = randomUUID();
     const key = toolKey(tool);
     const view: RunView = { runId, toolId: tool.manifest.id, toolKey: key, status: 'running' };
+    let announceStart = (): void => undefined;
+    const started = new Promise<void>((resolve) => {
+      announceStart = resolve;
+    });
     const entry: ActiveRun = {
       view,
       level: tool.manifest.level,
@@ -116,10 +166,12 @@ export class RunService {
       toolScope: tool.scope,
       output: new OutputBuffer(),
       cancelRequested: false,
+      announceStart,
     };
     this.active.set(runId, entry);
 
-    const settled = this.follow(tool, entry, request).then((result) => {
+    const finished = this.follow(tool, entry, request);
+    const settled = finished.then((result) => {
       this.sendOutput(entry);
       this.active.delete(runId);
       this.settled.delete(settled);
@@ -129,13 +181,13 @@ export class RunService {
     });
     this.settled.add(settled);
     this.onChange();
-    return view;
+    return { view, entry, started, finished: settled.then(() => finished) };
   }
 
   private async follow(
     tool: RegisteredTool,
     entry: ActiveRun,
-    request: RunRequest,
+    request: ServiceRunRequest,
   ): Promise<RunResult> {
     const { runId } = entry.view;
     try {
@@ -149,16 +201,19 @@ export class RunService {
         },
         onProgress: (progress) => {
           entry.view = { ...entry.view, progress };
+          request.onProgress?.(progress);
           this.progressChanged = true;
           this.scheduleUpdate();
         },
       });
       entry.run = run;
+      entry.announceStart();
       if (entry.cancelRequested) {
         run.cancel();
       }
       return await run.result;
     } catch (error) {
+      entry.announceStart();
       return {
         status: 'failed',
         durationMs: 0,

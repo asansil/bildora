@@ -1,6 +1,6 @@
 {
   "name": "@bildora/cli",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
   "private": true,
   "description": "The bildora command.",
   "type": "module",
@@ -19,6 +19,7 @@
     "@bildora/core": "workspace:*"
   },
   "devDependencies": {
+    "@bildora/protocol": "workspace:*",
     "@bildora/typescript-config": "workspace:*"
   }
 }
