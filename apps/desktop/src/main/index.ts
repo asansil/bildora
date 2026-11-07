@@ -29,6 +29,16 @@ app.setPath('userData', join(dataDir, 'chromium'));
 
 let shellWindow: BrowserWindow | undefined;
 
+/**
+ * Updates the shell, if it is still there. A timer can fire after the window has gone and before
+ * the process ends, and an error at that moment shows a dialog that stops the app from closing.
+ */
+function sendToShell(channel: string, payload: unknown): void {
+  if (shellWindow?.isDestroyed() === false) {
+    shellWindow.webContents.send(channel, payload);
+  }
+}
+
 function closeDetail(consoles: number, automations: number): string {
   if (automations > 0) {
     return t('close.detailAutomations');
@@ -148,10 +158,10 @@ async function start(): Promise<void> {
   const runs = new RunService(
     startTool,
     () => {
-      shellWindow?.webContents.send(CHANNELS.runsChanged, runs.list());
+      sendToShell(CHANNELS.runsChanged, runs.list());
     },
     (output) => {
-      shellWindow?.webContents.send(CHANNELS.runsOutput, output);
+      sendToShell(CHANNELS.runsOutput, output);
     },
   );
   const automations = new AutomationService({
@@ -161,7 +171,7 @@ async function start(): Promise<void> {
     workspaceId: () => workspaces.activeId,
     startStep: (tool, workspaceId, request) => runs.startStep(tool, workspaceId, request),
     onChange: (views) => {
-      shellWindow?.webContents.send(CHANNELS.automationsChanged, views);
+      sendToShell(CHANNELS.automationsChanged, views);
     },
   });
   registerIpc({

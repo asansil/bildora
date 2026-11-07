@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -268,18 +269,28 @@ test('closing asks while an automation only waits, and ends it', async () => {
   await expect(step(first.window, 'pause')).toHaveAttribute('data-state', 'running');
   await expect(first.window.getByTestId('status')).toContainText('1 task');
 
-  await first.app.evaluate(({ dialog }) => {
-    dialog.showMessageBox = () => {
-      Object.assign(globalThis, { asked: true });
-      return Promise.resolve({ response: 0, checkboxChecked: false });
-    };
-  });
+  // Holds the process after its window has gone, as a slow machine does, and notes any error
+  // from then on: Electron shows it in a dialog that stops the app from ever closing.
+  const errors = join(folder, 'main-errors.txt');
+  await first.app.evaluate(({ app, dialog }, file) => {
+    dialog.showMessageBox = () => Promise.resolve({ response: 0, checkboxChecked: false });
+    process.on('uncaughtException', (error) => {
+      process.getBuiltinModule('node:fs').appendFileSync(file, `${error.message}\n`);
+    });
+    app.once('will-quit', (event) => {
+      event.preventDefault();
+      setTimeout(() => {
+        app.exit(0);
+      }, 300);
+    });
+  }, errors);
   const closed = first.app.waitForEvent('close');
   await first.app.evaluate(({ BrowserWindow }) => {
     BrowserWindow.getAllWindows()[0]?.close();
   });
   await closed;
   open = [];
+  expect(existsSync(errors)).toBe(false);
 
   const second = await launchShell();
   await openAutomation(second.window, 'Waits');
