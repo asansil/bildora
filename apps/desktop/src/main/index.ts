@@ -1,21 +1,17 @@
-import { join, sep } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BrowserWindow, app, dialog, nativeTheme, session } from 'electron';
 import type { RegisteredTool, ToolRun } from '@bildora/core';
 import {
-  DEFAULT_PREFERENCES,
   RunHistory,
   ToolRegistry,
   createCredentialStore,
-  defaultLauncherPath,
-  getProfile,
-  readPathVariables,
-  readPreferences,
   resolveDataDir,
-  startRecordedRun,
+  startToolRun,
 } from '@bildora/core';
 import { CHANNELS } from '../shared/channels.js';
 import { t } from '../shared/i18n/translate.js';
+import { AutomationService } from './automation-service.js';
 import { registerIpc } from './ipc.js';
 import { RunService } from './run-service.js';
 import type { RunContext } from './run-service.js';
@@ -33,12 +29,24 @@ app.setPath('userData', join(dataDir, 'chromium'));
 
 let shellWindow: BrowserWindow | undefined;
 
-function askAboutRunningTools(window: BrowserWindow, count: number, consoles: number) {
+function closeDetail(consoles: number, automations: number): string {
+  if (automations > 0) {
+    return t('close.detailAutomations');
+  }
+  return consoles === 0 ? t('close.detail') : t('close.detailConsoles');
+}
+
+function askAboutRunningTools(
+  window: BrowserWindow,
+  count: number,
+  consoles: number,
+  automations: number,
+) {
   return dialog.showMessageBox(window, {
     type: 'question',
     title: t('close.title'),
     message: t('close.message', { count }),
-    detail: consoles === 0 ? t('close.detail') : t('close.detailConsoles'),
+    detail: closeDetail(consoles, automations),
     buttons: [t('close.leaveOpen'), t('close.endAll'), t('close.cancel')],
     defaultId: 0,
     cancelId: 2,
@@ -46,7 +54,7 @@ function askAboutRunningTools(window: BrowserWindow, count: number, consoles: nu
   });
 }
 
-function createShellWindow(runs: RunService): BrowserWindow {
+function createShellWindow(runs: RunService, automations: AutomationService): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -66,15 +74,20 @@ function createShellWindow(runs: RunService): BrowserWindow {
 
   let closeDecided = false;
   window.on('close', (event) => {
-    if (closeDecided || runs.activeCount === 0) {
+    const working = automations.activeCount;
+    if (closeDecided || (runs.activeCount === 0 && working === 0)) {
       return;
     }
     event.preventDefault();
     const consoles = runs.consoleCount;
-    void askAboutRunningTools(window, runs.activeCount, consoles).then(async ({ response }) => {
+    // An automation waiting between steps has no tool running, but it still counts as work.
+    const count = runs.activeCount === 0 ? working : runs.activeCount;
+    void askAboutRunningTools(window, count, consoles, working).then(async ({ response }) => {
       if (response === 2) {
         return;
       }
+      // An automation cannot outlive the app, because it is this process that runs its steps.
+      await automations.cancelAll();
       if (response === 1) {
         await runs.cancelAll();
       } else {
@@ -93,15 +106,6 @@ function createShellWindow(runs: RunService): BrowserWindow {
     void window.loadURL(developmentUrl);
   }
   return window;
-}
-
-/** Inside a packaged app the launcher is unpacked, because Windows cannot run a file in an ASAR. */
-function launcherOptions(): { launcherPath?: string } {
-  if (!app.isPackaged) {
-    return {};
-  }
-  const packed = `${sep}app.asar${sep}`;
-  return { launcherPath: defaultLauncherPath().replace(packed, `${sep}app.asar.unpacked${sep}`) };
 }
 
 /**
@@ -132,30 +136,13 @@ async function start(): Promise<void> {
   const workspaces = await WorkspaceService.open(registry, secrets, history);
   nativeTheme.themeSource = workspaces.current.theme;
 
-  async function startTool(tool: RegisteredTool, context: RunContext): Promise<ToolRun> {
+  function startTool(tool: RegisteredTool, context: RunContext): Promise<ToolRun> {
     const { runId, workspaceId, request, onOutput, onProgress } = context;
-    const { profileId, values, columns, rows } = request;
-    const { historyRunLimit } = await readPreferences(dataDir).catch(() => DEFAULT_PREFERENCES);
-    const profile = profileId === undefined ? undefined : await getProfile(tool, profileId);
-    if (profileId !== undefined && profile === undefined) {
-      throw new Error('The chosen profile no longer exists');
-    }
-    const pathVariables = await readPathVariables(dataDir).catch(() => undefined);
-    return startRecordedRun(tool, {
-      history,
-      workspaceId,
-      pathVariables,
-      store: secrets,
-      historyRunLimit,
-      runId,
-      profile,
-      values,
-      onOutput,
-      onProgress,
-      ...(columns === undefined ? {} : { columns }),
-      ...(rows === undefined ? {} : { rows }),
-      ...launcherOptions(),
-    });
+    return startToolRun(
+      tool,
+      { ...request, runId, workspaceId, onOutput, onProgress },
+      { dataDir, history, store: secrets },
+    );
   }
 
   const runs = new RunService(
@@ -167,12 +154,23 @@ async function start(): Promise<void> {
       shellWindow?.webContents.send(CHANNELS.runsOutput, output);
     },
   );
+  const automations = new AutomationService({
+    dataDir,
+    registry,
+    history,
+    workspaceId: () => workspaces.activeId,
+    startStep: (tool, workspaceId, request) => runs.startStep(tool, workspaceId, request),
+    onChange: (views) => {
+      shellWindow?.webContents.send(CHANNELS.automationsChanged, views);
+    },
+  });
   registerIpc({
     dataDir,
     rendererUrl: developmentUrl ?? pathToFileURL(rendererFile).href,
     tools: new ToolService(registry, dataDir, secrets, () => workspaces.activeId),
     workspaces,
     runs,
+    automations,
     history,
     historyProblem,
     version: app.getVersion(),
@@ -185,7 +183,7 @@ async function start(): Promise<void> {
     shellWindow?.setTitleBarOverlay(titleBarOverlay(nativeTheme.shouldUseDarkColors));
   });
 
-  shellWindow = createShellWindow(runs);
+  shellWindow = createShellWindow(runs, automations);
 }
 
 if (app.requestSingleInstanceLock()) {

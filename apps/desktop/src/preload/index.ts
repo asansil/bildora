@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
 import { CHANNELS } from '../shared/channels.js';
-import type { RunOutputView, RunView } from '../shared/ipc-contract.js';
+import type { AutomationRunStateView, RunOutputView, RunView } from '../shared/ipc-contract.js';
 import type { ShellApi } from './api.js';
 
 declare const process: { readonly platform: string };
@@ -53,6 +53,24 @@ const api: ShellApi = {
   readRunOutput: (runId) => invoke(CHANNELS.runsOutputRead, { runId }),
   sendRunInput: (runId, data) => invoke(CHANNELS.runsInput, { runId, data }),
   resizeRun: (runId, columns, rows) => invoke(CHANNELS.runsResize, { runId, columns, rows }),
+  listAutomations: () => invoke(CHANNELS.automationsList),
+  saveAutomation: (draft) => invoke(CHANNELS.automationsSave, draft),
+  checkAutomation: (draft) => invoke(CHANNELS.automationsCheck, draft),
+  removeAutomation: (id) => invoke(CHANNELS.automationsRemove, { id }),
+  startAutomation: (id) => invoke(CHANNELS.automationsStart, { id }),
+  cancelAutomation: (runId) => invoke(CHANNELS.automationsCancel, { runId }),
+  confirmAutomation: (runId) => invoke(CHANNELS.automationsConfirm, { runId }),
+  listAutomationRuns: () => invoke(CHANNELS.automationsRuns),
+  onAutomationsChanged: (listener) => {
+    const forward = (_event: IpcRendererEvent, runs: readonly AutomationRunStateView[]): void => {
+      listener(runs);
+    };
+    ipcRenderer.on(CHANNELS.automationsChanged, forward);
+    return () => {
+      ipcRenderer.off(CHANNELS.automationsChanged, forward);
+    };
+  },
+  automationHistory: (id) => invoke(CHANNELS.automationsHistory, { id }),
   listProfiles: (toolId) => invoke(CHANNELS.profilesList, { id: toolId }),
   saveProfile: (input) => invoke(CHANNELS.profilesSave, input),
   removeProfile: (toolId, id) => invoke(CHANNELS.profilesRemove, { toolId, id }),

@@ -1,4 +1,5 @@
 import { useId } from 'react';
+import type { ReactNode } from 'react';
 import { t } from '../../shared/i18n/translate.js';
 import type { MessageKey } from '../../shared/i18n/translate.js';
 import type { ParameterView } from '../../shared/ipc-contract.js';
@@ -13,6 +14,8 @@ interface FieldProps {
   readonly onChange: (value: FormValue) => void;
   readonly onBrowse: () => void;
   readonly onForget: () => void;
+  /** Something more to offer beside a path, such as a reference to an earlier step. */
+  readonly pathControl?: ReactNode;
 }
 
 function Field({
@@ -23,6 +26,7 @@ function Field({
   onChange,
   onBrowse,
   onForget,
+  pathControl,
 }: FieldProps) {
   const id = useId();
   const { label, description, type, choices, required, secret, delivery } = parameter;
@@ -94,6 +98,7 @@ function Field({
               {t('runner.browse')}
             </button>
           ) : null}
+          {type === 'path' ? pathControl : null}
           {secretSaved ? (
             <button type="button" onClick={onForget}>
               {t('runner.forgetSecret')}
@@ -127,6 +132,7 @@ interface ParameterFormProps {
   readonly onChange: (name: string, value: FormValue) => void;
   readonly onBrowse: (name: string) => void;
   readonly onForget: (name: string) => void;
+  readonly pathControl?: (name: string) => ReactNode;
 }
 
 /** The form a manifest describes. Nothing here knows about any particular tool. */
@@ -139,6 +145,7 @@ export function ParameterForm({
   onChange,
   onBrowse,
   onForget,
+  pathControl,
 }: ParameterFormProps) {
   if (parameters.length === 0) {
     return <p className="muted">{t('runner.noParameters')}</p>;
@@ -163,6 +170,7 @@ export function ParameterForm({
             onForget={() => {
               onForget(name);
             }}
+            pathControl={pathControl?.(name)}
           />
         );
       })}

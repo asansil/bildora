@@ -149,6 +149,7 @@ test('the shell opens sandboxed, with a welcome and no categories', async () => 
   await expect(window.getByTestId('status')).toHaveText('Ready');
   await expect(window.getByRole('navigation').getByRole('button')).toHaveText([
     'Workspaces',
+    'Automations',
     'Run history',
     'Settings',
   ]);

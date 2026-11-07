@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { AutomationStep } from '@bildora/protocol';
 
 /** Longest path Windows accepts. */
 const PATH_MAX_LENGTH = 32_767;
@@ -15,6 +16,7 @@ const HISTORY_RUN_LIMIT_MAX = 100_000;
 const WORKSPACE_NAME_MAX_LENGTH = 80;
 const PATH_VARIABLE_NAME_MAX_LENGTH = 64;
 const FAVORITES_MAX = 1000;
+const AUTOMATION_STEPS_MAX = 200;
 const CATEGORIES_MAX = 1000;
 export const PANEL_WIDTH_MIN = 180;
 export const PANEL_WIDTH_MAX = 480;
@@ -77,6 +79,15 @@ export const startRunSchema = z.strictObject({
   columns: columnsSchema.optional(),
   rows: rowsSchema.optional(),
 });
+export const automationIdSchema = z.strictObject({ id: idSchema });
+export const automationRunIdSchema = z.strictObject({ runId: idSchema });
+/** The steps are checked by `automationSchema` in main, whose messages the editor can show. */
+export const automationDraftSchema = z.strictObject({
+  id: idSchema.optional(),
+  name: textSchema.min(1),
+  description: textSchema.min(1).optional(),
+  steps: z.array(z.unknown()).max(AUTOMATION_STEPS_MAX),
+});
 export const runInputSchema = z.strictObject({
   runId: idSchema,
   data: z.string().max(CONSOLE_INPUT_MAX_LENGTH),
@@ -132,6 +143,8 @@ export type LayoutUpdate = NonNullable<WorkspaceUpdate['layout']>;
 export type StartRunInput = z.infer<typeof startRunSchema>;
 export type RunRequest = Omit<StartRunInput, 'id'>;
 export type SaveProfileInput = z.infer<typeof saveProfileSchema>;
+export type AutomationDraft = z.infer<typeof automationDraftSchema>;
+export type { AutomationStep };
 
 export interface ShellPreferences {
   readonly historyRunLimit: number;
@@ -207,6 +220,8 @@ export interface ToolView {
   readonly program?: string;
   /** Absent for level 0 tools, which have none. */
   readonly parameters?: readonly ParameterView[];
+  /** Names of declared outputs, which automation steps can refer to. */
+  readonly outputs?: readonly string[];
   readonly permissions: readonly string[];
   readonly runtime: ToolRuntime;
 }
@@ -311,6 +326,68 @@ export interface HistorySummaryView {
   readonly exitCode?: number;
   readonly durationMs?: number;
   readonly failure?: { readonly kind: string; readonly message: string };
+}
+
+export interface AutomationProblemView {
+  /** Empty when the problem is with the automation as a whole. */
+  readonly stepId: string;
+  readonly message: string;
+}
+
+export interface AutomationView {
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly steps: readonly AutomationStep[];
+  /** What keeps it from running now. Empty means that it can run. */
+  readonly problems: readonly AutomationProblemView[];
+}
+
+export interface AutomationListView {
+  readonly automations: readonly AutomationView[];
+  /** Files that could not be read. They never hide the healthy ones. */
+  readonly problems: readonly { readonly file: string; readonly message: string }[];
+}
+
+export type StepStateView = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface StepRunView {
+  readonly id: string;
+  readonly state: StepStateView;
+  readonly toolRunId?: string;
+  readonly attempt?: number;
+  readonly durationMs?: number;
+  readonly failure?: { readonly kind: string; readonly message: string };
+  readonly progress?: { readonly percent?: number; readonly message?: string };
+  /** Set while a manual step waits for someone. */
+  readonly message?: string;
+  /** When a timed wait ends, in milliseconds since the epoch. */
+  readonly resumesAt?: number;
+}
+
+/** An automation run this session knows about, going on or the latest finished one. */
+export interface AutomationRunStateView {
+  readonly runId: string;
+  readonly workspaceId: string;
+  readonly automationId: string;
+  readonly automationName: string;
+  readonly status: 'running' | 'completed' | 'failed' | 'cancelled';
+  readonly steps: readonly StepRunView[];
+}
+
+/** A past run of an automation, from the app or from the CLI. */
+export interface AutomationRunRecordView {
+  readonly runId: string;
+  readonly trigger: 'app' | 'cli';
+  readonly startedAt: number;
+  readonly status: HistoryStatus;
+  readonly durationMs?: number;
+  readonly failure?: {
+    readonly stepId: string;
+    readonly kind: string;
+    readonly message: string;
+  };
+  readonly steps: readonly StepRunView[];
 }
 
 export interface HistoryRecordView extends HistorySummaryView {

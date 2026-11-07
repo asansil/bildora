@@ -123,6 +123,7 @@ button.primary:hover:not(:disabled) {
 }
 
 input:not([type]),
+input[type='number'],
 input[type='password'],
 select {
   width: 100%;
@@ -1106,4 +1107,102 @@ input[type='radio'] {
   display: grid;
   grid-template-columns: minmax(80px, 160px) minmax(0, 1fr) auto;
   gap: var(--bildora-space-2);
+}
+
+.step-cards,
+.automation-steps,
+.automation-runs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bildora-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step-card {
+  border: 1px solid var(--bildora-border);
+  border-radius: var(--bildora-radius-sm);
+}
+
+.step-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--bildora-space-2);
+  padding: var(--bildora-space-1) var(--bildora-space-2);
+  border-bottom: 1px solid var(--bildora-border);
+}
+
+.step-card-head strong {
+  flex: none;
+  font-weight: var(--bildora-weight-semibold);
+}
+
+.step-card-head .muted {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bildora-space-2);
+  padding: var(--bildora-space-3);
+}
+
+.reference-select {
+  flex: none;
+  width: 120px;
+}
+
+.automation-retry {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--bildora-space-2);
+}
+
+.automation-step {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--bildora-space-2);
+  padding: var(--bildora-space-1) 0;
+  border-bottom: 1px solid var(--bildora-border);
+}
+
+.automation-step > .icon {
+  margin-top: 2px;
+}
+
+.automation-step-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.automation-step progress {
+  width: 100%;
+}
+
+.automation-command {
+  padding: var(--bildora-space-2);
+  font: var(--bildora-text-sm) var(--bildora-font-mono);
+  overflow-wrap: anywhere;
+  user-select: text;
+  background: var(--bildora-surface-frame);
+  border: 1px solid var(--bildora-border);
+  border-radius: var(--bildora-radius-sm);
+}
+
+.automation-run {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--bildora-space-2);
+}
+
+.automation-run-failure {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
 }
