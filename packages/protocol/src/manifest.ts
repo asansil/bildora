@@ -7,12 +7,12 @@ export const MANIFEST_SCHEMA_VERSION = 1;
  * Ids become folder names, so the pattern also keeps out path separators and the device names
  * Windows reserves, which it treats as devices even with an extension.
  */
-const IDENTIFIER_PATTERN =
+export const IDENTIFIER_PATTERN =
   /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$))[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
-const IDENTIFIER_MAX_LENGTH = 128;
+export const IDENTIFIER_MAX_LENGTH = 128;
 const SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-const NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+export const NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 const FLAG_PATTERN = /^(?:--?|\/)[a-zA-Z0-9?][a-zA-Z0-9_-]*$/;
 const INTERPRETER_PATTERN = /^[a-zA-Z0-9._+-]+$/;
 const ENVIRONMENT_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
@@ -210,11 +210,21 @@ export const toolManifestSchema = manifestShape.superRefine((manifest, context) 
   });
 
   outputs.forEach((output, index) => {
-    if ('param' in output && !parameters.some((parameter) => parameter.name === output.param)) {
+    if (!('param' in output)) {
+      return;
+    }
+    const parameter = parameters.find(({ name }) => name === output.param);
+    if (parameter === undefined) {
       context.addIssue({
         code: 'custom',
         path: ['outputs', index, 'param'],
         message: `Output refers to unknown parameter "${output.param}"`,
+      });
+    } else if (parameter.type === 'string' && parameter.secret) {
+      context.addIssue({
+        code: 'custom',
+        path: ['outputs', index, 'param'],
+        message: `Output cannot come from secret parameter "${output.param}"`,
       });
     }
   });
