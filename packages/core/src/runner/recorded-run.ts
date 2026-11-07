@@ -9,7 +9,7 @@ import type { ParameterValues } from './command-line.js';
 import { MissingPathVariableError, expandToolCommand } from './expand-paths.js';
 import type { PathVariables } from './expand-paths.js';
 import { resolveRunValues } from './resolve-values.js';
-import type { ResolvedValues } from './resolve-values.js';
+import type { RecordedParameter, ResolvedValues } from './resolve-values.js';
 import { TERMINAL_COLUMNS, TERMINAL_ROWS, startRun, startWindowRun } from './run-tool.js';
 import type { RunFailure, RunOptions, RunResult, ToolRun } from './run-tool.js';
 
@@ -27,6 +27,14 @@ export interface RecordedRunOptions extends Pick<
   readonly profile?: Profile | undefined;
   readonly values?: ParameterValues | undefined;
   readonly pathVariables?: PathVariables | undefined;
+  /** The automation run this is a step of. */
+  readonly automationRunId?: string | undefined;
+}
+
+/** A run with its record. `parameters` is what history shows, so it never holds a secret. */
+export interface RecordedToolRun extends ToolRun {
+  readonly runId: string;
+  readonly parameters: readonly RecordedParameter[];
 }
 
 function finishedRecord(result: RunResult, output: RenderedOutput | undefined): RunFinish {
@@ -92,9 +100,10 @@ function preparationFailure(error: unknown): RunFailure {
       };
 }
 
-function settledRun(runId: string, result: RunResult): ToolRun & { readonly runId: string } {
+function settledRun(runId: string, result: RunResult): RecordedToolRun {
   return {
     runId,
+    parameters: [],
     result: Promise.resolve(result),
     cancel: () => undefined,
     write: () => undefined,
@@ -110,12 +119,13 @@ function settledRun(runId: string, result: RunResult): ToolRun & { readonly runI
 export async function startRecordedRun(
   tool: RegisteredTool,
   options: RecordedRunOptions,
-): Promise<ToolRun & { readonly runId: string }> {
+): Promise<RecordedToolRun> {
   const { history, workspaceId, store, historyRunLimit, profile, values, pathVariables } = options;
+  const { automationRunId } = options;
   const runId = options.runId ?? randomUUID();
   const startedAt = Date.now();
   const { id: toolId, name: toolName, level } = tool.manifest;
-  const shared = { runId, workspaceId, toolId, toolName, level, startedAt };
+  const shared = { runId, workspaceId, toolId, toolName, level, startedAt, automationRunId };
 
   let resolved: ResolvedValues;
   let expanded: RegisteredTool;
@@ -161,6 +171,7 @@ export async function startRecordedRun(
 
   return {
     runId,
+    parameters: resolved.recorded,
     result,
     cancel: () => {
       run.cancel();

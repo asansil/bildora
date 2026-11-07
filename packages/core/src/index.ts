@@ -29,7 +29,7 @@ export { resolveExecutable } from './runner/resolve-executable.js';
 export type { ResolveOptions } from './runner/resolve-executable.js';
 export { startRun, startWindowRun } from './runner/run-tool.js';
 export { startRecordedRun } from './runner/recorded-run.js';
-export type { RecordedRunOptions } from './runner/recorded-run.js';
+export type { RecordedRunOptions, RecordedToolRun } from './runner/recorded-run.js';
 export { MissingPathVariableError, expandPath } from './runner/expand-paths.js';
 export type { PathVariables } from './runner/expand-paths.js';
 export { resolveRunValues } from './runner/resolve-values.js';
@@ -37,12 +37,48 @@ export type { RecordedParameter, ResolvedValues } from './runner/resolve-values.
 export type { RunProgress } from './runner/progress-lines.js';
 export { RunHistory } from './history/run-history.js';
 export type {
+  AutomationFailure,
+  AutomationRunSummary,
+  AutomationStepRecord,
+  AutomationTrigger,
   RecordedStatus,
+  RemovedAutomationRun,
   RunFinish,
   RunRecord,
   RunStart,
   RunSummary,
+  StepState,
 } from './history/run-history.js';
+export {
+  findAutomations,
+  getAutomation,
+  listAutomations,
+  newAutomationId,
+  parseAutomation,
+  removeAutomation,
+  removeRunFolders,
+  saveAutomation,
+} from './automations/automation-store.js';
+export type {
+  AutomationFileProblem,
+  AutomationList,
+  FoundAutomation,
+} from './automations/automation-store.js';
+export { checkAutomation } from './automations/check-automation.js';
+export type { AutomationProblem } from './automations/check-automation.js';
+export { startAutomationRun } from './automations/run-automation.js';
+export type {
+  AutomationResult,
+  AutomationRun,
+  AutomationRunOptions,
+  AutomationRunView,
+  ManualAnswer,
+  ManualRequest,
+  StepStarter,
+  StepView,
+} from './automations/run-automation.js';
+export { startToolRun } from './automations/tool-starter.js';
+export type { ToolStartRequest, ToolStarterContext } from './automations/tool-starter.js';
 export {
   createChunkedStore,
   createCredentialStore,

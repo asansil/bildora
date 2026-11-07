@@ -97,6 +97,32 @@ export function workspaceDirectory(dataDir: string, workspaceId: string): string
   return join(workspacesDirectory(dataDir), workspaceId);
 }
 
+/** Folder holding the automations of one Workspace. */
+export function automationsDirectory(dataDir: string, workspaceId: string): string {
+  return join(workspaceDirectory(dataDir, workspaceId), 'automations');
+}
+
+/**
+ * Folder holding what a Workspace's automation runs wrote. It sits outside the Workspace, because
+ * these are results and not definitions, so an export never has to leave them out.
+ */
+export function automationRunsDirectory(dataDir: string, workspaceId: string): string {
+  assertIdentifier(workspaceId, 'Workspace id');
+  return join(dataDir, 'automation-runs', workspaceId);
+}
+
+/** Folder of one automation run. The ids are checked because they become part of a path. */
+export function automationRunFolder(
+  dataDir: string,
+  workspaceId: string,
+  automationId: string,
+  runId: string,
+): string {
+  assertIdentifier(automationId, 'Automation id');
+  assertIdentifier(runId, 'Run id');
+  return join(automationRunsDirectory(dataDir, workspaceId), automationId, runId);
+}
+
 /** Folder holding the tools of one install scope. */
 export function toolsDirectory(dataDir: string, scope: InstallScope): string {
   if (scope.kind === 'global') {

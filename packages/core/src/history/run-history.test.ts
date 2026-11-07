@@ -138,7 +138,7 @@ describe('RunHistory', () => {
 
     const untouched = new Connection(file);
     expect(untouched.pragma('user_version', { simple: true })).toBe(99);
-    untouched.pragma('user_version = 2');
+    untouched.pragma('user_version = 3');
     untouched.close();
     history = await RunHistory.open(dataDir);
   });
@@ -229,5 +229,143 @@ describe('RunHistory across Workspaces', () => {
     const again = await RunHistory.open(dataDir);
     expect(again.list('default')).toHaveLength(1);
     again.close();
+  });
+});
+
+describe('RunHistory with several processes', () => {
+  let dataDir: string;
+  let history: RunHistory;
+
+  const run = {
+    workspaceId: 'work',
+    toolId: 'sample',
+    toolName: 'Sample',
+    level: 1,
+    startedAt: 1,
+    parameters: [],
+  };
+  const automationRun = {
+    workspaceId: 'work',
+    automationId: 'flow',
+    automationName: 'Flow',
+    trigger: 'cli' as const,
+    startedAt: 1,
+    steps: [{ id: 'first', state: 'running' as const }],
+  };
+
+  async function setOwner(table: string, pid: number | null): Promise<void> {
+    const { default: Connection } = await import('better-sqlite3');
+    const other = new Connection(join(dataDir, 'history.db'));
+    other.prepare(`UPDATE ${table} SET owner_pid = ?`).run(pid);
+    other.close();
+  }
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), 'bildora-owners-'));
+    history = await RunHistory.open(dataDir);
+  });
+
+  afterEach(async () => {
+    history.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('leaves alone what a live process is still running', async () => {
+    history.start({ ...run, runId: 'a' });
+    history.startAutomationRun({ ...automationRun, runId: 'b' });
+    await setOwner('runs', 4242);
+    await setOwner('automation_runs', 4242);
+
+    expect(history.recoverInterrupted((pid) => pid === 4242)).toBe(0);
+    expect(history.get('work', 'a')?.status).toBe('running');
+    expect(history.listAutomationRuns('work', 'flow')[0]?.status).toBe('running');
+  });
+
+  it('marks what a process left behind when it went', async () => {
+    history.start({ ...run, runId: 'a' });
+    history.start({ ...run, runId: 'b' });
+    history.startAutomationRun({ ...automationRun, runId: 'c' });
+    await setOwner('runs', 4242);
+    await setOwner('automation_runs', 4242);
+
+    expect(history.recoverInterrupted(() => false)).toBe(3);
+    expect(history.get('work', 'a')?.status).toBe('interrupted');
+    expect(history.listAutomationRuns('work', 'flow')[0]?.status).toBe('interrupted');
+  });
+
+  it('marks rows from before owners were kept, and rows with a reused id', async () => {
+    history.start({ ...run, runId: 'a' });
+    await setOwner('runs', null);
+    expect(history.recoverInterrupted(() => true)).toBe(1);
+
+    history.start({ ...run, runId: 'b' });
+    expect(history.recoverInterrupted(() => true)).toBe(1);
+  });
+
+  it('upgrades a file from version 2, keeping its runs', async () => {
+    history.start({ ...run, runId: 'a' });
+    history.finish('a', { status: 'completed', exitCode: 0, durationMs: 5 });
+    history.close();
+    const { default: Connection } = await import('better-sqlite3');
+    const old = new Connection(join(dataDir, 'history.db'));
+    old.exec(
+      'DROP TABLE automation_runs; ALTER TABLE runs DROP COLUMN automation_run_id; ALTER TABLE runs DROP COLUMN owner_pid;',
+    );
+    old.pragma('user_version = 2');
+    old.close();
+
+    history = await RunHistory.open(dataDir);
+    expect(history.get('work', 'a')?.status).toBe('completed');
+    history.startAutomationRun({ ...automationRun, runId: 'b' });
+    expect(history.listAutomationRuns('work', 'flow')).toHaveLength(1);
+  });
+
+  it('stores a run and its failure, and reads them back', () => {
+    history.startAutomationRun({ ...automationRun, runId: 'a' });
+    history.updateAutomationSteps('a', [{ id: 'first', state: 'completed' }]);
+    expect(history.listAutomationRuns('work', 'flow')[0]?.steps).toEqual([
+      { id: 'first', state: 'completed' },
+    ]);
+    const failure = { stepId: 'first', kind: 'exit-code', message: 'Exited with 3' };
+    history.finishAutomationRun('a', {
+      status: 'failed',
+      durationMs: 9,
+      failure,
+      steps: [{ id: 'first', state: 'failed' }],
+    });
+    expect(history.listAutomationRuns('work', 'flow')[0]).toMatchObject({
+      status: 'failed',
+      durationMs: 9,
+      failure,
+      trigger: 'cli',
+    });
+  });
+
+  it('keeps the newest runs of an automation, never one still going', () => {
+    for (const runId of ['a', 'b', 'c']) {
+      history.startAutomationRun({ ...automationRun, runId });
+      if (runId !== 'a') {
+        history.finishAutomationRun(runId, { status: 'completed', durationMs: 1, steps: [] });
+      }
+    }
+    expect(history.pruneAutomationRuns('work', 'flow', 1)).toEqual([
+      { workspaceId: 'work', automationId: 'flow', runId: 'b' },
+    ]);
+    expect(history.listAutomationRuns('work', 'flow').map(({ runId }) => runId)).toEqual([
+      'c',
+      'a',
+    ]);
+  });
+
+  it('applies a lower limit, clears and forgets automation runs too', () => {
+    for (const runId of ['a', 'b']) {
+      history.startAutomationRun({ ...automationRun, runId });
+      history.finishAutomationRun(runId, { status: 'completed', durationMs: 1, steps: [] });
+    }
+    expect(history.pruneAll(1).map(({ runId }) => runId)).toEqual(['a']);
+    expect(history.clear('work').map(({ runId }) => runId)).toEqual(['b']);
+    history.startAutomationRun({ ...automationRun, runId: 'c' });
+    history.removeWorkspace('work');
+    expect(history.listAutomationRuns('work', 'flow')).toEqual([]);
   });
 });
