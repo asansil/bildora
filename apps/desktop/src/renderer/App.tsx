@@ -1025,12 +1025,17 @@ export function App() {
 
   function panelRow(item: ToolView, live: boolean) {
     const { state } = summarizeRuns(runs, item.key);
+    const showsState = live && state !== 'idle';
+    // Only the category list shows states, so one id per tool is enough.
+    const stateId = `tool-state-${item.key.replace(/[^\w-]/g, '_')}`;
     return (
       <li key={item.key}>
         <button
           type="button"
           className="row"
           title={item.name}
+          // Named by the tool alone, with its state said apart, as tabs do.
+          aria-describedby={showsState ? stateId : undefined}
           aria-current={item.id === currentTool?.id ? 'true' : undefined}
           onClick={() => {
             showTool(item.id, !live);
@@ -1041,13 +1046,17 @@ export function App() {
         >
           <ProgramIcon tool={item} />
           <span className="truncate">{item.name}</span>
-          {!live || state === 'idle' ? null : (
+          {showsState ? (
             <span className="row-state" title={runStateLabel(state)}>
               <RunStateIcon state={state} />
-              <span className="visually-hidden">{runStateLabel(state)}</span>
             </span>
-          )}
+          ) : null}
         </button>
+        {showsState ? (
+          <span id={stateId} className="visually-hidden">
+            {runStateLabel(state)}
+          </span>
+        ) : null}
       </li>
     );
   }
