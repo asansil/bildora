@@ -190,6 +190,9 @@ export function TabBar({ tabs, activeKey, onActivate, onPin, onMove, onAction }:
             data-preview={tab.preview ? 'true' : undefined}
             aria-selected={active}
             aria-controls={tabPanelId(tab.key)}
+            // Named by its label alone, so the close button and the state stay out of the name.
+            aria-labelledby={`${tabId(tab.key)}-label`}
+            aria-describedby={tab.state === 'idle' ? undefined : `${tabId(tab.key)}-state`}
             tabIndex={active ? 0 : -1}
             title={tab.label}
             draggable
@@ -238,11 +241,15 @@ export function TabBar({ tabs, activeKey, onActivate, onPin, onMove, onAction }:
             }}
           >
             {tab.icon}
-            <span className="tab-label truncate">{tab.label}</span>
+            <span id={`${tabId(tab.key)}-label`} className="tab-label truncate">
+              {tab.label}
+            </span>
             {tab.state === 'idle' ? null : (
               <span className="tab-state" title={runStateLabel(tab.state)}>
                 <RunStateIcon state={tab.state} />
-                <span className="visually-hidden">{runStateLabel(tab.state)}</span>
+                <span id={`${tabId(tab.key)}-state`} className="visually-hidden">
+                  {runStateLabel(tab.state)}
+                </span>
               </span>
             )}
             <button
