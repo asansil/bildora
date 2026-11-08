@@ -133,16 +133,19 @@ outputs:
   await expect(window.getByTestId('automation-command')).toHaveText('bildora run hand-over');
   await window.getByRole('button', { name: 'Run', exact: true }).click();
 
-  await expect(step(window, 'writer')).toHaveAttribute('data-state', 'completed');
+  // A tool process can take seconds to start on a busy machine, as in the other run tests.
+  const toFinish = { timeout: 15_000 };
+  await expect(step(window, 'writer')).toHaveAttribute('data-state', 'completed', toFinish);
   await expect(step(window, 'review')).toContainText('Waiting for you');
   await expect(step(window, 'writer-2')).toHaveAttribute('data-state', 'idle');
   await expect(window.getByTestId('status')).toContainText('1 task');
   await step(window, 'review').getByRole('button', { name: 'Continue' }).click();
 
-  await expect(step(window, 'writer-2')).toHaveAttribute('data-state', 'completed');
+  await expect(step(window, 'writer-2')).toHaveAttribute('data-state', 'completed', toFinish);
   await expect(window.locator('.tool-header .state-badge')).toHaveAttribute(
     'data-state',
     'completed',
+    toFinish,
   );
   await expect(window.getByTestId('automation-runs')).toContainText('App');
   await expect(window.getByTestId('status')).toHaveText('Ready');
