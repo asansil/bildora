@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Pencil, Play, Plus, Square, Trash2, TriangleAlert } from 'lucide-react';
+import { Pencil, Play, Square, Trash2, TriangleAlert } from 'lucide-react';
 import { t } from '../../shared/i18n/translate.js';
 import type {
   AutomationDraft,
-  AutomationListView,
   AutomationRunRecordView,
   AutomationRunStateView,
   AutomationStep,
@@ -254,146 +253,100 @@ function AutomationDetail({
   );
 }
 
-interface AutomationsViewProps {
-  readonly list: AutomationListView;
-  readonly runs: readonly AutomationRunStateView[];
-  readonly workspaceId: string;
+interface AutomationTabProps {
+  /** Absent for a new automation, which opens in the editor and has no tab of its own yet. */
+  readonly automation: AutomationView | undefined;
+  readonly run: AutomationRunStateView | undefined;
   readonly tools: readonly ToolView[];
-  readonly selected: string | undefined;
+  /** Changes when a past run may have appeared, such as one from the CLI. */
   readonly revision: unknown;
-  readonly onSelect: (id: string | undefined) => void;
   readonly onSave: (draft: AutomationDraft) => Promise<AutomationView>;
-  readonly onRun: (id: string) => void;
-  readonly onRemove: (id: string) => void;
+  /** A new automation was saved, and its tab now shows it. */
+  readonly onSaved: (id: string) => void;
+  /** Cancel on a new automation, which leaves nothing to show. */
+  readonly onDiscard: () => void;
+  readonly onRun: () => void;
+  readonly onRemove: () => void;
   readonly onShowTool: (id: string) => void;
+  readonly onDirty: (dirty: boolean) => void;
+  readonly onUsed: () => void;
   readonly onError: (error: unknown) => void;
 }
 
-type Editing = { readonly kind: 'new' } | { readonly kind: 'existing'; readonly id: string };
-
-/** The automations of the Workspace, each with its steps, its state and its past runs. */
-export function AutomationsView({
-  list,
-  runs,
-  workspaceId,
+/** One automation in its tab: its steps, state and past runs, or the editor that changes it. */
+export function AutomationTab({
+  automation,
+  run,
   tools,
-  selected,
   revision,
-  onSelect,
   onSave,
+  onSaved,
+  onDiscard,
   onRun,
   onRemove,
   onShowTool,
+  onDirty,
+  onUsed,
   onError,
-}: AutomationsViewProps) {
-  const [editing, setEditing] = useState<Editing | undefined>(undefined);
-  const [removing, setRemoving] = useState<AutomationView | undefined>(undefined);
-  const automation = list.automations.find(({ id }) => id === selected);
-  const runOf = (id: string): AutomationRunStateView | undefined =>
-    runs.find((run) => run.workspaceId === workspaceId && run.automationId === id);
+}: AutomationTabProps) {
+  const [editing, setEditing] = useState(automation === undefined);
+  const [removing, setRemoving] = useState(false);
 
   function save(draft: AutomationDraft): void {
     void onSave(draft)
       .then(({ id }) => {
-        setEditing(undefined);
-        onSelect(id);
+        setEditing(false);
+        if (automation === undefined) {
+          onSaved(id);
+        }
       })
       .catch(onError);
   }
 
   return (
-    <section className="history" data-testid="automations">
-      <div className="history-list">
-        <h1>{t('automation.title')}</h1>
-        <div className="actions">
-          <button
-            type="button"
-            onClick={() => {
-              setEditing({ kind: 'new' });
-            }}
-          >
-            <Plus className="icon" aria-hidden="true" />
-            {t('automation.new')}
-          </button>
-        </div>
-        {list.automations.length === 0 ? <p className="muted">{t('automation.empty')}</p> : null}
-        <ul className="nav-list">
-          {list.automations.map((item) => (
-            <li key={item.id}>
-              <button
-                type="button"
-                className="history-row"
-                aria-current={item.id === selected ? 'true' : undefined}
-                onClick={() => {
-                  setEditing(undefined);
-                  onSelect(item.id);
-                }}
-              >
-                <RunStateIcon state={runOf(item.id)?.status ?? 'idle'} />
-                <span className="history-row-text">
-                  <span className="truncate">{item.name}</span>
-                  <span className="muted truncate">
-                    {t('automation.stepCount', { count: item.steps.length })}
-                  </span>
-                </span>
-                {item.problems.length === 0 ? null : (
-                  <TriangleAlert
-                    className="icon state-warning"
-                    aria-label={t('automation.broken')}
-                  />
-                )}
-              </button>
-            </li>
-          ))}
-        </ul>
-        {list.problems.length === 0 ? null : (
-          <dl className="facts" data-testid="automation-file-problems">
-            {list.problems.map(({ file, message }) => (
-              <div key={file}>
-                <dt>{file}</dt>
-                <dd>{message}</dd>
-              </div>
-            ))}
-          </dl>
-        )}
-      </div>
-      {editing !== undefined ? (
+    <section className="automation-tab" data-testid="automations">
+      {editing || automation === undefined ? (
         <AutomationEditor
-          key={editing.kind === 'new' ? 'new' : editing.id}
-          automation={editing.kind === 'new' ? undefined : automation}
+          automation={automation}
           tools={tools}
           onSave={save}
           onClose={() => {
-            setEditing(undefined);
+            if (automation === undefined) {
+              onDiscard();
+            } else {
+              setEditing(false);
+            }
           }}
           onError={onError}
+          onDirty={onDirty}
+          onUsed={onUsed}
         />
-      ) : automation === undefined ? (
-        <p className="muted history-hint">{t('automation.pick')}</p>
       ) : (
         <AutomationDetail
           automation={automation}
-          run={runOf(automation.id)}
+          run={run}
           tools={tools}
           revision={revision}
           onRun={() => {
-            onRun(automation.id);
+            onUsed();
+            onRun();
           }}
           onEdit={() => {
-            setEditing({ kind: 'existing', id: automation.id });
+            onUsed();
+            setEditing(true);
           }}
           onRemove={() => {
-            setRemoving(automation);
+            setRemoving(true);
           }}
           onShowTool={onShowTool}
           onError={onError}
         />
       )}
-      {removing === undefined ? null : (
+      {removing && automation !== undefined ? (
         <Dialog
-          title={t('automation.removeTitle', { name: removing.name })}
+          title={t('automation.removeTitle', { name: automation.name })}
           onClose={() => {
-            setRemoving(undefined);
+            setRemoving(false);
           }}
         >
           <p>{t('automation.removeBody')}</p>
@@ -402,7 +355,7 @@ export function AutomationsView({
               type="button"
               autoFocus
               onClick={() => {
-                setRemoving(undefined);
+                setRemoving(false);
               }}
             >
               {t('form.cancel')}
@@ -411,16 +364,15 @@ export function AutomationsView({
               type="button"
               className="primary"
               onClick={() => {
-                const { id } = removing;
-                setRemoving(undefined);
-                onRemove(id);
+                setRemoving(false);
+                onRemove();
               }}
             >
               {t('automation.removeConfirm')}
             </button>
           </div>
         </Dialog>
-      )}
+      ) : null}
     </section>
   );
 }

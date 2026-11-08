@@ -293,23 +293,10 @@ input[type='radio'] {
   outline-offset: -2px;
 }
 
-.rail-button[aria-expanded='true'] {
+/* The item that owns the active tab. An open panel shows itself, so it needs no mark. */
+.rail-button[aria-current='true'],
+.rail-button[aria-current='true']:hover:not(:disabled) {
   background: var(--bildora-surface-selected);
-}
-
-.rail-button[aria-expanded='true']:hover:not(:disabled) {
-  background: var(--bildora-surface-selected);
-}
-
-.rail-button[aria-current='true']::before {
-  content: '';
-  position: absolute;
-  top: 10px;
-  bottom: 10px;
-  left: -4px;
-  width: 3px;
-  border-radius: 0 2px 2px 0;
-  background: var(--bildora-accent);
 }
 
 .rail-button .icon {
@@ -378,17 +365,6 @@ input[type='radio'] {
   background: var(--bildora-surface-selected);
 }
 
-.row[aria-current='true']::before {
-  content: '';
-  position: absolute;
-  top: 6px;
-  bottom: 6px;
-  left: -8px;
-  width: 3px;
-  border-radius: 0 2px 2px 0;
-  background: var(--bildora-accent);
-}
-
 .row-count {
   margin-left: auto;
   font-size: var(--bildora-text-xs);
@@ -422,12 +398,124 @@ input[type='radio'] {
 }
 
 .work-area {
+  display: flex;
   flex: 1;
+  flex-direction: column;
   min-width: 0;
-  padding: var(--bildora-space-6) var(--bildora-space-8);
-  overflow-y: auto;
   background: var(--bildora-surface-base);
   border-left: 1px solid var(--bildora-border);
+}
+
+/* Tabs. */
+.tab-bar {
+  display: flex;
+  flex: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  background: var(--bildora-surface-panel);
+  border-bottom: 1px solid var(--bildora-border);
+}
+
+.tab {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bildora-space-2);
+  min-width: 120px;
+  max-width: 220px;
+  height: 36px;
+  padding: 0 var(--bildora-space-1) 0 var(--bildora-space-3);
+  color: var(--bildora-text-muted);
+  cursor: default;
+  user-select: none;
+  border-right: 1px solid var(--bildora-border);
+}
+
+.tab:hover {
+  background: var(--bildora-surface-hover);
+}
+
+.tab[aria-selected='true'] {
+  color: var(--bildora-text);
+  background: var(--bildora-surface-base);
+}
+
+.tab:focus-visible {
+  outline-offset: -2px;
+}
+
+.tab[data-preview='true'] .tab-label {
+  font-style: italic;
+}
+
+.tab-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.tab-state {
+  display: inline-flex;
+}
+
+.tab-close {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  visibility: hidden;
+}
+
+.tab:hover .tab-close,
+.tab[aria-selected='true'] .tab-close {
+  visibility: visible;
+}
+
+.tab-menu {
+  position: fixed;
+  top: auto;
+  margin-top: 0;
+}
+
+.tab-panels {
+  flex: 1;
+  min-height: 0;
+  padding: var(--bildora-space-6) var(--bildora-space-8);
+  overflow-y: auto;
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
+.panel-hint {
+  margin: var(--bildora-space-2);
+}
+
+.start-shortcuts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--bildora-space-2) var(--bildora-space-4);
+  margin: 0;
+}
+
+.start-shortcuts > div {
+  display: contents;
+}
+
+.start-shortcuts dd {
+  margin: 0;
+  color: var(--bildora-text-muted);
+}
+
+.start-screen h2 {
+  margin: var(--bildora-space-2) 0 0;
+  font-size: var(--bildora-text-md);
+  font-weight: var(--bildora-weight-semibold);
+}
+
+.start-recent {
+  align-self: stretch;
 }
 
 /* Run states. */

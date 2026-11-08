@@ -35,6 +35,8 @@ interface ToolRunnerProps {
   readonly favorite: boolean;
   readonly onToggleFavorite: () => void;
   readonly onError: (error: unknown) => void;
+  /** Called when the form or profile changes, which pins a preview tab. */
+  readonly onUsed?: () => void;
 }
 
 /** A level 1 tool in the work area: its generated form, saved profiles and live console. */
@@ -51,6 +53,7 @@ export function ToolRunner({
   favorite,
   onToggleFavorite,
   onError,
+  onUsed,
 }: ToolRunnerProps) {
   const parameters = tool.parameters ?? NO_PARAMETERS;
   const [profiles, setProfiles] = useState<readonly ProfileView[]>([]);
@@ -90,6 +93,7 @@ export function ToolRunner({
   const runnable = tool.runtime.status === 'ready' && !isRunning;
 
   function chooseProfile(id: string | undefined): void {
+    onUsed?.();
     setProfileId(id);
     setForgotten([]);
     setChecked(false);
@@ -102,6 +106,7 @@ export function ToolRunner({
   }
 
   function changeValue(name: string, value: FormValue): void {
+    onUsed?.();
     setValues((current) => ({ ...current, [name]: value }));
   }
 

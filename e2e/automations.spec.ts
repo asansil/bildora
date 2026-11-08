@@ -68,9 +68,17 @@ function editorStep(window: Page, id: string): Locator {
   return window.locator(`[data-testid="step-editor"][data-step-id="${id}"]`);
 }
 
+function automationsPanel(window: Page): Locator {
+  return window.getByTestId('automations-panel');
+}
+
+/** Opens the Automations panel unless a Workspace left it open, then pins the automation. */
 async function openAutomation(window: Page, name: string): Promise<void> {
-  await rail(window, 'Automations').click();
-  await window.locator('.history-row', { hasText: name }).click();
+  if (!(await automationsPanel(window).isVisible())) {
+    await rail(window, 'Automations').click();
+  }
+  await automationsPanel(window).getByRole('button', { name, exact: true }).dblclick();
+  await expect(window.getByRole('tab', { name, selected: true })).toBeVisible();
 }
 
 test.beforeEach(async () => {
@@ -232,7 +240,7 @@ test('a damaged file shows as a problem, beside the healthy automations', async 
   );
   const { window } = await launchShell();
   await rail(window, 'Automations').click();
-  await expect(window.locator('.history-row', { hasText: 'Healthy' })).toBeVisible();
+  await expect(automationsPanel(window).getByRole('button', { name: 'Healthy' })).toBeVisible();
   await expect(window.getByTestId('automation-file-problems')).toContainText('bad.yaml');
 });
 

@@ -53,6 +53,13 @@ function rail(window: Page, name: string): Locator {
   return window.getByRole('navigation').getByRole('button', { name, exact: true });
 }
 
+/** Opens a tool from its category panel, in a pinned tab. */
+async function openTool(window: Page, category: string, name: string): Promise<void> {
+  await rail(window, category).click();
+  await window.locator('#tool-panel').getByRole('button', { name, exact: true }).first().dblclick();
+  await expect(heading(window, name)).toBeVisible();
+}
+
 /** Settings and Manage Workspaces are modal, so the rail behind them waits until they close. */
 async function closeDialog(window: Page, name: string): Promise<void> {
   const dialog = window.getByRole('dialog', { name });
@@ -154,7 +161,8 @@ test('a tool moves between Global and a Workspace', async () => {
   const { window } = session;
   await addTool(session, 'Moved Tool', 'moved', 'global');
   await createWorkspace(window, 'Work');
-  await expect(rail(window, 'moved')).toBeVisible();
+  await expect(window.getByTestId('start-screen')).toBeVisible();
+  await openTool(window, 'moved', 'Moved Tool');
 
   await window.getByRole('button', { name: 'Move to this Workspace' }).click();
   await window.getByRole('button', { name: 'Move tool' }).click();
@@ -429,7 +437,7 @@ test('a data folder from before Workspaces keeps everything', async () => {
 
   const { app, window } = await launchShell();
   await expect(window.getByTestId('status-workspace')).toHaveText('Workspace: Default');
-  await expect(heading(window, 'Old Tool')).toBeVisible();
+  await openTool(window, 'Uncategorized', 'Old Tool');
   await expect(window.getByRole('button', { name: 'Move to this Workspace' })).toBeVisible();
   expect(await app.evaluate(({ nativeTheme }) => nativeTheme.shouldUseDarkColors)).toBe(true);
 

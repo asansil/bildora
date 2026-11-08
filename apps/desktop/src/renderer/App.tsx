@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
-import { Search, X } from 'lucide-react';
+import { History, Search, Workflow, X } from 'lucide-react';
 import { t } from '../shared/i18n/translate.js';
 import type {
   AutomationDraft,
@@ -24,14 +24,20 @@ import type {
   WorkspaceView,
 } from '../shared/ipc-contract.js';
 import { PANEL_WIDTH_DEFAULT } from '../shared/ipc-contract.js';
-import { AutomationsView } from './automations/AutomationsView.js';
+import { AutomationTab } from './automations/AutomationTab.js';
+import { AutomationsPanel } from './automations/AutomationsPanel.js';
 import { HistoryView } from './history/HistoryView.js';
 import { ImportReview } from './import/ImportReview.js';
 import { CommandPalette } from './palette/CommandPalette.js';
 import type { Command } from './palette/CommandPalette.js';
 import { SettingsView, THEME_LABELS } from './settings/SettingsView.js';
 import { BildoraMark } from './shell/BildoraMark.js';
-import { CategoryRail, TOOL_PANEL_ID } from './shell/CategoryRail.js';
+import {
+  AUTOMATIONS_PANEL,
+  CategoryRail,
+  HISTORY_OWNER,
+  TOOL_PANEL_ID,
+} from './shell/CategoryRail.js';
 import type { RailDialog } from './shell/CategoryRail.js';
 import { Dialog } from './shell/Dialog.js';
 import { MenuBar } from './shell/MenuBar.js';
@@ -39,12 +45,35 @@ import type { Menu } from './shell/MenuBar.js';
 import { PanelResizer } from './shell/PanelResizer.js';
 import { ProgramIcon } from './shell/ProgramIcon.js';
 import { RunStateBadge, RunStateIcon, runStateLabel } from './shell/RunStateBadge.js';
+import { StartScreen } from './tabs/StartScreen.js';
+import { TabBar, tabId, tabPanelId } from './tabs/TabBar.js';
+import type { TabAction, TabView } from './tabs/TabBar.js';
+import {
+  HISTORY_TAB,
+  NO_TABS,
+  activate,
+  activeTab,
+  close,
+  fromLayout,
+  keysToClose,
+  move,
+  open,
+  openDraft,
+  pin,
+  prune,
+  rename,
+  step,
+  tabKey,
+  toLayout,
+} from './tabs/tabs.js';
+import type { Tab, TabRef, TabState } from './tabs/tabs.js';
 import { ToolDetails } from './tools/ToolDetails.js';
 import { ToolForm } from './tools/ToolForm.js';
 import { ToolRunner } from './tools/ToolRunner.js';
 import { Welcome } from './tools/Welcome.js';
 import { groupKey, groupLabel, placeCategory, toggleCategory } from './tools/category-rail.js';
 import { countRunning, summarizeRuns } from './tools/run-state.js';
+import type { ToolState } from './tools/run-state.js';
 import { WorkspaceNameDialog } from './workspaces/WorkspaceNameDialog.js';
 import { WorkspacesView } from './workspaces/WorkspacesView.js';
 
@@ -54,8 +83,7 @@ const EMPTY_CATALOG: ToolCatalog = { groups: [], problems: [] };
 const EMPTY_RECENT: readonly string[] = [];
 const NO_WORKSPACES: WorkspaceListView = { activeId: '', workspaces: [], problems: [] };
 const NO_AUTOMATIONS: AutomationListView = { automations: [], problems: [] };
-
-type Screen = 'tools' | 'history' | 'automations';
+const NO_KEYS: ReadonlySet<string> = new Set();
 
 type Modal =
   | { readonly kind: 'palette' }
@@ -68,17 +96,8 @@ type Modal =
   | { readonly kind: 'review'; readonly detection: DetectionView }
   | { readonly kind: RailDialog };
 
-const TOOL_TAB_PREFIX = 'tool:';
-
-/** The tool in the active tab. Until the work area holds tabs, the shell shows only that one. */
-function activeToolOf(layout: WorkspaceLayoutView | undefined): string | undefined {
-  const key = layout?.activeTab;
-  return key?.startsWith(TOOL_TAB_PREFIX) === true ? key.slice(TOOL_TAB_PREFIX.length) : undefined;
-}
-
-function onlyToolTab(id: string): LayoutUpdate {
-  return { tabs: [{ kind: 'tool', id }], activeTab: `${TOOL_TAB_PREFIX}${id}` };
-}
+/** Why closing a tab has to ask first. */
+type CloseQuestion = 'running' | 'unsaved';
 
 function messageOf(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
@@ -86,27 +105,37 @@ function messageOf(error: unknown): string {
   return text.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
 }
 
+function layoutOf(list: WorkspaceListView): WorkspaceLayoutView | undefined {
+  return list.workspaces.find(({ id }) => id === list.activeId)?.layout;
+}
+
 export function App() {
   const [catalog, setCatalog] = useState(EMPTY_CATALOG);
   const [loaded, setLoaded] = useState(false);
   const [runs, setRuns] = useState<readonly RunView[]>([]);
   const [automations, setAutomations] = useState(NO_AUTOMATIONS);
+  const [automationsLoaded, setAutomationsLoaded] = useState(false);
   const [automationRuns, setAutomationRuns] = useState<readonly AutomationRunStateView[]>([]);
-  const [selectedAutomation, setSelectedAutomation] = useState<string | undefined>(undefined);
   const [version, setVersion] = useState('');
   const [workspaces, setWorkspaces] = useState(NO_WORKSPACES);
   const [panelWidth, setPanelWidth] = useState(PANEL_WIDTH_DEFAULT);
   const [historyRunLimit, setHistoryRunLimit] = useState(200);
   const [recent, setRecent] = useState(EMPTY_RECENT);
-  const [historyTool, setHistoryTool] = useState<string | undefined>(undefined);
-  const [screen, setScreen] = useState<Screen>('tools');
+  const [tabs, setTabs] = useState<TabState>(NO_TABS);
+  const [historyFilter, setHistoryFilter] = useState<string | undefined>(undefined);
+  /** Tabs whose automation has edits that are not saved. */
+  const [unsaved, setUnsaved] = useState<ReadonlySet<string>>(NO_KEYS);
+  /** Tabs waiting to close, the first of which is asking the user. */
+  const [closing, setClosing] = useState<readonly string[]>([]);
   const [openCategory, setOpenCategory] = useState<string | undefined>(undefined);
-  const [selectedTool, setSelectedTool] = useState<string | undefined>(undefined);
   const [modal, setModal] = useState<Modal | undefined>(undefined);
   const [banner, setBanner] = useState<string | undefined>(undefined);
   const [dropping, setDropping] = useState(false);
   /** Grows with each switch, so that an answer about the previous Workspace can be told apart. */
   const generation = useRef(0);
+  /** The tabs as last changed, so that changes in a row build on each other. */
+  const tabsNow = useRef<TabState>(NO_TABS);
+  const drafts = useRef(0);
 
   const workspace: WorkspaceView | undefined = workspaces.workspaces.find(
     ({ id }) => id === workspaces.activeId,
@@ -123,22 +152,34 @@ export function App() {
 
   const reload = useCallback((): Promise<ToolCatalog> => {
     const asked = generation.current;
-    void api
-      .listAutomations()
-      .then((next) => {
-        if (asked === generation.current) {
-          setAutomations(next);
+    // Both lists arrive together, so a tab is never dropped for an item that is still loading.
+    return Promise.all([api.listAutomations().catch(() => undefined), api.listTools()]).then(
+      ([list, next]) => {
+        if (asked !== generation.current) {
+          return next;
         }
-      })
-      .catch(() => undefined);
-    return api
-      .listTools()
-      .then((next) => (asked === generation.current ? applyCatalog(next) : next));
+        if (list !== undefined) {
+          setAutomations(list);
+          setAutomationsLoaded(true);
+        }
+        return applyCatalog(next);
+      },
+    );
   }, [applyCatalog]);
 
   const report = useCallback((error: unknown) => {
     setBanner(messageOf(error));
   }, []);
+
+  /** Shows the tabs a Workspace stored, without writing them back. */
+  function restoreTabs(layout: WorkspaceLayoutView | undefined): void {
+    const restored = fromLayout(layout);
+    tabsNow.current = restored;
+    setTabs(restored);
+    setHistoryFilter(layout?.historyFilter);
+    setUnsaved(NO_KEYS);
+    setClosing([]);
+  }
 
   useEffect(() => {
     void reload().catch(report);
@@ -148,9 +189,12 @@ export function App() {
       .listWorkspaces()
       .then((list) => {
         setWorkspaces(list);
-        // The panel stays closed at launch, so only the tool and the width come back.
-        const layout = list.workspaces.find(({ id }) => id === list.activeId)?.layout;
-        setSelectedTool(activeToolOf(layout));
+        // The panel stays closed at launch, so only the tabs and the width come back.
+        const layout = layoutOf(list);
+        const restored = fromLayout(layout);
+        tabsNow.current = restored;
+        setTabs(restored);
+        setHistoryFilter(layout?.historyFilter);
         setPanelWidth(layout?.panelWidth ?? PANEL_WIDTH_DEFAULT);
       })
       .catch(report);
@@ -184,19 +228,6 @@ export function App() {
   }, [reload, report]);
 
   useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'k') {
-        event.preventDefault();
-        setModal((current) => (current?.kind === 'palette' ? undefined : { kind: 'palette' }));
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('keydown', onKey);
-    };
-  }, []);
-
-  useEffect(() => {
     let current = true;
     void api
       .recentTools()
@@ -213,12 +244,43 @@ export function App() {
 
   const allTools = useMemo(() => catalog.groups.flatMap((group) => group.tools), [catalog]);
   const panelGroup = catalog.groups.find((candidate) => groupKey(candidate) === openCategory);
-  const tool = allTools.find((candidate) => candidate.id === selectedTool) ?? allTools[0];
+  const automationsPanelOpen = openCategory === AUTOMATIONS_PANEL;
   const runningAutomations = automationRuns.filter(({ status }) => status === 'running').length;
   // An automation between steps has no tool running, but it still counts as work going on.
   const running = countRunning(runs) || runningAutomations;
   const recentTools = recent.flatMap((id) => allTools.filter((item) => item.id === id));
   const favoriteTools = favorites.flatMap((id) => allTools.filter((item) => item.id === id));
+  const current = activeTab(tabs);
+  const historyShown = tabs.activeKey === tabKey(HISTORY_TAB);
+  // History stays mounted behind other tabs, so coming back to it reads the runs again, which
+  // may include some the command line made meanwhile.
+  const historyRevision = useMemo(() => ({ runs, historyShown }), [runs, historyShown]);
+
+  function toolOf(tab: TabRef): ToolView | undefined {
+    return tab.kind === 'tool' ? allTools.find((item) => item.id === tab.id) : undefined;
+  }
+
+  function automationRunOf(id: string | undefined): AutomationRunStateView | undefined {
+    return automationRuns.find(
+      (run) => run.workspaceId === workspaces.activeId && run.automationId === id,
+    );
+  }
+
+  function ownerOf(tab: Tab | undefined): string | undefined {
+    if (tab === undefined) {
+      return undefined;
+    }
+    if (tab.kind === 'automation') {
+      return AUTOMATIONS_PANEL;
+    }
+    if (tab.kind === 'history') {
+      return HISTORY_OWNER;
+    }
+    const group = catalog.groups.find((candidate) =>
+      candidate.tools.some((item) => item.id === tab.id),
+    );
+    return group === undefined ? undefined : groupKey(group);
+  }
 
   function saveWorkspace(changes: WorkspaceUpdate): void {
     const asked = generation.current;
@@ -235,22 +297,68 @@ export function App() {
       .catch(report);
   }
 
-  function chooseTool(id: string): void {
-    setSelectedTool(id);
-    saveWorkspace({ layout: onlyToolTab(id) });
+  /** Changes the tabs and stores them in the Workspace, with any other layout change. */
+  function changeTabs(update: (state: TabState) => TabState, extra: LayoutUpdate = {}): void {
+    const before = tabsNow.current;
+    const next = update(before);
+    if (next === before && Object.keys(extra).length === 0) {
+      return;
+    }
+    tabsNow.current = next;
+    setTabs(next);
+    saveWorkspace({ layout: { ...toLayout(next), ...extra } });
   }
 
-  /** Enters what `list` says is active, with the view that Workspace was left in. */
+  // Tabs whose tool or automation is gone close without a word, once both lists are known.
+  useEffect(() => {
+    if (!loaded || !automationsLoaded) {
+      return;
+    }
+    const before = tabsNow.current;
+    const next = prune(before, (tab) =>
+      tab.kind === 'tool'
+        ? allTools.some((item) => item.id === tab.id)
+        : automations.automations.some((item) => item.id === tab.id),
+    );
+    if (next.tabs.length !== before.tabs.length) {
+      tabsNow.current = next;
+      setTabs(next);
+      const asked = generation.current;
+      void api
+        .updateWorkspace({ layout: toLayout(next) })
+        .then((updated) => {
+          if (asked === generation.current) {
+            setWorkspaces((list) => ({
+              ...list,
+              workspaces: list.workspaces.map((item) => (item.id === updated.id ? updated : item)),
+            }));
+          }
+        })
+        .catch(report);
+    }
+  }, [loaded, automationsLoaded, allTools, automations, tabs, report]);
+
+  function openTab(ref: TabRef, pinned: boolean): void {
+    changeTabs((state) => open(state, ref, { pin: pinned }));
+  }
+
+  /** Using an item in a preview tab keeps it. */
+  function pinTab(key: string): void {
+    if (tabsNow.current.tabs.find((tab) => tab.key === key)?.preview === true) {
+      changeTabs((state) => pin(state, key));
+    }
+  }
+
+  /** Enters what `list` says is active, with the tabs that Workspace was left with. */
   function enterWorkspace(list: WorkspaceListView): Promise<ToolCatalog> {
     generation.current += 1;
-    const layout = list.workspaces.find(({ id }) => id === list.activeId)?.layout;
+    const layout = layoutOf(list);
     setWorkspaces(list);
-    setSelectedTool(activeToolOf(layout));
+    restoreTabs(layout);
     setOpenCategory(layout?.openCategory);
     setPanelWidth(layout?.panelWidth ?? PANEL_WIDTH_DEFAULT);
-    setHistoryTool(undefined);
-    setSelectedAutomation(undefined);
     setAutomations(NO_AUTOMATIONS);
+    setAutomationsLoaded(false);
     setModal(undefined);
     setLoaded(false);
     setCatalog(EMPTY_CATALOG);
@@ -260,29 +368,17 @@ export function App() {
 
   function switchWorkspace(id: string): void {
     if (id === workspaces.activeId) {
-      setScreen('tools');
+      setModal(undefined);
       return;
     }
     generation.current += 1;
-    void api
-      .switchWorkspace(id)
-      .then((list) => {
-        setScreen('tools');
-        return enterWorkspace(list);
-      })
-      .catch(report);
+    void api.switchWorkspace(id).then(enterWorkspace).catch(report);
   }
 
   function createWorkspace(name: string): void {
     setModal(undefined);
     generation.current += 1;
-    void api
-      .createWorkspace(name)
-      .then((list) => {
-        setScreen('tools');
-        return enterWorkspace(list);
-      })
-      .catch(report);
+    void api.createWorkspace(name).then(enterWorkspace).catch(report);
   }
 
   function renameWorkspace(id: string, name: string): void {
@@ -312,15 +408,20 @@ export function App() {
     });
   }
 
-  function showTool(id: string, list: ToolCatalog = catalog): void {
+  /**
+   * Opens a tool's tab. A panel that is open follows to the tool's category, so the tool can be
+   * found where it lives.
+   */
+  function showTool(id: string, pinned = true, list: ToolCatalog = catalog): void {
     const owner = list.groups.find((candidate) => candidate.tools.some((item) => item.id === id));
-    if (owner !== undefined) {
-      const nextOpen = openCategory === undefined ? undefined : groupKey(owner);
-      setOpenCategory(nextOpen);
-      setSelectedTool(id);
-      saveWorkspace({ layout: { ...onlyToolTab(id), openCategory: nextOpen ?? null } });
-      setScreen('tools');
+    if (owner === undefined) {
+      return;
     }
+    const nextOpen = openCategory === undefined ? undefined : groupKey(owner);
+    setOpenCategory(nextOpen);
+    changeTabs((state) => open(state, { kind: 'tool', id }, { pin: pinned }), {
+      openCategory: nextOpen ?? null,
+    });
   }
 
   function pressCategory(key: string): void {
@@ -328,6 +429,10 @@ export function App() {
     setOpenCategory(next);
     // Only choosing an item in the panel changes the work area.
     saveWorkspace({ layout: { openCategory: next ?? null } });
+    if (next === AUTOMATIONS_PANEL) {
+      // The CLI, or a hand-edited file, can change these while the app stays focused.
+      void reload().catch(report);
+    }
   }
 
   function placeRailCategory(dragged: string, target: string): void {
@@ -358,7 +463,7 @@ export function App() {
     const list = await reload();
     const [firstId] = registeredIds;
     if (firstId !== undefined) {
-      showTool(firstId, list);
+      showTool(firstId, true, list);
     }
     const [firstFailure] = failures;
     setBanner(
@@ -423,6 +528,7 @@ export function App() {
   }
 
   function launch(target: ToolView, request?: RunRequest): void {
+    pinTab(tabKey({ kind: 'tool', id: target.id }));
     void api.startRun(target.id, request).catch(report);
   }
 
@@ -437,14 +543,139 @@ export function App() {
   }
 
   function removeAutomation(id: string): void {
-    setSelectedAutomation(undefined);
+    changeTabs((state) => close(state, tabKey({ kind: 'automation', id })));
     void api.removeAutomation(id).then(reload).catch(report);
   }
 
-  function showHistory(toolId?: string): void {
-    setHistoryTool(toolId);
-    setScreen('history');
+  function newAutomation(): void {
+    drafts.current += 1;
+    const id = `new-${String(drafts.current)}`;
+    changeTabs((state) => openDraft(state, id));
   }
+
+  function markUnsaved(key: string, dirty: boolean): void {
+    setUnsaved((keys) => {
+      if (keys.has(key) === dirty) {
+        return keys;
+      }
+      const next = new Set(keys);
+      if (dirty) {
+        next.add(key);
+      } else {
+        next.delete(key);
+      }
+      return next;
+    });
+  }
+
+  function showHistory(toolId?: string): void {
+    setHistoryFilter(toolId);
+    changeTabs((state) => open(state, HISTORY_TAB, { pin: true }), {
+      historyFilter: toolId ?? null,
+    });
+  }
+
+  function questionFor(key: string, state: TabState): CloseQuestion | undefined {
+    const tab = state.tabs.find((item) => item.key === key);
+    if (tab === undefined) {
+      return undefined;
+    }
+    if (unsaved.has(key)) {
+      return 'unsaved';
+    }
+    const tool = toolOf(tab);
+    if (tool !== undefined && summarizeRuns(runs, tool.key).running.length > 0) {
+      return 'running';
+    }
+    if (tab.kind === 'automation' && automationRunOf(tab.id)?.status === 'running') {
+      return 'running';
+    }
+    return undefined;
+  }
+
+  /** Closes tabs in order, stopping to ask about the first one that is running or unsaved. */
+  function closeTabs(keys: readonly string[]): void {
+    const asking = keys.findIndex((key) => questionFor(key, tabsNow.current) !== undefined);
+    const quiet = asking === -1 ? keys : keys.slice(0, asking);
+    if (quiet.length > 0) {
+      changeTabs((state) => quiet.reduce(close, state));
+    }
+    setClosing(asking === -1 ? [] : keys.slice(asking));
+  }
+
+  function answerClose(answer: 'stop' | 'keep' | 'discard' | 'cancel'): void {
+    const [key, ...rest] = closing;
+    if (key === undefined || answer === 'cancel') {
+      setClosing([]);
+      return;
+    }
+    const tab = tabsNow.current.tabs.find((item) => item.key === key);
+    if (answer === 'stop' && tab !== undefined) {
+      const tool = toolOf(tab);
+      if (tool !== undefined) {
+        for (const run of summarizeRuns(runs, tool.key).running) {
+          void api.cancelRun(run.runId).catch(report);
+        }
+      }
+      const automationRun = tab.kind === 'automation' ? automationRunOf(tab.id) : undefined;
+      if (automationRun?.status === 'running') {
+        void api.cancelAutomation(automationRun.runId).catch(report);
+      }
+    }
+    markUnsaved(key, false);
+    changeTabs((state) => close(state, key));
+    closeTabs(rest);
+  }
+
+  function tabAction(action: TabAction, key: string): void {
+    if (action === 'pin') {
+      pinTab(key);
+      return;
+    }
+    if (action === 'others') {
+      changeTabs((state) => activate(state, key));
+    }
+    closeTabs(keysToClose(tabsNow.current, action, key));
+  }
+
+  // The shortcuts read what is current through a ref, so the listener is added only once.
+  const onShortcut = useRef<(event: KeyboardEvent) => void>(() => undefined);
+  useEffect(() => {
+    onShortcut.current = (event: KeyboardEvent): void => {
+      if (!event.ctrlKey || event.altKey) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      if (key === 'k' && !event.shiftKey) {
+        event.preventDefault();
+        setModal((open_) => (open_?.kind === 'palette' ? undefined : { kind: 'palette' }));
+        return;
+      }
+      if (modal !== undefined || closing.length > 0) {
+        return;
+      }
+      if (key === 'tab' || key === 'pagedown' || key === 'pageup') {
+        event.preventDefault();
+        const back = key === 'pageup' || (key === 'tab' && event.shiftKey);
+        changeTabs((state) => step(state, back ? -1 : 1));
+      } else if (key === 'w' && !event.shiftKey) {
+        event.preventDefault();
+        const active = tabsNow.current.activeKey;
+        if (active !== undefined) {
+          closeTabs([active]);
+        }
+      }
+    };
+  });
+  useEffect(() => {
+    const listener = (event: KeyboardEvent): void => {
+      onShortcut.current(event);
+    };
+    window.addEventListener('keydown', listener);
+    return () => {
+      window.removeEventListener('keydown', listener);
+    };
+  }, []);
 
   function changeTheme(next: ShellTheme): void {
     // A radio button must answer at once, before main has stored the change.
@@ -559,9 +790,9 @@ export function App() {
       id: `automation-${item.id}`,
       label: item.name,
       detail: t('nav.automations'),
+      icon: <Workflow className="icon" aria-hidden="true" />,
       run: () => {
-        setSelectedAutomation(item.id);
-        setScreen('automations');
+        openTab({ kind: 'automation', id: item.id }, true);
         if (item.problems.length === 0) {
           runAutomation(item.id);
         }
@@ -626,7 +857,200 @@ export function App() {
     })),
   ];
 
+  /** How a tab reads in the bar, or nothing for one whose item is not loaded or is gone. */
+  function viewOf(tab: Tab): TabView | undefined {
+    if (tab.kind === 'history') {
+      const icon = <History className="icon" aria-hidden="true" />;
+      return { key: tab.key, label: t('nav.history'), icon, state: 'idle', preview: tab.preview };
+    }
+    if (tab.kind === 'automation') {
+      const automation = automations.automations.find((item) => item.id === tab.id);
+      if (automation === undefined && !tab.draft) {
+        return undefined;
+      }
+      const state: ToolState = automationRunOf(tab.id)?.status ?? 'idle';
+      return {
+        key: tab.key,
+        label: automation?.name ?? t('tabs.newAutomation'),
+        icon: <Workflow className="icon" aria-hidden="true" />,
+        state,
+        preview: tab.preview,
+      };
+    }
+    const tool = toolOf(tab);
+    return tool === undefined
+      ? undefined
+      : {
+          key: tab.key,
+          label: tool.name,
+          icon: <ProgramIcon tool={tool} />,
+          state: summarizeRuns(runs, tool.key).state,
+          preview: tab.preview,
+        };
+  }
+
+  function renderTab(tab: Tab) {
+    if (tab.kind === 'history') {
+      return (
+        <HistoryView
+          tools={allTools}
+          toolId={historyFilter}
+          revision={historyRevision}
+          onToolId={(toolId) => {
+            setHistoryFilter(toolId);
+            saveWorkspace({ layout: { historyFilter: toolId ?? null } });
+          }}
+          onError={report}
+        />
+      );
+    }
+    if (tab.kind === 'automation') {
+      const automation = automations.automations.find((item) => item.id === tab.id);
+      if (automation === undefined && !tab.draft) {
+        return null;
+      }
+      return (
+        <AutomationTab
+          automation={automation}
+          run={automationRunOf(tab.id)}
+          tools={allTools}
+          revision={catalog}
+          onSave={saveAutomation}
+          onSaved={(id) => {
+            markUnsaved(tab.key, false);
+            changeTabs((state) => rename(state, tab.key, { kind: 'automation', id }));
+          }}
+          onDiscard={() => {
+            markUnsaved(tab.key, false);
+            changeTabs((state) => close(state, tab.key));
+          }}
+          onRun={() => {
+            if (automation !== undefined) {
+              runAutomation(automation.id);
+            }
+          }}
+          onRemove={() => {
+            if (automation !== undefined) {
+              removeAutomation(automation.id);
+            }
+          }}
+          onShowTool={(id) => {
+            showTool(id);
+          }}
+          onDirty={(dirty) => {
+            markUnsaved(tab.key, dirty);
+          }}
+          onUsed={() => {
+            pinTab(tab.key);
+          }}
+          onError={report}
+        />
+      );
+    }
+    const tool = toolOf(tab);
+    if (tool === undefined) {
+      return null;
+    }
+    const common = {
+      tool,
+      runs,
+      favorite: favorites.includes(tool.id),
+      onToggleFavorite: () => {
+        toggleFavorite(tool.id);
+      },
+      onMove: () => {
+        setModal({ kind: 'move', tool });
+      },
+      onStop: (runId: string) => {
+        void api.cancelRun(runId).catch(report);
+      },
+      onEdit: () => {
+        setModal({ kind: 'edit', tool });
+      },
+      onRemove: () => {
+        setModal({ kind: 'remove', tool });
+      },
+      onCheckAgain: () => {
+        void reload().catch(report);
+      },
+    };
+    return tool.level === 1 ? (
+      <ToolRunner
+        key={tool.key}
+        {...common}
+        onRun={(request) => {
+          launch(tool, request);
+        }}
+        onHistory={() => {
+          showHistory(tool.id);
+        }}
+        onUsed={() => {
+          pinTab(tab.key);
+        }}
+        onError={report}
+      />
+    ) : (
+      <ToolDetails
+        key={tool.key}
+        {...common}
+        onLaunch={() => {
+          launch(tool);
+        }}
+      />
+    );
+  }
+
+  const tabViews = tabs.tabs.flatMap((tab) => viewOf(tab) ?? []);
+  const owner = ownerOf(current);
+  const currentTool = current === undefined ? undefined : toolOf(current);
+  const currentAutomation = current?.kind === 'automation' ? current.id : undefined;
   const empty = loaded && allTools.length === 0;
+  const asking = closing[0];
+  const askingTab = tabs.tabs.find((tab) => tab.key === asking);
+  const question = asking === undefined ? undefined : questionFor(asking, tabs);
+  const askingName = askingTab === undefined ? '' : (viewOf(askingTab)?.label ?? '');
+
+  // A run can end while its question is open, and then the tab has nothing left to ask about.
+  const resumeClosing = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    resumeClosing.current = () => {
+      if (closing.length > 0 && question === undefined) {
+        closeTabs(closing);
+      }
+    };
+  });
+  useEffect(() => {
+    resumeClosing.current();
+  }, [closing, question]);
+
+  function panelRow(item: ToolView, live: boolean) {
+    const { state } = summarizeRuns(runs, item.key);
+    return (
+      <li key={item.key}>
+        <button
+          type="button"
+          className="row"
+          title={item.name}
+          aria-current={item.id === currentTool?.id ? 'true' : undefined}
+          onClick={() => {
+            showTool(item.id, !live);
+          }}
+          onDoubleClick={() => {
+            showTool(item.id, true);
+          }}
+        >
+          <ProgramIcon tool={item} />
+          <span className="truncate">{item.name}</span>
+          {!live || state === 'idle' ? null : (
+            <span className="row-state" title={runStateLabel(state)}>
+              <RunStateIcon state={state} />
+              <span className="visually-hidden">{runStateLabel(state)}</span>
+            </span>
+          )}
+        </button>
+      </li>
+    );
+  }
 
   return (
     <div
@@ -660,8 +1084,7 @@ export function App() {
         <CategoryRail
           groups={catalog.groups}
           openCategory={openCategory}
-          currentTool={tool}
-          screen={screen}
+          owner={owner}
           problemCount={catalog.problems.length}
           workspaces={workspaces.workspaces}
           activeWorkspace={workspaces.activeId}
@@ -672,22 +1095,28 @@ export function App() {
           onCreateWorkspace={() => {
             setModal({ kind: 'create-workspace' });
           }}
-          onScreen={(next) => {
-            if (next === 'history') {
-              showHistory();
-            } else {
-              setScreen(next);
-            }
-            if (next === 'automations') {
-              // The CLI, or a hand-edited file, can change these while the app stays focused.
-              void reload().catch(report);
-            }
+          onHistory={() => {
+            showHistory(historyFilter);
           }}
           onDialog={(kind) => {
             setModal({ kind });
           }}
         />
 
+        {automationsPanelOpen ? (
+          <AutomationsPanel
+            id={TOOL_PANEL_ID}
+            list={automations}
+            runs={automationRuns}
+            workspaceId={workspaces.activeId}
+            width={panelWidth}
+            current={currentAutomation}
+            onOpen={(id, pinned) => {
+              openTab({ kind: 'automation', id }, pinned);
+            }}
+            onNew={newAutomation}
+          />
+        ) : null}
         {panelGroup === undefined ? null : (
           <aside
             className="context-panel"
@@ -699,53 +1128,12 @@ export function App() {
               <span className="truncate">{groupLabel(panelGroup)}</span>
               <span className="row-count">{panelGroup.tools.length}</span>
             </h2>
-            <ul className="nav-list">
-              {panelGroup.tools.map((item) => {
-                const { state } = summarizeRuns(runs, item.id);
-                return (
-                  <li key={item.id}>
-                    <button
-                      type="button"
-                      className="row"
-                      title={item.name}
-                      aria-current={screen === 'tools' && item === tool ? 'true' : undefined}
-                      onClick={() => {
-                        chooseTool(item.id);
-                        setScreen('tools');
-                      }}
-                    >
-                      <ProgramIcon tool={item} />
-                      <span className="truncate">{item.name}</span>
-                      {state === 'idle' ? null : (
-                        <span className="row-state" title={runStateLabel(state)}>
-                          <RunStateIcon state={state} />
-                          <span className="visually-hidden">{runStateLabel(state)}</span>
-                        </span>
-                      )}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+            <ul className="nav-list">{panelGroup.tools.map((item) => panelRow(item, true))}</ul>
             {favoriteTools.length === 0 ? null : (
               <>
                 <h2>{t('nav.favorites')}</h2>
                 <ul className="nav-list" data-testid="favorite-tools">
-                  {favoriteTools.map((item) => (
-                    <li key={item.key}>
-                      <button
-                        type="button"
-                        className="row"
-                        title={item.name}
-                        onClick={() => {
-                          showTool(item.id);
-                        }}
-                      >
-                        <ProgramIcon tool={item} />
-                        <span className="truncate">{item.name}</span>
-                      </button>
-                    </li>
-                  ))}
+                  {favoriteTools.map((item) => panelRow(item, false))}
                 </ul>
               </>
             )}
@@ -753,27 +1141,13 @@ export function App() {
               <>
                 <h2>{t('nav.recent')}</h2>
                 <ul className="nav-list" data-testid="recent-tools">
-                  {recentTools.map((item) => (
-                    <li key={item.id}>
-                      <button
-                        type="button"
-                        className="row"
-                        title={item.name}
-                        onClick={() => {
-                          showTool(item.id);
-                        }}
-                      >
-                        <ProgramIcon tool={item} />
-                        <span className="truncate">{item.name}</span>
-                      </button>
-                    </li>
-                  ))}
+                  {recentTools.map((item) => panelRow(item, false))}
                 </ul>
               </>
             )}
           </aside>
         )}
-        {panelGroup === undefined ? null : (
+        {panelGroup === undefined && !automationsPanelOpen ? null : (
           <PanelResizer
             width={panelWidth}
             onResize={setPanelWidth}
@@ -784,109 +1158,59 @@ export function App() {
         )}
 
         <main className="work-area">
-          {banner === undefined ? null : (
-            <div className="notice notice-failed banner" role="alert">
-              <p>{banner}</p>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={t('banner.dismiss')}
-                onClick={() => {
-                  setBanner(undefined);
-                }}
-              >
-                <X className="icon" aria-hidden="true" />
-              </button>
-            </div>
+          {tabViews.length === 0 ? null : (
+            <TabBar
+              tabs={tabViews}
+              activeKey={tabs.activeKey}
+              onActivate={(key) => {
+                changeTabs((state) => activate(state, key));
+              }}
+              onPin={pinTab}
+              onMove={(from, to) => {
+                changeTabs((state) => move(state, from, to));
+              }}
+              onAction={tabAction}
+            />
           )}
-          {screen === 'automations' ? (
-            <AutomationsView
-              key={workspaces.activeId}
-              list={automations}
-              runs={automationRuns}
-              workspaceId={workspaces.activeId}
-              tools={allTools}
-              selected={selectedAutomation}
-              revision={catalog}
-              onSelect={setSelectedAutomation}
-              onSave={saveAutomation}
-              onRun={runAutomation}
-              onRemove={removeAutomation}
-              onShowTool={showTool}
-              onError={report}
-            />
-          ) : null}
-          {screen === 'history' ? (
-            <HistoryView
-              tools={allTools}
-              toolId={historyTool}
-              revision={runs}
-              onToolId={setHistoryTool}
-              onError={report}
-            />
-          ) : null}
-          {screen === 'tools' && empty ? <Welcome onAdd={addTool} onImport={importFolder} /> : null}
-          {screen === 'tools' && tool?.level === 1 ? (
-            <ToolRunner
-              key={tool.key}
-              tool={tool}
-              runs={runs}
-              favorite={favorites.includes(tool.id)}
-              onToggleFavorite={() => {
-                toggleFavorite(tool.id);
-              }}
-              onMove={() => {
-                setModal({ kind: 'move', tool });
-              }}
-              onRun={(request) => {
-                launch(tool, request);
-              }}
-              onStop={(runId) => {
-                void api.cancelRun(runId).catch(report);
-              }}
-              onEdit={() => {
-                setModal({ kind: 'edit', tool });
-              }}
-              onRemove={() => {
-                setModal({ kind: 'remove', tool });
-              }}
-              onCheckAgain={() => {
-                void reload().catch(report);
-              }}
-              onHistory={() => {
-                showHistory(tool.id);
-              }}
-              onError={report}
-            />
-          ) : null}
-          {screen === 'tools' && tool !== undefined && tool.level !== 1 ? (
-            <ToolDetails
-              tool={tool}
-              runs={runs}
-              favorite={favorites.includes(tool.id)}
-              onToggleFavorite={() => {
-                toggleFavorite(tool.id);
-              }}
-              onMove={() => {
-                setModal({ kind: 'move', tool });
-              }}
-              onLaunch={() => {
-                launch(tool);
-              }}
-              onStop={(runId) => {
-                void api.cancelRun(runId).catch(report);
-              }}
-              onEdit={() => {
-                setModal({ kind: 'edit', tool });
-              }}
-              onRemove={() => {
-                setModal({ kind: 'remove', tool });
-              }}
-              onCheckAgain={() => {
-                void reload().catch(report);
-              }}
-            />
-          ) : null}
+          <div className="tab-panels" key={workspaces.activeId}>
+            {banner === undefined ? null : (
+              <div className="notice notice-failed banner" role="alert">
+                <p>{banner}</p>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={t('banner.dismiss')}
+                  onClick={() => {
+                    setBanner(undefined);
+                  }}
+                >
+                  <X className="icon" aria-hidden="true" />
+                </button>
+              </div>
+            )}
+            {tabs.tabs.map((tab) => (
+              <div
+                key={tab.key}
+                id={tabPanelId(tab.key)}
+                role="tabpanel"
+                aria-labelledby={tabId(tab.key)}
+                className="tab-panel"
+                hidden={tab.key !== tabs.activeKey}
+              >
+                {renderTab(tab)}
+              </div>
+            ))}
+            {tabViews.length > 0 ? null : empty ? (
+              <Welcome onAdd={addTool} onImport={importFolder} />
+            ) : loaded ? (
+              <StartScreen
+                recent={recentTools}
+                onOpen={(id) => {
+                  showTool(id);
+                }}
+              />
+            ) : null}
+          </div>
         </main>
       </div>
 
@@ -908,6 +1232,75 @@ export function App() {
         <div className="drop-overlay" aria-hidden="true">
           {t('import.dropHint')}
         </div>
+      ) : null}
+
+      {question === 'running' ? (
+        <Dialog
+          title={t('tabs.runningTitle', { name: askingName })}
+          onClose={() => {
+            answerClose('cancel');
+          }}
+        >
+          <p>{t('tabs.runningBody')}</p>
+          <div className="dialog-actions">
+            <button
+              type="button"
+              autoFocus
+              onClick={() => {
+                answerClose('cancel');
+              }}
+            >
+              {t('form.cancel')}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                answerClose('keep');
+              }}
+            >
+              {t('tabs.keep')}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                answerClose('stop');
+              }}
+            >
+              {t('tabs.stop')}
+            </button>
+          </div>
+        </Dialog>
+      ) : null}
+      {question === 'unsaved' ? (
+        <Dialog
+          title={t('tabs.unsavedTitle', { name: askingName })}
+          onClose={() => {
+            answerClose('cancel');
+          }}
+        >
+          <p>{t('tabs.unsavedBody')}</p>
+          <div className="dialog-actions">
+            <button
+              type="button"
+              autoFocus
+              onClick={() => {
+                answerClose('cancel');
+              }}
+            >
+              {t('form.cancel')}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                answerClose('discard');
+              }}
+            >
+              {t('tabs.discard')}
+            </button>
+          </div>
+        </Dialog>
       ) : null}
 
       {modal?.kind === 'palette' ? (
@@ -1041,7 +1434,7 @@ export function App() {
               .updateTool(id, details)
               .then(reload)
               .then((list) => {
-                showTool(id, list);
+                showTool(id, true, list);
               })
               .catch(report);
           }}
