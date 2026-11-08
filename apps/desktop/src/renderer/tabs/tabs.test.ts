@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   HISTORY_TAB,
   NO_TABS,
+  STORED_TABS_MAX,
   activate,
   activeTab,
   close,
@@ -171,6 +172,17 @@ describe('layout', () => {
       activeTab: null,
     });
     expect(toLayout(activate(state, 'history')).activeTab).toBe('history');
+  });
+
+  it('stores no more tabs than main accepts, with the active one only if it is kept', () => {
+    const many = Array.from({ length: STORED_TABS_MAX + 2 }, (_, index) =>
+      tool(`t${String(index)}`),
+    );
+    const state = pinned(...many);
+    const layout = toLayout(state);
+    expect(layout.tabs).toHaveLength(STORED_TABS_MAX);
+    expect(layout.activeTab).toBeNull();
+    expect(toLayout(activate(state, 'tool:t0')).activeTab).toBe('tool:t0');
   });
 
   it('reads back what it stored', () => {

@@ -24,6 +24,9 @@ export interface TabState {
 
 export const NO_TABS: TabState = { tabs: [] };
 
+/** The most tabs a Workspace stores, the same limit `workspaces:update` checks. */
+export const STORED_TABS_MAX = 100;
+
 export const HISTORY_TAB: TabRef = { kind: 'history' };
 
 /** Matches the key core stores, so a stored active tab finds its tab again. */
@@ -205,7 +208,8 @@ export function fromLayout(layout: WorkspaceLayoutView | undefined): TabState {
 
 /** What the Workspace stores. Drafts stay out, and so does an active tab that is one. */
 export function toLayout(state: TabState): Pick<LayoutUpdate, 'tabs' | 'activeTab'> {
-  const stored = state.tabs.filter(({ draft }) => !draft);
+  // Any number can be open, but the Workspace keeps the first ones, as main accepts no more.
+  const stored = state.tabs.filter(({ draft }) => !draft).slice(0, STORED_TABS_MAX);
   const active = stored.find((tab) => tab.key === state.activeKey);
   return {
     tabs: stored.map(({ kind, id, preview }) =>
