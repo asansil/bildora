@@ -49,6 +49,8 @@ export interface ShellApi {
   removeTool(id: string): Promise<void>;
   /** Moves a tool between Global and the active Workspace, with its profiles and secrets. */
   setToolScope(id: string, scope: ToolScopeChoice): Promise<void>;
+  /** The icon Windows shows for the tool's program, as a PNG data URL, or nothing. */
+  toolIcon(id: string): Promise<string | undefined>;
   /** Offers to move a category or change its logo, and tells whether anything changed. */
   openCategoryMenu(category: string): Promise<boolean>;
   startRun(toolId: string, request?: RunRequest): Promise<RunView>;

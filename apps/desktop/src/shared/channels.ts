@@ -13,6 +13,7 @@ export const CHANNELS = {
   toolsImportManifests: 'tools:import-manifests',
   toolsRemove: 'tools:remove',
   toolsSetScope: 'tools:set-scope',
+  toolsIcon: 'tools:icon',
   categoriesOpenMenu: 'categories:open-menu',
   runsStart: 'runs:start',
   runsCancel: 'runs:cancel',

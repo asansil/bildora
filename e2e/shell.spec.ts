@@ -440,6 +440,27 @@ test('a program that moves is explained, and found again when it returns', async
   await expect(window.getByRole('button', { name: 'Launch' })).toBeEnabled();
 });
 
+test('a program shows the icon Windows gives its file, and a plain one when it is missing', async () => {
+  const program = join(folder, 'tool.bat');
+  await writeFile(program, '@echo off\r\n');
+  const session = await launchShell();
+  await addTool(session, program, 'Tool', 'Icons');
+  const { window } = session;
+
+  const png = /^data:image\/png;base64,/;
+  await expect(window.locator('.tool-header img.program-icon')).toHaveAttribute('src', png);
+  await categoryButton(window, 'Icons').click();
+  const row = window.getByRole('complementary').getByRole('button', { name: 'Tool' });
+  await expect(row.locator('img.program-icon')).toHaveAttribute('src', png);
+
+  await rm(program);
+  await session.app.close();
+  const relaunched = await launchShell();
+  await expect(relaunched.window.getByTestId('runtime-warning')).toBeVisible();
+  await expect(relaunched.window.locator('.tool-header > svg.icon')).toBeVisible();
+  await expect(relaunched.window.locator('.tool-header > img')).toHaveCount(0);
+});
+
 test('removing a tool forgets it and leaves the program alone', async () => {
   const program = join(folder, 'tool.bat');
   await writeFile(program, '@echo off\r\n');

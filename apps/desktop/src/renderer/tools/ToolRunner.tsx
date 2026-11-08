@@ -8,6 +8,7 @@ import type {
   RunView,
   ToolView,
 } from '../../shared/ipc-contract.js';
+import { ProgramIcon } from '../shell/ProgramIcon.js';
 import { RunStateBadge } from '../shell/RunStateBadge.js';
 import { ConsolePane } from './ConsolePane.js';
 import type { ConsoleSize } from './ConsolePane.js';
@@ -167,6 +168,7 @@ export function ToolRunner({
   return (
     <article className="tool tool-runner" data-testid="tool-runner">
       <header className="tool-header">
+        <ProgramIcon tool={tool} />
         <h1 title={tool.name}>{tool.name}</h1>
         <FavoriteButton tool={tool} favorite={favorite} onToggle={onToggleFavorite} />
         <RunStateBadge state={summary.state} />

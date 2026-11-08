@@ -128,6 +128,7 @@ export {
   categoryKey,
   checkRuntime,
   groupByCategory,
+  locateProgram,
   moveCategory,
   orderGroups,
 } from './tools/tool-status.js';

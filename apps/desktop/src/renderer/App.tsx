@@ -36,6 +36,7 @@ import { Dialog } from './shell/Dialog.js';
 import { MenuBar } from './shell/MenuBar.js';
 import type { Menu } from './shell/MenuBar.js';
 import { PanelResizer } from './shell/PanelResizer.js';
+import { ProgramIcon } from './shell/ProgramIcon.js';
 import { RunStateBadge, RunStateIcon, runStateLabel } from './shell/RunStateBadge.js';
 import { ToolDetails } from './tools/ToolDetails.js';
 import { ToolForm } from './tools/ToolForm.js';
@@ -542,6 +543,7 @@ export function App() {
       id: `tool-${item.id}`,
       label: item.name,
       detail: item.category ?? t('nav.uncategorized'),
+      icon: <ProgramIcon tool={item} />,
       run: () => {
         showTool(item.id);
         if (item.level === 0 && item.runtime.status === 'ready') {
@@ -705,6 +707,7 @@ export function App() {
                         setScreen('tools');
                       }}
                     >
+                      <ProgramIcon tool={item} />
                       <span className="truncate">{item.name}</span>
                       {state === 'idle' ? null : (
                         <span className="row-state" title={runStateLabel(state)}>
@@ -731,6 +734,7 @@ export function App() {
                           showTool(item.id);
                         }}
                       >
+                        <ProgramIcon tool={item} />
                         <span className="truncate">{item.name}</span>
                       </button>
                     </li>
@@ -752,6 +756,7 @@ export function App() {
                           showTool(item.id);
                         }}
                       >
+                        <ProgramIcon tool={item} />
                         <span className="truncate">{item.name}</span>
                       </button>
                     </li>

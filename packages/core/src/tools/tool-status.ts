@@ -44,6 +44,34 @@ export async function checkRuntime(
   return { status: 'ready' };
 }
 
+/**
+ * The full path of the file a tool starts, as this machine sees it, or undefined when it cannot be
+ * found. Only paths are looked at, so the shell can show the file's icon without running anything.
+ */
+export async function locateProgram(
+  tool: RegisteredTool,
+  options: RuntimeCheckOptions = {},
+): Promise<string | undefined> {
+  if (tool.manifest.level === 2) {
+    return undefined;
+  }
+  let expanded: RegisteredTool;
+  try {
+    expanded = expandToolCommand(tool, options.pathVariables ?? new Map<string, string>());
+  } catch (error) {
+    if (error instanceof MissingPathVariableError) {
+      return undefined;
+    }
+    throw error;
+  }
+  const { manifest, directory } = expanded;
+  if (manifest.level === 2) {
+    return undefined;
+  }
+  const env = options.env === undefined ? {} : { env: options.env };
+  return resolveExecutable(manifest.run.program, { ...env, searchFirst: [directory] });
+}
+
 export interface ToolGroup {
   /** Absent for the tools that declare no category, which always come last. */
   readonly category?: string;

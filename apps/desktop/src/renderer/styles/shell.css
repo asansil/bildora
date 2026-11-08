@@ -982,6 +982,24 @@ input[type='radio'] {
   background: var(--bildora-surface-selected);
 }
 
+.palette-label {
+  display: flex;
+  align-items: center;
+  gap: var(--bildora-space-2);
+  min-width: 0;
+}
+
+/* Program icons are bitmaps from Windows, so they keep their own colors in both themes. */
+.program-icon {
+  object-fit: contain;
+}
+
+.tool-header .program-icon,
+.tool-header > .icon {
+  width: 24px;
+  height: 24px;
+}
+
 .palette-detail {
   flex: none;
   max-width: 45%;

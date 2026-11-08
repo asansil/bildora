@@ -6,7 +6,13 @@ import { createRegisteredManifest } from '../import/register-program.js';
 import type { ProgramDetails } from '../import/register-program.js';
 import type { RegisteredTool } from '../registry/tool-registry.js';
 import { GLOBAL_SCOPE } from '../storage/data-directory.js';
-import { checkRuntime, groupByCategory, moveCategory, orderGroups } from './tool-status.js';
+import {
+  checkRuntime,
+  groupByCategory,
+  locateProgram,
+  moveCategory,
+  orderGroups,
+} from './tool-status.js';
 
 function toolOf(details: ProgramDetails, id = 'tool', directory = 'C:\\data'): RegisteredTool {
   return { scope: GLOBAL_SCOPE, directory, manifest: createRegisteredManifest(details, id) };
@@ -53,6 +59,46 @@ describe('checkRuntime', () => {
     });
 
     expect(status).toEqual({ status: 'missing-program', program: gone });
+  });
+});
+
+describe('locateProgram', () => {
+  let folder: string;
+
+  beforeEach(async () => {
+    folder = await mkdtemp(join(tmpdir(), 'bildora-locate-'));
+  });
+
+  afterEach(async () => {
+    await rm(folder, { recursive: true, force: true });
+  });
+
+  it('expands a path variable and finds the file', async () => {
+    const program = join(folder, 'tool.exe');
+    await writeFile(program, '');
+    const tool = toolOf({ program: '{{paths.tools}}\\tool.exe', name: 'T' });
+
+    const found = await locateProgram(tool, { pathVariables: new Map([['tools', folder]]) });
+
+    expect(found).toBe(program);
+  });
+
+  it('finds a program named beside its manifest', async () => {
+    await writeFile(join(folder, 'run.bat'), '');
+
+    const found = await locateProgram(toolOf({ program: 'run.bat', name: 'T' }, 'tool', folder), {
+      env: { PATH: '', PATHEXT: '.BAT' },
+    });
+
+    expect(found).toBe(join(folder, 'run.bat'));
+  });
+
+  it('gives nothing for a missing file or a variable with no value', async () => {
+    const gone = toolOf({ program: join(folder, 'gone.exe'), name: 'T' });
+    const unset = toolOf({ program: '{{paths.nowhere}}\\tool.exe', name: 'T' });
+
+    expect(await locateProgram(gone)).toBeUndefined();
+    expect(await locateProgram(unset)).toBeUndefined();
   });
 });
 

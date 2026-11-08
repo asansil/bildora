@@ -9,6 +9,7 @@ import {
   importManifests,
   listProfiles,
   listVisibleTools,
+  locateProgram,
   moveCategory,
   moveTool,
   orderGroups,
@@ -254,5 +255,13 @@ export class ToolService {
 
   async remove(tool: RegisteredTool): Promise<void> {
     await removeTool(this.registry, tool.manifest.id, this.secrets, tool.scope);
+  }
+
+  /** Where the tool's program is on this machine, if it can be found. Nothing is run. */
+  async programPath(id: string): Promise<string | undefined> {
+    const tool = await findVisibleTool(this.registry, this.workspaceId(), id);
+    return tool === undefined
+      ? undefined
+      : locateProgram(tool, { pathVariables: await this.pathVariables() });
   }
 }
