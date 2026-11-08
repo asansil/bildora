@@ -162,6 +162,9 @@ test('a registered tool is still there after a restart', async () => {
 
   const first = await launchShell();
   await addTool(first, program, 'My Tool');
+  // The open tab is stored a moment after it shows, so the restart waits for it.
+  const stored = join(dataDir, 'workspaces', 'default', 'workspace.yaml');
+  await expect.poll(() => readFile(stored, 'utf8').catch(() => '')).toContain('tool:my-tool');
   await first.app.close();
 
   const { window } = await launchShell();
