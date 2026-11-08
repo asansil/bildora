@@ -8,6 +8,8 @@ import { WorkspaceSelector } from './WorkspaceSelector.js';
 
 export const TOOL_PANEL_ID = 'tool-panel';
 
+export type RailDialog = 'problems' | 'settings' | 'workspaces';
+
 const DRAG_TYPE = 'application/x-bildora-category';
 
 interface CategoryGlyphProps {
@@ -48,7 +50,7 @@ interface CategoryRailProps {
   readonly openCategory: string | undefined;
   /** The tool in the work area, if the work area is showing one. */
   readonly currentTool: ToolView | undefined;
-  readonly screen: 'tools' | 'problems' | 'history' | 'settings' | 'workspaces' | 'automations';
+  readonly screen: 'tools' | 'history' | 'automations';
   readonly problemCount: number;
   readonly workspaces: readonly WorkspaceView[];
   readonly activeWorkspace: string | undefined;
@@ -56,9 +58,9 @@ interface CategoryRailProps {
   readonly onCategoryMenu: (category: string) => void;
   /** A category was dragged onto another. */
   readonly onPlaceCategory: (dragged: string, target: string) => void;
-  readonly onScreen: (
-    screen: 'problems' | 'history' | 'settings' | 'workspaces' | 'automations',
-  ) => void;
+  readonly onScreen: (screen: 'history' | 'automations') => void;
+  /** Settings, Problems and Manage Workspaces open over the work area and never move the mark. */
+  readonly onDialog: (dialog: RailDialog) => void;
   readonly onSwitchWorkspace: (id: string) => void;
   readonly onCreateWorkspace: () => void;
 }
@@ -76,6 +78,7 @@ export function CategoryRail({
   onCategoryMenu,
   onPlaceCategory,
   onScreen,
+  onDialog,
   onSwitchWorkspace,
   onCreateWorkspace,
 }: CategoryRailProps) {
@@ -145,9 +148,9 @@ export function CategoryRail({
               type="button"
               className="rail-button"
               title={t('nav.problems')}
-              aria-current={screen === 'problems' ? 'true' : undefined}
+              aria-haspopup="dialog"
               onClick={() => {
-                onScreen('problems');
+                onDialog('problems');
               }}
             >
               <TriangleAlert className="icon state-warning" aria-hidden="true" />
@@ -160,11 +163,10 @@ export function CategoryRail({
           <WorkspaceSelector
             workspaces={workspaces}
             activeId={activeWorkspace}
-            current={screen === 'workspaces'}
             onSwitch={onSwitchWorkspace}
             onCreate={onCreateWorkspace}
             onManage={() => {
-              onScreen('workspaces');
+              onDialog('workspaces');
             }}
           />
         </li>
@@ -201,9 +203,9 @@ export function CategoryRail({
             type="button"
             className="rail-button"
             title={t('nav.settings')}
-            aria-current={screen === 'settings' ? 'true' : undefined}
+            aria-haspopup="dialog"
             onClick={() => {
-              onScreen('settings');
+              onDialog('settings');
             }}
           >
             <Settings className="icon" aria-hidden="true" />

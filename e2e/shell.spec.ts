@@ -274,24 +274,24 @@ test('the side panel starts closed, and a category opens and closes it', async (
   await expect(panel).toBeVisible();
 });
 
-test('the panel and Settings leave each other alone, and a panel item opens the tool', async () => {
+test('Settings opens over the work, leaving the panel and the tool as they were', async () => {
   const program = join(folder, 'tool.bat');
   await writeFile(program, '@echo off\r\n');
   const session = await launchShell();
   await addTool(session, program, 'Alpha Tool', 'Alpha');
   const { window } = session;
+  const tool = window.getByRole('heading', { name: 'Alpha Tool', level: 1 });
 
   await categoryButton(window, 'Alpha').click();
   await categoryButton(window, 'Settings').click();
-  await expect(window.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
-  await expect(window.getByRole('complementary')).toBeVisible();
+  const settings = window.getByRole('dialog', { name: 'Settings' });
+  await expect(settings).toBeVisible();
+  await expect(categoryButton(window, 'Settings')).not.toHaveAttribute('aria-current', 'true');
 
-  await categoryButton(window, 'Alpha').click();
-  await expect(window.getByRole('complementary')).toHaveCount(0);
-  await categoryButton(window, 'Alpha').click();
-  await expect(window.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
-  await window.getByRole('complementary').getByRole('button', { name: 'Alpha Tool' }).click();
-  await expect(window.getByRole('heading', { name: 'Alpha Tool', level: 1 })).toBeVisible();
+  await window.keyboard.press('Escape');
+  await expect(settings).toHaveCount(0);
+  await expect(window.getByRole('complementary')).toBeVisible();
+  await expect(tool).toBeVisible();
 });
 
 test('a category shows its initial until it is given a logo, which is remembered', async () => {
@@ -414,8 +414,10 @@ test('a damaged tool is reported, and an empty list still offers a way in', asyn
 
   await expect(window.getByTestId('welcome')).toBeVisible();
   await window.getByRole('button', { name: /Problems/ }).click();
-  await expect(window.getByRole('heading', { name: 'Tools that cannot be read' })).toBeVisible();
-  await expect(window.getByRole('main')).toContainText('broken-tool');
+  const problems = window.getByRole('dialog', { name: 'Tools that cannot be read' });
+  await expect(problems).toContainText('broken-tool');
+  await problems.getByRole('button', { name: 'Close' }).click();
+  await expect(window.getByTestId('welcome')).toBeVisible();
 });
 
 test('a program that moves is explained, and found again when it returns', async () => {

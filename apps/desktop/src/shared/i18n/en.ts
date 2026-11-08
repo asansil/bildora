@@ -350,6 +350,7 @@ export const en = {
 
   'banner.dismiss': 'Dismiss',
 
+  'dialog.close': 'Close',
   'dialog.pickFiles': 'Choose programs to add',
   'dialog.pickFolder': 'Choose a folder to import',
   'dialog.programs': 'Programs and scripts',

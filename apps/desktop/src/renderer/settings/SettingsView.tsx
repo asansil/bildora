@@ -22,8 +22,10 @@ interface SettingsViewProps {
   readonly onClearHistory: () => void;
   readonly onPathVariablesChanged: () => void;
   readonly onError: (error: unknown) => void;
+  readonly onClose: () => void;
 }
 
+/** A dialog over the current work, so that changing a setting never closes a tab. */
 export function SettingsView({
   workspaceName,
   theme,
@@ -33,6 +35,7 @@ export function SettingsView({
   onClearHistory,
   onPathVariablesChanged,
   onError,
+  onClose,
 }: SettingsViewProps) {
   const id = useId();
   const [limit, setLimit] = useState(String(historyRunLimit));
@@ -50,55 +53,61 @@ export function SettingsView({
   }
 
   return (
-    <section className="settings">
-      <h1>{t('settings.title')}</h1>
-      <h2>{t('settings.workspace', { name: workspaceName })}</h2>
-      <fieldset className="radio-group">
-        <legend>{t('settings.theme')}</legend>
-        {THEME_LABELS.map(({ value, label }) => (
-          <label key={value}>
-            <input
-              type="radio"
-              name="theme"
-              value={value}
-              checked={theme === value}
-              onChange={() => {
-                onTheme(value);
-              }}
-            />
-            {t(label)}
-          </label>
-        ))}
-      </fieldset>
+    <Dialog title={t('settings.title')} className="dialog-wide" onClose={onClose}>
+      <div className="settings">
+        <h2>{t('settings.workspace', { name: workspaceName })}</h2>
+        <fieldset className="radio-group">
+          <legend>{t('settings.theme')}</legend>
+          {THEME_LABELS.map(({ value, label }) => (
+            <label key={value}>
+              <input
+                type="radio"
+                name="theme"
+                value={value}
+                checked={theme === value}
+                onChange={() => {
+                  onTheme(value);
+                }}
+              />
+              {t(label)}
+            </label>
+          ))}
+        </fieldset>
 
-      <div className="actions">
-        <button
-          type="button"
-          onClick={() => {
-            setClearing(true);
-          }}
-        >
-          {t('settings.clearHistory')}
+        <div className="actions">
+          <button
+            type="button"
+            onClick={() => {
+              setClearing(true);
+            }}
+          >
+            {t('settings.clearHistory')}
+          </button>
+        </div>
+
+        <h2>{t('settings.computer')}</h2>
+        <div className="field settings-field">
+          <label className="field-label" htmlFor={id}>
+            {t('settings.historyLimit')}
+          </label>
+          <input
+            id={id}
+            inputMode="numeric"
+            value={limit}
+            onChange={(event) => {
+              setLimit(event.target.value);
+            }}
+            onBlur={commitLimit}
+          />
+          <span className="field-hint">{t('settings.historyLimitHint')}</span>
+        </div>
+        <PathVariablesEditor onChanged={onPathVariablesChanged} onError={onError} />
+      </div>
+      <div className="dialog-actions">
+        <button type="button" className="primary" onClick={onClose}>
+          {t('dialog.close')}
         </button>
       </div>
-
-      <h2>{t('settings.computer')}</h2>
-      <div className="field settings-field">
-        <label className="field-label" htmlFor={id}>
-          {t('settings.historyLimit')}
-        </label>
-        <input
-          id={id}
-          inputMode="numeric"
-          value={limit}
-          onChange={(event) => {
-            setLimit(event.target.value);
-          }}
-          onBlur={commitLimit}
-        />
-        <span className="field-hint">{t('settings.historyLimitHint')}</span>
-      </div>
-      <PathVariablesEditor onChanged={onPathVariablesChanged} onError={onError} />
 
       {clearing ? (
         <Dialog
@@ -131,6 +140,6 @@ export function SettingsView({
           </div>
         </Dialog>
       ) : null}
-    </section>
+    </Dialog>
   );
 }

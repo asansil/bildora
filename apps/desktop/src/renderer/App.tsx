@@ -32,6 +32,7 @@ import type { Command } from './palette/CommandPalette.js';
 import { SettingsView, THEME_LABELS } from './settings/SettingsView.js';
 import { BildoraMark } from './shell/BildoraMark.js';
 import { CategoryRail, TOOL_PANEL_ID } from './shell/CategoryRail.js';
+import type { RailDialog } from './shell/CategoryRail.js';
 import { Dialog } from './shell/Dialog.js';
 import { MenuBar } from './shell/MenuBar.js';
 import type { Menu } from './shell/MenuBar.js';
@@ -54,7 +55,7 @@ const EMPTY_RECENT: readonly string[] = [];
 const NO_WORKSPACES: WorkspaceListView = { activeId: '', workspaces: [], problems: [] };
 const NO_AUTOMATIONS: AutomationListView = { automations: [], problems: [] };
 
-type Screen = 'tools' | 'problems' | 'history' | 'settings' | 'workspaces' | 'automations';
+type Screen = 'tools' | 'history' | 'automations';
 
 type Modal =
   | { readonly kind: 'palette' }
@@ -64,7 +65,8 @@ type Modal =
   | { readonly kind: 'remove'; readonly tool: ToolView }
   | { readonly kind: 'move'; readonly tool: ToolView }
   | { readonly kind: 'create-workspace' }
-  | { readonly kind: 'review'; readonly detection: DetectionView };
+  | { readonly kind: 'review'; readonly detection: DetectionView }
+  | { readonly kind: RailDialog };
 
 const TOOL_TAB_PREFIX = 'tool:';
 
@@ -295,6 +297,8 @@ export function App() {
           setWorkspaces(list);
         } else {
           await enterWorkspace(list);
+          // Deleting the open Workspace moves to another, but the user is still managing them.
+          setModal({ kind: 'workspaces' });
         }
       })
       .catch(report);
@@ -586,7 +590,7 @@ export function App() {
       label: t('palette.manageWorkspaces'),
       detail: t('nav.workspaces'),
       run: () => {
-        setScreen('workspaces');
+        setModal({ kind: 'workspaces' });
       },
     },
     { id: 'add', label: t('menu.addTool'), detail: t('palette.action'), run: addTool },
@@ -609,7 +613,7 @@ export function App() {
       label: t('menu.settings'),
       detail: t('palette.action'),
       run: () => {
-        setScreen('settings');
+        setModal({ kind: 'settings' });
       },
     },
     ...THEME_LABELS.map(({ value, label }): Command => ({
@@ -678,6 +682,9 @@ export function App() {
               // The CLI, or a hand-edited file, can change these while the app stays focused.
               void reload().catch(report);
             }
+          }}
+          onDialog={(kind) => {
+            setModal({ kind });
           }}
         />
 
@@ -792,29 +799,6 @@ export function App() {
               </button>
             </div>
           )}
-          {screen === 'settings' ? (
-            <SettingsView
-              key={historyRunLimit}
-              workspaceName={workspaceName}
-              theme={theme}
-              historyRunLimit={historyRunLimit}
-              onTheme={changeTheme}
-              onHistoryRunLimit={changeHistoryRunLimit}
-              onClearHistory={clearHistory}
-              onPathVariablesChanged={() => {
-                void reload().catch(report);
-              }}
-              onError={report}
-            />
-          ) : null}
-          {screen === 'workspaces' ? (
-            <WorkspacesView
-              list={workspaces}
-              onSwitch={switchWorkspace}
-              onRename={renameWorkspace}
-              onRemove={removeWorkspace}
-            />
-          ) : null}
           {screen === 'automations' ? (
             <AutomationsView
               key={workspaces.activeId}
@@ -840,20 +824,6 @@ export function App() {
               onToolId={setHistoryTool}
               onError={report}
             />
-          ) : null}
-          {screen === 'problems' ? (
-            <section className="problems">
-              <h1>{t('problems.title')}</h1>
-              <p className="muted">{t('problems.body')}</p>
-              <dl className="facts">
-                {catalog.problems.map((problem) => (
-                  <div key={`${problem.scope}/${problem.folder}`}>
-                    <dt>{problem.folder}</dt>
-                    <dd>{problem.message}</dd>
-                  </div>
-                ))}
-              </dl>
-            </section>
           ) : null}
           {screen === 'tools' && empty ? <Welcome onAdd={addTool} onImport={importFolder} /> : null}
           {screen === 'tools' && tool?.level === 1 ? (
@@ -947,6 +917,65 @@ export function App() {
             setModal(undefined);
           }}
         />
+      ) : null}
+      {modal?.kind === 'settings' ? (
+        <SettingsView
+          workspaceName={workspaceName}
+          theme={theme}
+          historyRunLimit={historyRunLimit}
+          onTheme={changeTheme}
+          onHistoryRunLimit={changeHistoryRunLimit}
+          onClearHistory={clearHistory}
+          onPathVariablesChanged={() => {
+            void reload().catch(report);
+          }}
+          onError={report}
+          onClose={() => {
+            setModal(undefined);
+          }}
+        />
+      ) : null}
+      {modal?.kind === 'workspaces' ? (
+        <WorkspacesView
+          list={workspaces}
+          onSwitch={switchWorkspace}
+          onRename={renameWorkspace}
+          onRemove={removeWorkspace}
+          onClose={() => {
+            setModal(undefined);
+          }}
+        />
+      ) : null}
+      {modal?.kind === 'problems' ? (
+        <Dialog
+          title={t('problems.title')}
+          className="dialog-wide"
+          onClose={() => {
+            setModal(undefined);
+          }}
+        >
+          <p className="muted">{t('problems.body')}</p>
+          <dl className="facts">
+            {catalog.problems.map((problem) => (
+              <div key={`${problem.scope}/${problem.folder}`}>
+                <dt>{problem.folder}</dt>
+                <dd>{problem.message}</dd>
+              </div>
+            ))}
+          </dl>
+          <div className="dialog-actions">
+            <button
+              type="button"
+              className="primary"
+              autoFocus
+              onClick={() => {
+                setModal(undefined);
+              }}
+            >
+              {t('dialog.close')}
+            </button>
+          </div>
+        </Dialog>
       ) : null}
       {modal?.kind === 'about' ? (
         <Dialog

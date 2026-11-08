@@ -7,7 +7,6 @@ import type { WorkspaceView } from '../../shared/ipc-contract.js';
 interface WorkspaceSelectorProps {
   readonly workspaces: readonly WorkspaceView[];
   readonly activeId: string | undefined;
-  readonly current: boolean;
   readonly onSwitch: (id: string) => void;
   readonly onCreate: () => void;
   readonly onManage: () => void;
@@ -23,7 +22,6 @@ function wrap(index: number, length: number): number {
 export function WorkspaceSelector({
   workspaces,
   activeId,
-  current,
   onSwitch,
   onCreate,
   onManage,
@@ -97,7 +95,6 @@ export function WorkspaceSelector({
         title={t('nav.workspaces')}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-current={current ? 'true' : undefined}
         onClick={toggle}
       >
         <Layers className="icon" aria-hidden="true" />
