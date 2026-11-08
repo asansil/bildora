@@ -233,6 +233,23 @@ test('a damaged file shows as a problem, beside the healthy automations', async 
   await expect(window.getByTestId('automation-file-problems')).toContainText('bad.yaml');
 });
 
+test('opening and closing a category panel leaves the automation in view', async () => {
+  await fakeTool('quick', 'Quick', ['exit', '0']);
+  await writeAutomation('nightly', 'Nightly', '  - { id: quick, type: run, tool: quick }\n');
+
+  const { window } = await launchShell();
+  await openAutomation(window, 'Nightly');
+  await expect(window.getByTestId('automation-detail')).toBeVisible();
+
+  await rail(window, 'Uncategorized').click();
+  await expect(window.locator('#tool-panel')).toBeVisible();
+  await expect(window.getByTestId('automation-detail')).toBeVisible();
+
+  await rail(window, 'Uncategorized').click();
+  await expect(window.locator('#tool-panel')).toBeHidden();
+  await expect(window.getByTestId('automation-detail')).toBeVisible();
+});
+
 test('a run keeps going across a Workspace switch, and can be stopped', async () => {
   await fakeTool('hang', 'Hang', ['hang']);
   await writeAutomation('long', 'Long', `  - { id: first, type: run, tool: hang }\n`);

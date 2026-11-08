@@ -307,10 +307,8 @@ export function App() {
   function pressCategory(key: string): void {
     const next = toggleCategory(openCategory, key);
     setOpenCategory(next);
+    // Only choosing an item in the panel changes the work area.
     saveWorkspace({ layout: { openCategory: next ?? null } });
-    if (next !== undefined) {
-      setScreen('tools');
-    }
   }
 
   function placeRailCategory(dragged: string, target: string): void {

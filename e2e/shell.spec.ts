@@ -274,7 +274,7 @@ test('the side panel starts closed, and a category opens and closes it', async (
   await expect(panel).toBeVisible();
 });
 
-test('the panel is left alone by Settings, and a category comes back from there', async () => {
+test('the panel and Settings leave each other alone, and a panel item opens the tool', async () => {
   const program = join(folder, 'tool.bat');
   await writeFile(program, '@echo off\r\n');
   const session = await launchShell();
@@ -289,6 +289,8 @@ test('the panel is left alone by Settings, and a category comes back from there'
   await categoryButton(window, 'Alpha').click();
   await expect(window.getByRole('complementary')).toHaveCount(0);
   await categoryButton(window, 'Alpha').click();
+  await expect(window.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
+  await window.getByRole('complementary').getByRole('button', { name: 'Alpha Tool' }).click();
   await expect(window.getByRole('heading', { name: 'Alpha Tool', level: 1 })).toBeVisible();
 });
 
