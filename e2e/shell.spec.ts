@@ -162,6 +162,9 @@ test('a registered tool is still there after a restart', async () => {
 
   const first = await launchShell();
   await addTool(first, program, 'My Tool');
+  // The open tab is stored a moment after it shows, so the restart waits for it.
+  const stored = join(dataDir, 'workspaces', 'default', 'workspace.yaml');
+  await expect.poll(() => readFile(stored, 'utf8').catch(() => '')).toContain('tool:my-tool');
   await first.app.close();
 
   const { window } = await launchShell();
@@ -274,22 +277,24 @@ test('the side panel starts closed, and a category opens and closes it', async (
   await expect(panel).toBeVisible();
 });
 
-test('the panel is left alone by Settings, and a category comes back from there', async () => {
+test('Settings opens over the work, leaving the panel and the tool as they were', async () => {
   const program = join(folder, 'tool.bat');
   await writeFile(program, '@echo off\r\n');
   const session = await launchShell();
   await addTool(session, program, 'Alpha Tool', 'Alpha');
   const { window } = session;
+  const tool = window.getByRole('heading', { name: 'Alpha Tool', level: 1 });
 
   await categoryButton(window, 'Alpha').click();
   await categoryButton(window, 'Settings').click();
-  await expect(window.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
-  await expect(window.getByRole('complementary')).toBeVisible();
+  const settings = window.getByRole('dialog', { name: 'Settings' });
+  await expect(settings).toBeVisible();
+  await expect(categoryButton(window, 'Settings')).not.toHaveAttribute('aria-current', 'true');
 
-  await categoryButton(window, 'Alpha').click();
-  await expect(window.getByRole('complementary')).toHaveCount(0);
-  await categoryButton(window, 'Alpha').click();
-  await expect(window.getByRole('heading', { name: 'Alpha Tool', level: 1 })).toBeVisible();
+  await window.keyboard.press('Escape');
+  await expect(settings).toHaveCount(0);
+  await expect(window.getByRole('complementary')).toBeVisible();
+  await expect(tool).toBeVisible();
 });
 
 test('a category shows its initial until it is given a logo, which is remembered', async () => {
@@ -412,8 +417,10 @@ test('a damaged tool is reported, and an empty list still offers a way in', asyn
 
   await expect(window.getByTestId('welcome')).toBeVisible();
   await window.getByRole('button', { name: /Problems/ }).click();
-  await expect(window.getByRole('heading', { name: 'Tools that cannot be read' })).toBeVisible();
-  await expect(window.getByRole('main')).toContainText('broken-tool');
+  const problems = window.getByRole('dialog', { name: 'Tools that cannot be read' });
+  await expect(problems).toContainText('broken-tool');
+  await problems.getByRole('button', { name: 'Close' }).click();
+  await expect(window.getByTestId('welcome')).toBeVisible();
 });
 
 test('a program that moves is explained, and found again when it returns', async () => {
@@ -436,6 +443,27 @@ test('a program that moves is explained, and found again when it returns', async
 
   await expect(window.getByTestId('runtime-warning')).toHaveCount(0);
   await expect(window.getByRole('button', { name: 'Launch' })).toBeEnabled();
+});
+
+test('a program shows the icon Windows gives its file, and a plain one when it is missing', async () => {
+  const program = join(folder, 'tool.bat');
+  await writeFile(program, '@echo off\r\n');
+  const session = await launchShell();
+  await addTool(session, program, 'Tool', 'Icons');
+  const { window } = session;
+
+  const png = /^data:image\/png;base64,/;
+  await expect(window.locator('.tool-header img.program-icon')).toHaveAttribute('src', png);
+  await categoryButton(window, 'Icons').click();
+  const row = window.getByRole('complementary').getByRole('button', { name: 'Tool' });
+  await expect(row.locator('img.program-icon')).toHaveAttribute('src', png);
+
+  await rm(program);
+  await session.app.close();
+  const relaunched = await launchShell();
+  await expect(relaunched.window.getByTestId('runtime-warning')).toBeVisible();
+  await expect(relaunched.window.locator('.tool-header > svg.icon')).toBeVisible();
+  await expect(relaunched.window.locator('.tool-header > img')).toHaveCount(0);
 });
 
 test('removing a tool forgets it and leaves the program alone', async () => {
@@ -496,7 +524,11 @@ test.describe('closing with a tool running', () => {
     const closed = new Promise((done) => app.process().once('exit', done));
 
     await window.getByRole('menuitem', { name: 'File' }).click();
-    await window.getByRole('menuitem', { name: 'Exit' }).click();
+    // The click closes the app, which can happen before Playwright hears the click has ended.
+    await window
+      .getByRole('menuitem', { name: 'Exit' })
+      .click()
+      .catch(() => undefined);
 
     await closed;
     await expect.poll(() => isAlive(pid)).toBe(false);
@@ -508,7 +540,11 @@ test.describe('closing with a tool running', () => {
     const closed = new Promise((done) => app.process().once('exit', done));
 
     await window.getByRole('menuitem', { name: 'File' }).click();
-    await window.getByRole('menuitem', { name: 'Exit' }).click();
+    // The click closes the app, which can happen before Playwright hears the click has ended.
+    await window
+      .getByRole('menuitem', { name: 'Exit' })
+      .click()
+      .catch(() => undefined);
 
     await closed;
     await new Promise((done) => setTimeout(done, 500));

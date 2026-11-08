@@ -11,7 +11,7 @@ import {
 } from '../storage/data-directory.js';
 import { DefinitionError } from '../storage/definition-error.js';
 import { migrateDefinition } from '../storage/migrations.js';
-import type { VersionedFormat } from '../storage/migrations.js';
+import type { DefinitionDocument, VersionedFormat } from '../storage/migrations.js';
 import { DEFAULT_PREFERENCES, isTheme, readPreferences } from '../storage/preferences.js';
 import type { Theme } from '../storage/preferences.js';
 
@@ -20,22 +20,59 @@ export const DEFAULT_WORKSPACE_NAME = 'Default';
 export const WORKSPACE_NAME_MAX_LENGTH = 80;
 export const PANEL_WIDTH_MIN = 180;
 export const PANEL_WIDTH_MAX = 480;
+export const WORKSPACE_TABS_MAX = 100;
 
 const WORKSPACE_FILE = 'workspace.yaml';
+
+export type WorkspaceTabKind = 'tool' | 'automation' | 'history';
+
+/** What a work area tab shows. History has one tab, so it carries no id. */
+export interface WorkspaceTab {
+  readonly kind: WorkspaceTabKind;
+  /** The tool or automation id. Absent for History. */
+  readonly id?: string;
+  /** Marks the one tab that the next single click in a panel replaces. */
+  readonly preview?: boolean;
+}
+
+/** Names a tab uniquely within a Workspace, as `tool:<id>`, `automation:<id>` or `history`. */
+export function workspaceTabKey(tab: Pick<WorkspaceTab, 'kind' | 'id'>): string {
+  return tab.kind === 'history' ? 'history' : `${tab.kind}:${tab.id ?? ''}`;
+}
+
+/** Version 1 kept one `selectedTool`. Version 2 keeps tabs, and that tool becomes a pinned one. */
+function tabsFromSelectedTool(document: DefinitionDocument): DefinitionDocument {
+  const { layout } = document;
+  if (typeof layout !== 'object' || layout === null || Array.isArray(layout)) {
+    return document;
+  }
+  const { selectedTool, ...rest }: Record<string, unknown> = { ...layout };
+  if (typeof selectedTool !== 'string' || selectedTool === '') {
+    return { ...document, layout: rest };
+  }
+  const tab = { kind: 'tool', id: selectedTool } as const;
+  return { ...document, layout: { ...rest, tabs: [tab], activeTab: workspaceTabKey(tab) } };
+}
+
 const format: VersionedFormat = {
   label: 'Workspace definition',
   versionField: 'formatVersion',
-  currentVersion: 1,
-  migrations: [],
+  currentVersion: 2,
+  migrations: [{ from: 1, migrate: tabsFromSelectedTool }],
 };
 
 export interface WorkspaceLayout {
   /** Category keys in rail order. A key with no category now stays, for when one returns. */
   readonly categoryOrder: readonly string[];
   readonly panelWidth?: number;
-  readonly selectedTool?: string;
   /** The category whose panel was open, restored when switching but not when the app starts. */
   readonly openCategory?: string;
+  /** Work area tabs in the order shown. The shell drops a tab whose item is gone. */
+  readonly tabs: readonly WorkspaceTab[];
+  /** The key of the active tab, always one of `tabs`. */
+  readonly activeTab?: string;
+  /** The tool id the History tab is filtered by. */
+  readonly historyFilter?: string;
 }
 
 export interface Workspace {
@@ -47,12 +84,22 @@ export interface Workspace {
   readonly layout: WorkspaceLayout;
 }
 
+/** A tab as a caller hands it over, where a field left out may also be spelled `undefined`. */
+export interface TabChange {
+  readonly kind: WorkspaceTabKind;
+  readonly id?: string | undefined;
+  readonly preview?: boolean | undefined;
+}
+
 /** A layout change. `null` clears a field, and a field left out stays as it is. */
 export interface LayoutChanges {
   readonly categoryOrder?: readonly string[] | undefined;
   readonly panelWidth?: number | undefined;
-  readonly selectedTool?: string | null | undefined;
   readonly openCategory?: string | null | undefined;
+  /** Replaces every tab. Broken or repeated tabs are dropped, as when reading. */
+  readonly tabs?: readonly TabChange[] | undefined;
+  readonly activeTab?: string | null | undefined;
+  readonly historyFilter?: string | null | undefined;
 }
 
 export interface WorkspaceChanges {
@@ -93,18 +140,76 @@ function isPanelWidth(value: unknown): value is number {
   );
 }
 
+function tabOf(value: unknown): WorkspaceTab | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  const { kind, id, preview }: Record<string, unknown> = { ...value };
+  const flag = preview === true ? { preview: true } : {};
+  if (kind === 'history') {
+    return { kind, ...flag };
+  }
+  if ((kind === 'tool' || kind === 'automation') && typeof id === 'string' && id !== '') {
+    return { kind, id, ...flag };
+  }
+  return undefined;
+}
+
+/**
+ * Keeps tabs that make sense together: one per item, at most one preview tab, and no more than
+ * the limit. Whatever breaks those rules is dropped or pinned rather than refused.
+ */
+function cleanTabs(values: readonly unknown[]): WorkspaceTab[] {
+  const seen = new Set<string>();
+  const tabs: WorkspaceTab[] = [];
+  let previewTaken = false;
+  for (const value of values) {
+    const tab = tabOf(value);
+    if (tab === undefined || seen.has(workspaceTabKey(tab))) {
+      continue;
+    }
+    seen.add(workspaceTabKey(tab));
+    const keepsPreview: boolean = tab.preview === true && !previewTaken;
+    previewTaken ||= keepsPreview;
+    tabs.push({
+      kind: tab.kind,
+      ...(tab.id === undefined ? {} : { id: tab.id }),
+      ...(keepsPreview ? { preview: true } : {}),
+    });
+    if (tabs.length === WORKSPACE_TABS_MAX) {
+      break;
+    }
+  }
+  return tabs;
+}
+
+/** Adds the tabs, keeping the active one only if it names one of them. */
+function withTabs(
+  base: Omit<WorkspaceLayout, 'tabs' | 'activeTab'>,
+  tabs: readonly WorkspaceTab[],
+  activeTab: unknown,
+): WorkspaceLayout {
+  const known =
+    typeof activeTab === 'string' && tabs.some((tab) => workspaceTabKey(tab) === activeTab);
+  return { ...base, tabs, ...(known ? { activeTab } : {}) };
+}
+
 function layoutOf(value: unknown): WorkspaceLayout {
   if (typeof value !== 'object' || value === null) {
-    return { categoryOrder: [] };
+    return { categoryOrder: [], tabs: [] };
   }
   const fields: Record<string, unknown> = { ...value };
-  const { categoryOrder, panelWidth, selectedTool, openCategory } = fields;
-  return {
-    categoryOrder: stringsIn(categoryOrder),
-    ...(isPanelWidth(panelWidth) ? { panelWidth } : {}),
-    ...(typeof selectedTool === 'string' ? { selectedTool } : {}),
-    ...(typeof openCategory === 'string' ? { openCategory } : {}),
-  };
+  const { categoryOrder, panelWidth, openCategory, tabs, activeTab, historyFilter } = fields;
+  return withTabs(
+    {
+      categoryOrder: stringsIn(categoryOrder),
+      ...(isPanelWidth(panelWidth) ? { panelWidth } : {}),
+      ...(typeof openCategory === 'string' ? { openCategory } : {}),
+      ...(typeof historyFilter === 'string' ? { historyFilter } : {}),
+    },
+    cleanTabs(Array.isArray(tabs) ? tabs : []),
+    activeTab,
+  );
 }
 
 function parseWorkspace(id: string, text: string): Workspace {
@@ -224,7 +329,7 @@ export async function createWorkspace(
     name: checked,
     theme,
     favorites: [],
-    layout: { categoryOrder: [] },
+    layout: { categoryOrder: [], tabs: [] },
   };
   await writeWorkspace(dataDir, workspace);
   return workspace;
@@ -245,24 +350,31 @@ export async function openWorkspaces(dataDir: string): Promise<WorkspaceList> {
     name: DEFAULT_WORKSPACE_NAME,
     theme,
     favorites: [],
-    layout: { categoryOrder: [] },
+    layout: { categoryOrder: [], tabs: [] },
   };
   await writeWorkspace(dataDir, workspace);
   return { workspaces: [workspace], problems: list.problems };
 }
 
+/** A change wins over what is stored, and `null` clears the field. */
+function merged<T>(stored: T | undefined, change: T | null | undefined): T | undefined {
+  return change === null ? undefined : (change ?? stored);
+}
+
 function changedLayout(layout: WorkspaceLayout, changes: LayoutChanges): WorkspaceLayout {
   const { categoryOrder = layout.categoryOrder, panelWidth = layout.panelWidth } = changes;
-  const selectedTool =
-    changes.selectedTool === undefined ? layout.selectedTool : changes.selectedTool;
-  const openCategory =
-    changes.openCategory === undefined ? layout.openCategory : changes.openCategory;
-  return {
-    categoryOrder,
-    ...(panelWidth === undefined ? {} : { panelWidth }),
-    ...(selectedTool === undefined || selectedTool === null ? {} : { selectedTool }),
-    ...(openCategory === undefined || openCategory === null ? {} : { openCategory }),
-  };
+  const openCategory = merged(layout.openCategory, changes.openCategory);
+  const historyFilter = merged(layout.historyFilter, changes.historyFilter);
+  return withTabs(
+    {
+      categoryOrder,
+      ...(panelWidth === undefined ? {} : { panelWidth }),
+      ...(openCategory === undefined ? {} : { openCategory }),
+      ...(historyFilter === undefined ? {} : { historyFilter }),
+    },
+    changes.tabs === undefined ? layout.tabs : cleanTabs(changes.tabs),
+    merged(layout.activeTab, changes.activeTab),
+  );
 }
 
 /** Changes a Workspace, refusing to replace one written by a newer build. */

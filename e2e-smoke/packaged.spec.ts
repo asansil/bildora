@@ -106,7 +106,10 @@ steps:
     const { app, window } = await launch(folder, dataDir);
     try {
       await window.getByRole('navigation').getByRole('button', { name: 'Automations' }).click();
-      await window.locator('.history-row', { hasText: 'Report' }).first().click();
+      await window
+        .getByTestId('automations-panel')
+        .getByRole('button', { name: 'Report', exact: true })
+        .click();
       await expect(window.getByTestId('automation-runs')).toContainText('Command line');
       await expect(window.getByTestId('automation-runs')).toContainText('Completed');
     } finally {
@@ -173,7 +176,10 @@ steps:
     expect(signed.stdout + signed.stderr).toContain('Automation completed');
     expect(signed.status).toBe(0);
     await window.getByRole('navigation').getByRole('button', { name: 'Automations' }).click();
-    await window.locator('.history-row', { hasText: 'Signed' }).click();
+    await window
+      .getByTestId('automations-panel')
+      .getByRole('button', { name: 'Signed', exact: true })
+      .click();
     await expect(window.getByTestId('automation-runs')).toContainText('Command line');
     await window.getByRole('navigation').getByRole('button', { name: 'Run history' }).click();
     await expect(window.locator('.history-row')).toHaveCount(2);

@@ -1,4 +1,4 @@
-import { BrowserWindow, Menu, dialog, ipcMain, nativeTheme } from 'electron';
+import { BrowserWindow, Menu, app, dialog, ipcMain, nativeTheme } from 'electron';
 import type { IpcMainInvokeEvent, MenuItemConstructorOptions, OpenDialogOptions } from 'electron';
 import {
   LOGO_EXTENSIONS,
@@ -209,6 +209,23 @@ export function registerIpc(context: IpcContext): void {
     }
     await tools.remove(tool);
     runs.forget(key);
+  });
+  // Keyed by path, so tools sharing a program, or a path variable changed, read it once each.
+  const icons = new Map<string, Promise<string | undefined>>();
+  handle(CHANNELS.toolsIcon, toolIdSchema, async ({ id }) => {
+    const path = await tools.programPath(id).catch(() => undefined);
+    if (path === undefined) {
+      return undefined;
+    }
+    let icon = icons.get(path);
+    if (icon === undefined) {
+      icon = app
+        .getFileIcon(path, { size: 'normal' })
+        .then((image) => (image.isEmpty() ? undefined : image.toDataURL()))
+        .catch(() => undefined);
+      icons.set(path, icon);
+    }
+    return icon;
   });
   handle(CHANNELS.toolsSetScope, setToolScopeSchema, async ({ id, scope }) => {
     const tool = await tools.get(id);

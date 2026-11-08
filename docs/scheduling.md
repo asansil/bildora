@@ -35,12 +35,12 @@ Task Scheduler shows this number as the task's last run result.
 ## Creating the task
 
 1. Open Task Scheduler and choose **Create Task**, not Create Basic Task, because the settings below are not in the basic form.
-2. On **General**, name the task. Choose **Run only when user is logged on**, unless you checked the [logged-off notes](#running-with-the-user-logged-off).
+2. On **General**, name the task. To run it whether or not you are signed in, choose **Run whether user is logged on or not**, and read [Running with the user logged off](#running-with-the-user-logged-off) to choose between storing your password or not.
 3. On **Triggers**, add the schedule.
 4. On **Actions**, add **Start a program**:
    - **Program/script:** the full path to `bildora.cmd`
    - **Add arguments:** `run nightly-report --workspace Work`
-5. On **Conditions**, turn off **Start the task only if the computer is on AC power**. If you keep it on, a laptop on battery silently skips the task.
+5. On **Conditions**, first turn off **Stop if the computer switches to battery power**, then **Start the task only if the computer is on AC power**. If you keep the second one on, a laptop on battery silently skips the task. The first one goes grey once the second is off, but stays set, so turn it off while you still can.
 6. On **Settings**, turn on **Stop the task if it runs longer than** and choose a limit. An automation has no time limit of its own, so this is what ends a tool that hangs.
 
 Tools that need an interpreter, such as `node` or `python`, must find it on the `PATH` of the account that runs the task.
@@ -55,8 +55,14 @@ Tools that need an interpreter, such as `node` or `python`, must find it on the 
 
 ## Running with the user logged off
 
-<!-- LOGGED-OFF-RESULT: replace this section's status once the test has been run. -->
+**Verified** on 2026-11-08 with the 0.1.0-alpha.1 package, on Windows 11 Home with a Microsoft account. With the user signed out, a scheduled automation ran a level 1 tool in a Bildora console, read a secret saved in a profile, and wrote its run to history, which the app showed afterwards. It worked in both modes below.
 
-**Not verified yet.** Running with the user logged off has not been tested on a real machine, so treat it as unsupported and choose **Run only when user is logged on**.
+| Mode on **General**                                     | Password needed        | Reaches network shares |
+| ------------------------------------------------------- | ---------------------- | ---------------------- |
+| **Run whether user is logged on or not**                | Yes, stored by Windows | Yes                    |
+| The same, with **Do not store password** also turned on | No                     | No                     |
 
-Saved secrets are the part most likely to be affected: they live in the Windows credential store, which may not be available to a task with no stored password.
+- **Do not store password** suits tools that work only with this computer's files. Task Scheduler must be opened as administrator to save the task in this mode.
+- **Storing the password** is needed when a tool reads or writes a network share. Windows asks for your account password, not your PIN, and asks again each time the password changes; until then, the task does not start.
+- **Windows Hello only:** if **Settings > Accounts > Sign-in options** only allows Windows Hello for Microsoft accounts, Windows does not accept the password, and Task Scheduler reports that the user is unknown or the password is wrong. Use **Do not store password**, or turn that option off and sign in once with your password.
+- **Registered programs** were not part of the test. A level 0 tool that opens a window has no desktop to show it on, so it may wait unseen until the task's time limit ends it.

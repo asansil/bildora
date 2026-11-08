@@ -1,6 +1,7 @@
 import { Play, RefreshCw, Square, Star, TriangleAlert } from 'lucide-react';
 import { t } from '../../shared/i18n/translate.js';
 import type { RunView, ToolRuntime, ToolView } from '../../shared/ipc-contract.js';
+import { ProgramIcon } from '../shell/ProgramIcon.js';
 import { RunStateBadge } from '../shell/RunStateBadge.js';
 import { summarizeRuns } from './run-state.js';
 
@@ -141,6 +142,7 @@ export function ToolDetails({
   return (
     <article className="tool" data-testid="tool-details">
       <header className="tool-header">
+        <ProgramIcon tool={tool} />
         <h1 title={tool.name}>{tool.name}</h1>
         <FavoriteButton tool={tool} favorite={favorite} onToggle={onToggleFavorite} />
         <RunStateBadge

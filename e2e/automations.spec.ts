@@ -68,9 +68,17 @@ function editorStep(window: Page, id: string): Locator {
   return window.locator(`[data-testid="step-editor"][data-step-id="${id}"]`);
 }
 
+function automationsPanel(window: Page): Locator {
+  return window.getByTestId('automations-panel');
+}
+
+/** Opens the Automations panel unless a Workspace left it open, then pins the automation. */
 async function openAutomation(window: Page, name: string): Promise<void> {
-  await rail(window, 'Automations').click();
-  await window.locator('.history-row', { hasText: name }).click();
+  if (!(await automationsPanel(window).isVisible())) {
+    await rail(window, 'Automations').click();
+  }
+  await automationsPanel(window).getByRole('button', { name, exact: true }).dblclick();
+  await expect(window.getByRole('tab', { name, selected: true })).toBeVisible();
 }
 
 test.beforeEach(async () => {
@@ -133,16 +141,19 @@ outputs:
   await expect(window.getByTestId('automation-command')).toHaveText('bildora run hand-over');
   await window.getByRole('button', { name: 'Run', exact: true }).click();
 
-  await expect(step(window, 'writer')).toHaveAttribute('data-state', 'completed');
+  // A tool process can take seconds to start on a busy machine, as in the other run tests.
+  const toFinish = { timeout: 15_000 };
+  await expect(step(window, 'writer')).toHaveAttribute('data-state', 'completed', toFinish);
   await expect(step(window, 'review')).toContainText('Waiting for you');
   await expect(step(window, 'writer-2')).toHaveAttribute('data-state', 'idle');
   await expect(window.getByTestId('status')).toContainText('1 task');
   await step(window, 'review').getByRole('button', { name: 'Continue' }).click();
 
-  await expect(step(window, 'writer-2')).toHaveAttribute('data-state', 'completed');
+  await expect(step(window, 'writer-2')).toHaveAttribute('data-state', 'completed', toFinish);
   await expect(window.locator('.tool-header .state-badge')).toHaveAttribute(
     'data-state',
     'completed',
+    toFinish,
   );
   await expect(window.getByTestId('automation-runs')).toContainText('App');
   await expect(window.getByTestId('status')).toHaveText('Ready');
@@ -229,8 +240,25 @@ test('a damaged file shows as a problem, beside the healthy automations', async 
   );
   const { window } = await launchShell();
   await rail(window, 'Automations').click();
-  await expect(window.locator('.history-row', { hasText: 'Healthy' })).toBeVisible();
+  await expect(automationsPanel(window).getByRole('button', { name: 'Healthy' })).toBeVisible();
   await expect(window.getByTestId('automation-file-problems')).toContainText('bad.yaml');
+});
+
+test('opening and closing a category panel leaves the automation in view', async () => {
+  await fakeTool('quick', 'Quick', ['exit', '0']);
+  await writeAutomation('nightly', 'Nightly', '  - { id: quick, type: run, tool: quick }\n');
+
+  const { window } = await launchShell();
+  await openAutomation(window, 'Nightly');
+  await expect(window.getByTestId('automation-detail')).toBeVisible();
+
+  await rail(window, 'Uncategorized').click();
+  await expect(window.locator('#tool-panel')).toBeVisible();
+  await expect(window.getByTestId('automation-detail')).toBeVisible();
+
+  await rail(window, 'Uncategorized').click();
+  await expect(window.locator('#tool-panel')).toBeHidden();
+  await expect(window.getByTestId('automation-detail')).toBeVisible();
 });
 
 test('a run keeps going across a Workspace switch, and can be stopped', async () => {

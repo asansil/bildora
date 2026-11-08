@@ -51,6 +51,30 @@ export const en = {
   'status.tasksRunning': { one: '{count} task running', other: '{count} tasks running' },
   'status.version': 'v{version}',
 
+  'start.title': 'Nothing open',
+  'start.body': 'Open a category in the rail, or find any tool or automation by name.',
+  'start.find': 'Find a tool, automation or action',
+  'start.next': 'Move to the next tab',
+  'start.close': 'Close the active tab',
+
+  'tabs.label': 'Open items',
+  'tabs.menu': 'Tab actions',
+  'tabs.closeTab': 'Close {name}',
+  'tabs.close': 'Close',
+  'tabs.closeOthers': 'Close Others',
+  'tabs.closeRight': 'Close to the Right',
+  'tabs.closeAll': 'Close All',
+  'tabs.pin': 'Pin',
+  'tabs.newAutomation': 'New automation',
+  'tabs.runningTitle': '{name} is running',
+  'tabs.runningBody':
+    'Closing the tab can stop it, or leave it running. A run left going still counts in the status bar, and opening it again shows its progress.',
+  'tabs.stop': 'Stop and close',
+  'tabs.keep': 'Keep running',
+  'tabs.unsavedTitle': 'Discard changes to {name}?',
+  'tabs.unsavedBody': 'The automation has changes that are not saved.',
+  'tabs.discard': 'Discard',
+
   'welcome.title': 'Add your first tool',
   'welcome.body':
     'Bildora keeps your programs and scripts in one place. Point it at a file or import a whole folder. Nothing runs until you launch it.',
@@ -350,6 +374,7 @@ export const en = {
 
   'banner.dismiss': 'Dismiss',
 
+  'dialog.close': 'Close',
   'dialog.pickFiles': 'Choose programs to add',
   'dialog.pickFolder': 'Choose a folder to import',
   'dialog.programs': 'Programs and scripts',

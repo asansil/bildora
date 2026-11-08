@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from 'react';
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
 import { t } from '../../shared/i18n/translate.js';
 import { Dialog } from '../shell/Dialog.js';
 import { matchCommands } from './match-commands.js';
@@ -9,6 +9,8 @@ export interface Command {
   readonly label: string;
   /** Says what kind of item this is: a tool's category, or that it is an action. */
   readonly detail: string;
+  /** Drawn before the label, such as a program's icon. */
+  readonly icon?: ReactNode;
   readonly run: () => void;
 }
 
@@ -79,7 +81,10 @@ export function CommandPalette({ commands, onClose }: CommandPaletteProps) {
               run(command);
             }}
           >
-            <span className="truncate">{command.label}</span>
+            <span className="palette-label">
+              {command.icon}
+              <span className="truncate">{command.label}</span>
+            </span>
             <span className="palette-detail truncate">{command.detail}</span>
           </li>
         ))}

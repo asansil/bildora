@@ -1,12 +1,21 @@
 import { useState } from 'react';
 import { Folder, History, Settings, TriangleAlert, Workflow } from 'lucide-react';
 import { t } from '../../shared/i18n/translate.js';
-import type { ToolGroupView, ToolView } from '../../shared/ipc-contract.js';
+import type { ToolGroupView } from '../../shared/ipc-contract.js';
 import type { WorkspaceView } from '../../shared/ipc-contract.js';
 import { categoryInitial, groupKey, groupLabel } from '../tools/category-rail.js';
 import { WorkspaceSelector } from './WorkspaceSelector.js';
 
 export const TOOL_PANEL_ID = 'tool-panel';
+
+export type RailDialog = 'problems' | 'settings' | 'workspaces';
+
+/**
+ * The Automations panel, which opens and closes like a category. A category key is its name, and
+ * the forms cannot type the NUL character, so only a hand-written manifest could clash with it.
+ */
+export const AUTOMATIONS_PANEL = '\u0000automations';
+export const HISTORY_OWNER = '\u0000history';
 
 const DRAG_TYPE = 'application/x-bildora-category';
 
@@ -44,11 +53,10 @@ function CategoryGlyph({ group }: CategoryGlyphProps) {
 
 interface CategoryRailProps {
   readonly groups: readonly ToolGroupView[];
-  /** The category whose panel is open. */
+  /** The panel that is open: a category key, or `AUTOMATIONS_PANEL`. */
   readonly openCategory: string | undefined;
-  /** The tool in the work area, if the work area is showing one. */
-  readonly currentTool: ToolView | undefined;
-  readonly screen: 'tools' | 'problems' | 'history' | 'settings' | 'workspaces' | 'automations';
+  /** What owns the active tab: a category key, `AUTOMATIONS_PANEL` or `HISTORY_OWNER`. */
+  readonly owner: string | undefined;
   readonly problemCount: number;
   readonly workspaces: readonly WorkspaceView[];
   readonly activeWorkspace: string | undefined;
@@ -56,9 +64,9 @@ interface CategoryRailProps {
   readonly onCategoryMenu: (category: string) => void;
   /** A category was dragged onto another. */
   readonly onPlaceCategory: (dragged: string, target: string) => void;
-  readonly onScreen: (
-    screen: 'problems' | 'history' | 'settings' | 'workspaces' | 'automations',
-  ) => void;
+  readonly onHistory: () => void;
+  /** Settings, Problems and Manage Workspaces open over the work area and never move the mark. */
+  readonly onDialog: (dialog: RailDialog) => void;
   readonly onSwitchWorkspace: (id: string) => void;
   readonly onCreateWorkspace: () => void;
 }
@@ -67,15 +75,15 @@ interface CategoryRailProps {
 export function CategoryRail({
   groups,
   openCategory,
-  currentTool,
-  screen,
+  owner,
   problemCount,
   workspaces,
   activeWorkspace,
   onToggleCategory,
   onCategoryMenu,
   onPlaceCategory,
-  onScreen,
+  onHistory,
+  onDialog,
   onSwitchWorkspace,
   onCreateWorkspace,
 }: CategoryRailProps) {
@@ -87,8 +95,7 @@ export function CategoryRail({
           const label = groupLabel(group);
           const { category } = group;
           const open = key === openCategory;
-          const current =
-            screen === 'tools' && currentTool !== undefined && group.tools.includes(currentTool);
+          const current = key === owner;
           return (
             <li key={key}>
               <button
@@ -145,9 +152,9 @@ export function CategoryRail({
               type="button"
               className="rail-button"
               title={t('nav.problems')}
-              aria-current={screen === 'problems' ? 'true' : undefined}
+              aria-haspopup="dialog"
               onClick={() => {
-                onScreen('problems');
+                onDialog('problems');
               }}
             >
               <TriangleAlert className="icon state-warning" aria-hidden="true" />
@@ -160,11 +167,10 @@ export function CategoryRail({
           <WorkspaceSelector
             workspaces={workspaces}
             activeId={activeWorkspace}
-            current={screen === 'workspaces'}
             onSwitch={onSwitchWorkspace}
             onCreate={onCreateWorkspace}
             onManage={() => {
-              onScreen('workspaces');
+              onDialog('workspaces');
             }}
           />
         </li>
@@ -173,9 +179,11 @@ export function CategoryRail({
             type="button"
             className="rail-button"
             title={t('nav.automations')}
-            aria-current={screen === 'automations' ? 'true' : undefined}
+            aria-expanded={openCategory === AUTOMATIONS_PANEL}
+            aria-controls={openCategory === AUTOMATIONS_PANEL ? TOOL_PANEL_ID : undefined}
+            aria-current={owner === AUTOMATIONS_PANEL ? 'true' : undefined}
             onClick={() => {
-              onScreen('automations');
+              onToggleCategory(AUTOMATIONS_PANEL);
             }}
           >
             <Workflow className="icon" aria-hidden="true" />
@@ -187,10 +195,8 @@ export function CategoryRail({
             type="button"
             className="rail-button"
             title={t('nav.history')}
-            aria-current={screen === 'history' ? 'true' : undefined}
-            onClick={() => {
-              onScreen('history');
-            }}
+            aria-current={owner === HISTORY_OWNER ? 'true' : undefined}
+            onClick={onHistory}
           >
             <History className="icon" aria-hidden="true" />
             <span className="visually-hidden">{t('nav.history')}</span>
@@ -201,9 +207,9 @@ export function CategoryRail({
             type="button"
             className="rail-button"
             title={t('nav.settings')}
-            aria-current={screen === 'settings' ? 'true' : undefined}
+            aria-haspopup="dialog"
             onClick={() => {
-              onScreen('settings');
+              onDialog('settings');
             }}
           >
             <Settings className="icon" aria-hidden="true" />

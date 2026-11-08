@@ -53,6 +53,20 @@ function rail(window: Page, name: string): Locator {
   return window.getByRole('navigation').getByRole('button', { name, exact: true });
 }
 
+/** Opens a tool from its category panel, in a pinned tab. */
+async function openTool(window: Page, category: string, name: string): Promise<void> {
+  await rail(window, category).click();
+  await window.locator('#tool-panel').getByRole('button', { name, exact: true }).first().dblclick();
+  await expect(heading(window, name)).toBeVisible();
+}
+
+/** Settings and Manage Workspaces are modal, so the rail behind them waits until they close. */
+async function closeDialog(window: Page, name: string): Promise<void> {
+  const dialog = window.getByRole('dialog', { name });
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toHaveCount(0);
+}
+
 function heading(window: Page, name: string): Locator {
   return window.getByRole('heading', { name, level: 1 });
 }
@@ -147,7 +161,8 @@ test('a tool moves between Global and a Workspace', async () => {
   const { window } = session;
   await addTool(session, 'Moved Tool', 'moved', 'global');
   await createWorkspace(window, 'Work');
-  await expect(rail(window, 'moved')).toBeVisible();
+  await expect(window.getByTestId('start-screen')).toBeVisible();
+  await openTool(window, 'moved', 'Moved Tool');
 
   await window.getByRole('button', { name: 'Move to this Workspace' }).click();
   await window.getByRole('button', { name: 'Move tool' }).click();
@@ -193,7 +208,11 @@ test('a run goes on through a switch, and its Workspace cannot be deleted', asyn
     .filter({ hasText: 'Default' })
     .getByRole('button', { name: 'Delete' })
     .click();
-  await window.getByRole('dialog').getByRole('button', { name: 'Delete' }).click();
+  await window
+    .getByRole('dialog', { name: 'Delete Default?' })
+    .getByRole('button', { name: 'Delete' })
+    .click();
+  await closeDialog(window, 'Workspaces');
   await expect(window.getByRole('alert')).toContainText('tools running');
 
   await switchWorkspace(window, 'Default');
@@ -227,12 +246,14 @@ test('favorites, theme and layout belong to each Workspace, across restarts', as
   const isDark = (app: ElectronApplication): Promise<boolean> =>
     app.evaluate(({ nativeTheme }) => nativeTheme.shouldUseDarkColors);
   await expect.poll(() => isDark(first.app)).toBe(true);
+  await closeDialog(window, 'Settings');
 
   await createWorkspace(window, 'Work');
   await expect.poll(() => isDark(first.app)).toBe(true);
   await rail(window, 'Settings').click();
   await window.getByRole('radio', { name: 'Light' }).check();
   await expect.poll(() => isDark(first.app)).toBe(false);
+  await closeDialog(window, 'Settings');
   await expect(names.first()).toHaveText('Aalpha');
   await expect(window.getByRole('separator', { name: 'Resize panel' })).toHaveCount(0);
 
@@ -267,11 +288,17 @@ test('a Workspace can be renamed and deleted, along with what it holds', async (
 
   await row.filter({ hasText: 'Work' }).getByRole('button', { name: 'Rename' }).click();
   await window.getByLabel('Workspace name').fill('Office');
-  await window.getByRole('dialog').getByRole('button', { name: 'Rename' }).click();
+  await window
+    .getByRole('dialog', { name: 'Rename Work' })
+    .getByRole('button', { name: 'Rename' })
+    .click();
   await expect(window.getByTestId('status-workspace')).toHaveText('Workspace: Office');
 
   await row.filter({ hasText: 'Office' }).getByRole('button', { name: 'Delete' }).click();
-  await window.getByRole('dialog').getByRole('button', { name: 'Delete' }).click();
+  await window
+    .getByRole('dialog', { name: 'Delete Office?' })
+    .getByRole('button', { name: 'Delete' })
+    .click();
   await expect(window.getByTestId('status-workspace')).toHaveText('Workspace: Default');
   await expect(rail(window, 'shared')).toBeVisible();
   expect(existsSync(join(dataDir, 'workspaces', 'work'))).toBe(false);
@@ -296,6 +323,7 @@ test('a tool can point through a path variable, which each computer fills in', a
   await window.getByLabel('Absolute path').fill(folder);
   await window.getByRole('button', { name: 'Set variable' }).click();
   await expect(window.getByTestId('path-variables')).toContainText('scripts');
+  await closeDialog(window, 'Settings');
 
   await rail(window, 'portable').click();
   await window.getByRole('button', { name: 'Portable Tool', exact: true }).click();
@@ -409,7 +437,7 @@ test('a data folder from before Workspaces keeps everything', async () => {
 
   const { app, window } = await launchShell();
   await expect(window.getByTestId('status-workspace')).toHaveText('Workspace: Default');
-  await expect(heading(window, 'Old Tool')).toBeVisible();
+  await openTool(window, 'Uncategorized', 'Old Tool');
   await expect(window.getByRole('button', { name: 'Move to this Workspace' })).toBeVisible();
   expect(await app.evaluate(({ nativeTheme }) => nativeTheme.shouldUseDarkColors)).toBe(true);
 

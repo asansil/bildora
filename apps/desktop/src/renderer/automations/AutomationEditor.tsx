@@ -31,6 +31,10 @@ interface AutomationEditorProps {
   readonly onSave: (draft: AutomationDraft) => void;
   readonly onClose: () => void;
   readonly onError: (error: unknown) => void;
+  /** Told whether the draft differs from what is saved, so closing its tab can ask first. */
+  readonly onDirty?: (dirty: boolean) => void;
+  /** Called on the first change, which pins a preview tab. */
+  readonly onUsed?: () => void;
 }
 
 /** Builds or changes an automation. Saving never runs it, and a broken step can still be saved. */
@@ -40,6 +44,8 @@ export function AutomationEditor({
   onSave,
   onClose,
   onError,
+  onDirty,
+  onUsed,
 }: AutomationEditorProps) {
   const nameId = useId();
   const descriptionId = useId();
@@ -52,6 +58,24 @@ export function AutomationEditor({
   const trimmedDescription = description.trim();
   const canSave = trimmed !== '' && steps.length > 0;
   const problems = canSave ? found : [];
+  const dirty =
+    name !== (automation?.name ?? '') ||
+    description !== (automation?.description ?? '') ||
+    JSON.stringify(steps) !== JSON.stringify(automation?.steps ?? []);
+
+  useEffect(() => {
+    onDirty?.(dirty);
+    if (dirty) {
+      onUsed?.();
+    }
+  }, [dirty, onDirty, onUsed]);
+
+  useEffect(
+    () => () => {
+      onDirty?.(false);
+    },
+    [onDirty],
+  );
 
   function draft(): AutomationDraft {
     return {
