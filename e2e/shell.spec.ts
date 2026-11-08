@@ -524,7 +524,11 @@ test.describe('closing with a tool running', () => {
     const closed = new Promise((done) => app.process().once('exit', done));
 
     await window.getByRole('menuitem', { name: 'File' }).click();
-    await window.getByRole('menuitem', { name: 'Exit' }).click();
+    // The click closes the app, which can happen before Playwright hears the click has ended.
+    await window
+      .getByRole('menuitem', { name: 'Exit' })
+      .click()
+      .catch(() => undefined);
 
     await closed;
     await expect.poll(() => isAlive(pid)).toBe(false);
@@ -536,7 +540,11 @@ test.describe('closing with a tool running', () => {
     const closed = new Promise((done) => app.process().once('exit', done));
 
     await window.getByRole('menuitem', { name: 'File' }).click();
-    await window.getByRole('menuitem', { name: 'Exit' }).click();
+    // The click closes the app, which can happen before Playwright hears the click has ended.
+    await window
+      .getByRole('menuitem', { name: 'Exit' })
+      .click()
+      .catch(() => undefined);
 
     await closed;
     await new Promise((done) => setTimeout(done, 500));
