@@ -177,8 +177,9 @@ export interface WorkspaceLayoutView {
 
 export interface WorkspaceTabView {
   readonly kind: 'tool' | 'automation' | 'history';
-  readonly id?: string;
-  readonly preview?: boolean;
+  // Spelled to accept what the update schema gives, so a stored layout can be read straight back.
+  readonly id?: string | undefined;
+  readonly preview?: boolean | undefined;
 }
 
 export interface WorkspaceView {
