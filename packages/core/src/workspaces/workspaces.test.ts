@@ -16,11 +16,13 @@ import { moveTool } from '../tools/move-tool.js';
 import { removeWorkspace } from './remove-workspace.js';
 import { findVisibleTool, listVisibleTools, workspaceScope } from './visible-tools.js';
 import {
+  WORKSPACE_TABS_MAX,
   createWorkspace,
   getWorkspace,
   listWorkspaces,
   openWorkspaces,
   updateWorkspace,
+  workspaceTabKey,
 } from './workspace-store.js';
 
 function manifest(id: string, name = id): ToolManifest {
@@ -84,19 +86,115 @@ describe('Workspaces', () => {
     it('merges layout changes, and null clears a field', async () => {
       await createWorkspace(dataDir, 'Work', 'light');
       await updateWorkspace(dataDir, 'work', {
-        layout: { selectedTool: 'a', openCategory: 'x', panelWidth: 300 },
+        layout: { historyFilter: 'a', openCategory: 'x', panelWidth: 300 },
       });
       const updated = await updateWorkspace(dataDir, 'work', {
-        layout: { selectedTool: null, categoryOrder: ['x'] },
+        layout: { historyFilter: null, categoryOrder: ['x'] },
       });
-      expect(updated.layout).toEqual({ categoryOrder: ['x'], panelWidth: 300, openCategory: 'x' });
+      expect(updated.layout).toEqual({
+        categoryOrder: ['x'],
+        panelWidth: 300,
+        openCategory: 'x',
+        tabs: [],
+      });
     });
 
     it('drops a stored panel width out of limits', async () => {
       await createWorkspace(dataDir, 'Work', 'light');
       const file = join(dataDir, 'workspaces', 'work', 'workspace.yaml');
-      await writeFile(file, 'formatVersion: 1\nname: Work\nlayout:\n  panelWidth: 9000\n');
-      expect((await getWorkspace(dataDir, 'work'))?.layout).toEqual({ categoryOrder: [] });
+      await writeFile(file, 'formatVersion: 2\nname: Work\nlayout:\n  panelWidth: 9000\n');
+      expect((await getWorkspace(dataDir, 'work'))?.layout).toEqual({
+        categoryOrder: [],
+        tabs: [],
+      });
+    });
+
+    it('keeps tabs and the active one, across a read', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const tabs = [
+        { kind: 'tool', id: 'a' },
+        { kind: 'automation', id: 'nightly', preview: true },
+        { kind: 'history' },
+      ] as const;
+      await updateWorkspace(dataDir, 'work', {
+        layout: { tabs, activeTab: 'automation:nightly', historyFilter: 'a' },
+      });
+      expect((await getWorkspace(dataDir, 'work'))?.layout).toEqual({
+        categoryOrder: [],
+        tabs,
+        activeTab: 'automation:nightly',
+        historyFilter: 'a',
+      });
+
+      const closed = await updateWorkspace(dataDir, 'work', { layout: { tabs: [tabs[0]] } });
+      expect(closed.layout.activeTab).toBeUndefined();
+      expect(workspaceTabKey(tabs[2])).toBe('history');
+    });
+
+    it('drops broken and repeated tabs, and keeps one preview tab', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const file = join(dataDir, 'workspaces', 'work', 'workspace.yaml');
+      await writeFile(
+        file,
+        `formatVersion: 2
+name: Work
+layout:
+  tabs:
+    - { kind: tool, id: a, preview: true }
+    - { kind: tool, id: a }
+    - { kind: tool }
+    - { kind: panel, id: x }
+    - { kind: automation, id: b, preview: true }
+    - plain text
+  activeTab: tool:missing
+`,
+      );
+      expect((await getWorkspace(dataDir, 'work'))?.layout).toEqual({
+        categoryOrder: [],
+        tabs: [
+          { kind: 'tool', id: 'a', preview: true },
+          { kind: 'automation', id: 'b' },
+        ],
+      });
+    });
+
+    it('keeps no more tabs than the limit', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const tabs = Array.from({ length: WORKSPACE_TABS_MAX + 5 }, (_, index) => ({
+        kind: 'tool' as const,
+        id: `t${String(index)}`,
+      }));
+      const updated = await updateWorkspace(dataDir, 'work', { layout: { tabs } });
+      expect(updated.layout.tabs).toHaveLength(WORKSPACE_TABS_MAX);
+    });
+
+    it('opens the tool a version 1 file had selected as one pinned, active tab', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const file = join(dataDir, 'workspaces', 'work', 'workspace.yaml');
+      await writeFile(
+        file,
+        'formatVersion: 1\nname: Work\nlayout:\n  categoryOrder: [x]\n  selectedTool: alpha\n',
+      );
+      expect((await getWorkspace(dataDir, 'work'))?.layout).toEqual({
+        categoryOrder: ['x'],
+        tabs: [{ kind: 'tool', id: 'alpha' }],
+        activeTab: 'tool:alpha',
+      });
+
+      await updateWorkspace(dataDir, 'work', { theme: 'dark' });
+      const stored = await readFile(file, 'utf8');
+      expect(stored).toContain('formatVersion: 2');
+      expect(stored).not.toContain('selectedTool');
+    });
+
+    it('reads a version 1 file with no selected tool as having no tabs', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const file = join(dataDir, 'workspaces', 'work', 'workspace.yaml');
+      await writeFile(file, 'formatVersion: 1\nname: Work\n');
+      expect((await getWorkspace(dataDir, 'work'))?.layout).toEqual({
+        categoryOrder: [],
+        tabs: [],
+      });
     });
 
     it('reports a damaged Workspace, hides nothing and never takes its folder', async () => {

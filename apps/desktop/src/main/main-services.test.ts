@@ -92,6 +92,28 @@ describe('IPC schemas', () => {
     ],
     ['a nameless Workspace', createWorkspaceSchema, { name: '' }],
     ['a panel too wide', updateWorkspaceSchema, { layout: { panelWidth: 5000 } }],
+    ['the old selected tool', updateWorkspaceSchema, { layout: { selectedTool: 'a' } }],
+    [
+      'a tab of an unknown kind',
+      updateWorkspaceSchema,
+      { layout: { tabs: [{ kind: 'x', id: 'a' }] } },
+    ],
+    ['a tool tab with no id', updateWorkspaceSchema, { layout: { tabs: [{ kind: 'tool' }] } }],
+    [
+      'a History tab naming a tool',
+      updateWorkspaceSchema,
+      { layout: { tabs: [{ kind: 'history', id: 'a' }] } },
+    ],
+    [
+      'a tab with a path',
+      updateWorkspaceSchema,
+      { layout: { tabs: [{ kind: 'tool', id: 'a', path: 'C:\\a.exe' }] } },
+    ],
+    [
+      'too many tabs',
+      updateWorkspaceSchema,
+      { layout: { tabs: Array.from({ length: 101 }, () => ({ kind: 'history' })) } },
+    ],
     ['an unknown theme for a Workspace', updateWorkspaceSchema, { theme: 'pink' }],
     ['a relative path variable', pathVariableSchema, { name: 'a', value: 'relative' }],
     ['a launch by path', toolIdSchema, { path: 'C:\\evil.exe' }],

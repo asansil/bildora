@@ -7,6 +7,7 @@ import type {
   AutomationListView,
   AutomationRunStateView,
   DetectionView,
+  LayoutUpdate,
   ProposalView,
   RegisterTools,
   RegistrationView,
@@ -17,6 +18,7 @@ import type {
   ToolCatalog,
   ToolScopeChoice,
   ToolView,
+  WorkspaceLayoutView,
   WorkspaceListView,
   WorkspaceUpdate,
   WorkspaceView,
@@ -62,6 +64,18 @@ type Modal =
   | { readonly kind: 'move'; readonly tool: ToolView }
   | { readonly kind: 'create-workspace' }
   | { readonly kind: 'review'; readonly detection: DetectionView };
+
+const TOOL_TAB_PREFIX = 'tool:';
+
+/** The tool in the active tab. Until the work area holds tabs, the shell shows only that one. */
+function activeToolOf(layout: WorkspaceLayoutView | undefined): string | undefined {
+  const key = layout?.activeTab;
+  return key?.startsWith(TOOL_TAB_PREFIX) === true ? key.slice(TOOL_TAB_PREFIX.length) : undefined;
+}
+
+function onlyToolTab(id: string): LayoutUpdate {
+  return { tabs: [{ kind: 'tool', id }], activeTab: `${TOOL_TAB_PREFIX}${id}` };
+}
 
 function messageOf(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
@@ -133,7 +147,7 @@ export function App() {
         setWorkspaces(list);
         // The panel stays closed at launch, so only the tool and the width come back.
         const layout = list.workspaces.find(({ id }) => id === list.activeId)?.layout;
-        setSelectedTool(layout?.selectedTool);
+        setSelectedTool(activeToolOf(layout));
         setPanelWidth(layout?.panelWidth ?? PANEL_WIDTH_DEFAULT);
       })
       .catch(report);
@@ -220,7 +234,7 @@ export function App() {
 
   function chooseTool(id: string): void {
     setSelectedTool(id);
-    saveWorkspace({ layout: { selectedTool: id } });
+    saveWorkspace({ layout: onlyToolTab(id) });
   }
 
   /** Enters what `list` says is active, with the view that Workspace was left in. */
@@ -228,7 +242,7 @@ export function App() {
     generation.current += 1;
     const layout = list.workspaces.find(({ id }) => id === list.activeId)?.layout;
     setWorkspaces(list);
-    setSelectedTool(layout?.selectedTool);
+    setSelectedTool(activeToolOf(layout));
     setOpenCategory(layout?.openCategory);
     setPanelWidth(layout?.panelWidth ?? PANEL_WIDTH_DEFAULT);
     setHistoryTool(undefined);
@@ -299,7 +313,7 @@ export function App() {
       const nextOpen = openCategory === undefined ? undefined : groupKey(owner);
       setOpenCategory(nextOpen);
       setSelectedTool(id);
-      saveWorkspace({ layout: { selectedTool: id, openCategory: nextOpen ?? null } });
+      saveWorkspace({ layout: { ...onlyToolTab(id), openCategory: nextOpen ?? null } });
       setScreen('tools');
     }
   }

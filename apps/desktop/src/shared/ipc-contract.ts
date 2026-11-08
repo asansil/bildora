@@ -18,6 +18,7 @@ const PATH_VARIABLE_NAME_MAX_LENGTH = 64;
 const FAVORITES_MAX = 1000;
 const AUTOMATION_STEPS_MAX = 200;
 const CATEGORIES_MAX = 1000;
+const WORKSPACE_TABS_MAX = 100;
 export const PANEL_WIDTH_MIN = 180;
 export const PANEL_WIDTH_MAX = 480;
 export const PANEL_WIDTH_DEFAULT = 248;
@@ -112,6 +113,15 @@ export const preferencesSchema = z.strictObject({
 export const workspaceIdSchema = z.strictObject({ id: idSchema });
 export const createWorkspaceSchema = z.strictObject({ name: workspaceNameSchema });
 export const renameWorkspaceSchema = z.strictObject({ id: idSchema, name: workspaceNameSchema });
+/** History has a single tab, so only tools and automations name an item. */
+const workspaceTabSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.enum(['tool', 'automation']),
+    id: idSchema,
+    preview: z.boolean().optional(),
+  }),
+  z.strictObject({ kind: z.literal('history'), preview: z.boolean().optional() }),
+]);
 export const updateWorkspaceSchema = z.strictObject({
   theme: z.enum(['system', 'light', 'dark']).optional(),
   favorites: z.array(idSchema).max(FAVORITES_MAX).optional(),
@@ -119,8 +129,10 @@ export const updateWorkspaceSchema = z.strictObject({
     .strictObject({
       categoryOrder: z.array(textSchema).max(CATEGORIES_MAX).optional(),
       panelWidth: z.int().min(PANEL_WIDTH_MIN).max(PANEL_WIDTH_MAX).optional(),
-      selectedTool: idSchema.nullable().optional(),
       openCategory: textSchema.nullable().optional(),
+      tabs: z.array(workspaceTabSchema).max(WORKSPACE_TABS_MAX).optional(),
+      activeTab: textSchema.nullable().optional(),
+      historyFilter: idSchema.nullable().optional(),
     })
     .optional(),
 });
@@ -154,8 +166,19 @@ export interface WorkspaceLayoutView {
   /** Category keys in rail order. */
   readonly categoryOrder: readonly string[];
   readonly panelWidth?: number;
-  readonly selectedTool?: string;
   readonly openCategory?: string;
+  /** Work area tabs in the order shown. */
+  readonly tabs: readonly WorkspaceTabView[];
+  /** The key of the active tab: `tool:<id>`, `automation:<id>` or `history`. */
+  readonly activeTab?: string;
+  /** The tool id the History tab is filtered by. */
+  readonly historyFilter?: string;
+}
+
+export interface WorkspaceTabView {
+  readonly kind: 'tool' | 'automation' | 'history';
+  readonly id?: string;
+  readonly preview?: boolean;
 }
 
 export interface WorkspaceView {

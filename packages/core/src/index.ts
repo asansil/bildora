@@ -161,17 +161,22 @@ export {
   PANEL_WIDTH_MAX,
   PANEL_WIDTH_MIN,
   WORKSPACE_NAME_MAX_LENGTH,
+  WORKSPACE_TABS_MAX,
   createWorkspace,
   getWorkspace,
   listWorkspaces,
   openWorkspaces,
   updateWorkspace,
+  workspaceTabKey,
 } from './workspaces/workspace-store.js';
 export type {
   LayoutChanges,
+  TabChange,
   Workspace,
   WorkspaceChanges,
   WorkspaceLayout,
   WorkspaceList,
   WorkspaceProblem,
+  WorkspaceTab,
+  WorkspaceTabKind,
 } from './workspaces/workspace-store.js';
