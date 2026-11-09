@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { automationSchema, toolManifestSchema } from '@bildora/protocol';
+import { automationSchema, automationV2Schema, toolManifestSchema } from '@bildora/protocol';
 import type { Automation, AutomationInput } from '@bildora/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RunHistory } from '../history/run-history.js';
@@ -298,7 +298,7 @@ describe('checkAutomation', () => {
         run('c', { in: '{{run.foldr}}/x' }),
       ]),
     ).toEqual([
-      'a: Refers to "later", which is not an earlier run step',
+      'a: Step "later" does not finish on every path that reaches this block, so its output may not exist',
       'later: Step "a" declares no output "nothing"',
       'b: Step "plain" runs a registered program, which declares no outputs',
       'c: Unknown reference {{run.foldr}}',
@@ -309,11 +309,158 @@ describe('checkAutomation', () => {
     const slow = run('slow', { out: 'C:\\a.csv' }, { background: true });
     const use = run('use', { in: '{{steps.slow.outputs.csv}}' });
     expect(await problems([slow, use])).toEqual([
-      'use: Step "slow" runs in the background, so it must be waited for first',
+      'use: Step "slow" does not finish on every path that reaches this block, so its output may not exist',
     ]);
     expect(
       await problems([slow, { id: 'meet', type: 'wait-for-completion', step: 'slow' }, use]),
     ).toEqual([]);
+  });
+
+  describe('on blocks and connections', () => {
+    const lookup = '{{steps.a.outputs.csv}}';
+    const step = (id: string, values: object = {}) => ({
+      id,
+      type: 'run',
+      tool: 'declared',
+      values: { in: 'C:\\in', ...values },
+    });
+    async function blockProblems(blocks: object[], connections: object[]) {
+      const automation = automationV2Schema.parse({
+        schemaVersion: 2,
+        id: 'flow',
+        name: 'Flow',
+        blocks: [{ id: 'start', type: 'start' }, ...blocks],
+        connections,
+      });
+      const found = await checkAutomation(automation, registry, 'work');
+      return found.map(({ stepId, message }) => `${stepId}: ${message}`);
+    }
+    const sourceA = step('a', { out: 'C:\\a.csv' });
+    const cannotFinish = (id: string) =>
+      `Step "${id}" does not finish on every path that reaches this block, so its output may not exist`;
+
+    it('accepts a reference to a block that finished before', async () => {
+      expect(
+        await blockProblems(
+          [sourceA, step('b', { in: lookup })],
+          [
+            { from: 'start', to: 'a' },
+            { from: 'a', to: 'b' },
+          ],
+        ),
+      ).toEqual([]);
+    });
+
+    it('refuses a reference to a block that ran on only one side of a decision', async () => {
+      const condition = {
+        match: 'all',
+        rules: [{ block: 'a', field: 'result', operator: 'is', value: 'completed' }],
+      };
+      const blocks = [
+        sourceA,
+        { id: 'check', type: 'if', condition },
+        step('x', { out: 'C:\\x.csv' }),
+        step('y'),
+        step('use', { in: '{{steps.x.outputs.csv}}' }),
+      ];
+      expect(
+        await blockProblems(blocks, [
+          { from: 'start', to: 'a' },
+          { from: 'a', to: 'check' },
+          { from: 'check', output: 'true', to: 'x' },
+          { from: 'check', output: 'false', to: 'y' },
+          { from: 'x', to: 'use' },
+          { from: 'y', to: 'use' },
+        ]),
+      ).toEqual([`use: ${cannotFinish('x')}`]);
+    });
+
+    it('refuses a reference to the output of a block that failed and took its Error output', async () => {
+      expect(
+        await blockProblems(
+          [sourceA, step('notify', { in: lookup })],
+          [
+            { from: 'start', to: 'a' },
+            { from: 'a', output: 'error', to: 'notify' },
+          ],
+        ),
+      ).toEqual([`notify: ${cannotFinish('a')}`]);
+    });
+
+    it('keeps branches apart, and allows a reference after the Join', async () => {
+      const blocks = [
+        { id: 'fork', type: 'parallel' },
+        sourceA,
+        step('b', { in: lookup }),
+        { id: 'meet', type: 'join', parallel: 'fork' },
+        step('after', { in: lookup }),
+      ];
+      expect(
+        await blockProblems(blocks, [
+          { from: 'start', to: 'fork' },
+          { from: 'fork', to: 'a' },
+          { from: 'fork', to: 'b' },
+          { from: 'a', to: 'meet' },
+          { from: 'b', to: 'meet' },
+          { from: 'meet', to: 'after' },
+        ]),
+      ).toEqual([`b: ${cannotFinish('a')}`]);
+    });
+
+    it('checks that a rule reads the exit code of a tool that ran on every path', async () => {
+      const exitCode = (block: string) => ({
+        match: 'all',
+        rules: [{ block, field: 'exit-code', operator: 'equals', value: 0 }],
+      });
+      const blocks = [
+        sourceA,
+        { id: 'pause', type: 'wait-for-time', seconds: 1 },
+        { id: 'check', type: 'if', condition: exitCode('pause') },
+        { id: 'late', type: 'if', condition: exitCode('after') },
+        step('after'),
+      ];
+      expect(
+        await blockProblems(blocks, [
+          { from: 'start', to: 'a' },
+          { from: 'a', to: 'pause' },
+          { from: 'pause', to: 'check' },
+          { from: 'check', output: 'true', to: 'late' },
+          { from: 'late', output: 'true', to: 'after' },
+        ]),
+      ).toEqual([
+        'check: Reads the exit code of "pause", which is not a run block',
+        'late: Reads the exit code of "after", which does not run on every path that reaches "late"',
+      ]);
+    });
+
+    it('allows reading the exit code of a block that failed into its Error output', async () => {
+      const condition = {
+        match: 'all',
+        rules: [{ block: 'a', field: 'exit-code', operator: 'equals', value: 3 }],
+      };
+      expect(
+        await blockProblems(
+          [sourceA, { id: 'check', type: 'if', condition }],
+          [
+            { from: 'start', to: 'a' },
+            { from: 'a', output: 'error', to: 'check' },
+          ],
+        ),
+      ).toEqual([]);
+    });
+
+    it('reports a list of steps that cannot become blocks, without a block', async () => {
+      const overlapping = automationOf([
+        { ...run('one', {}), background: true },
+        { ...run('two', {}), background: true },
+        { id: 'w1', type: 'wait-for-completion', step: 'one' },
+        { id: 'w2', type: 'wait-for-completion', step: 'two' },
+      ] as AutomationInput['steps']);
+      const found = await checkAutomation(overlapping, registry, 'work');
+      expect(found).toHaveLength(1);
+      expect(found[0]?.stepId).toBe('');
+      expect(found[0]?.message).toContain('overlaps another one');
+    });
   });
 
   it('never changes an automation', async () => {

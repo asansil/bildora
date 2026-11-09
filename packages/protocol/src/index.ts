@@ -60,6 +60,7 @@ export {
   buildGraph,
   connectionOutput,
   graphIssues,
+  guarantees,
   outputsOf,
   reachableFrom,
   topologicalOrder,
@@ -70,6 +71,7 @@ export type {
   GraphConnection,
   GraphIssue,
   GraphShape,
+  Guarantee,
 } from './automation-graph.js';
 export {
   RUN_FOLDER_REFERENCE,

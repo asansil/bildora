@@ -201,3 +201,70 @@ export function graphIssues(shape: GraphShape): GraphIssue[] {
   });
   return issues;
 }
+
+/** What is certain once a path has reached a block. */
+export interface Guarantee {
+  /** Blocks that finished with a result before it, so their outputs exist. */
+  readonly completed: ReadonlySet<string>;
+  /** Blocks that ran before it, failed ones included, so their exit code exists. */
+  readonly ran: ReadonlySet<string>;
+}
+
+function intersection(sets: readonly ReadonlySet<string>[]): Set<string> {
+  const [first, ...rest] = sets;
+  return new Set([...(first ?? [])].filter((id) => rest.every((other) => other.has(id))));
+}
+
+/**
+ * For each block, the blocks that ran on every path that reaches it. A block that failed and led on
+ * through its Error output ran, but left no outputs. Branches of a Parallel cannot see one another,
+ * and what each leaves is certain after the Join. Blocks that no path reaches know nothing.
+ */
+export function guarantees(shape: GraphShape): ReadonlyMap<string, Guarantee> {
+  const known = new Map<string, Guarantee>();
+  const order = topologicalOrder(shape);
+  if (order === undefined) {
+    return known;
+  }
+  const graph = buildGraph(shape);
+  const byId = new Map(shape.blocks.map((block) => [block.id, block]));
+  const incoming = new Map<string, GraphConnection[]>(shape.blocks.map(({ id }) => [id, []]));
+  for (const connection of shape.connections) {
+    if (byId.has(connection.from)) incoming.get(connection.to)?.push(connection);
+  }
+  const none: Guarantee = { completed: new Set(), ran: new Set() };
+
+  /** What a path carries when it leaves a block through a connection. */
+  const along = (connection: GraphConnection): Guarantee => {
+    const before = known.get(connection.from) ?? none;
+    const completed = new Set(before.completed);
+    if (connectionOutput(connection) !== ERROR_OUTPUT) completed.add(connection.from);
+    return { completed, ran: new Set([...before.ran, connection.from]) };
+  };
+  const meet = (paths: readonly Guarantee[]): Guarantee => ({
+    completed: intersection(paths.map(({ completed }) => completed)),
+    ran: intersection(paths.map(({ ran }) => ran)),
+  });
+
+  for (const id of order) {
+    const block = byId.get(id);
+    const edges = (incoming.get(id) ?? []).filter(({ to }) => byId.has(to));
+    if (block?.type !== 'join' || block.parallel === undefined || !byId.has(block.parallel)) {
+      known.set(id, meet(edges.map(along)));
+      continue;
+    }
+    // Each branch is certain on its own, and the Join brings them together.
+    const opening = known.get(block.parallel) ?? none;
+    const completed = new Set([...opening.completed, block.parallel]);
+    const ran = new Set([...opening.ran, block.parallel]);
+    for (const root of graph.successors.get(block.parallel) ?? []) {
+      const branch = new Set([root, ...reachableFrom(graph, root, id)]);
+      const ends = edges.filter(({ from }) => branch.has(from)).map(along);
+      const certain = meet(ends);
+      certain.completed.forEach((other) => completed.add(other));
+      certain.ran.forEach((other) => ran.add(other));
+    }
+    known.set(id, { completed, ran });
+  }
+  return known;
+}

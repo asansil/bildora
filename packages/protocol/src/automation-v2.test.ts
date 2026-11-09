@@ -1,6 +1,11 @@
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { describe, expect, it } from 'vitest';
-import { automationV2Schema, buildAutomationV2JsonSchema, topologicalOrder } from './index.js';
+import {
+  automationV2Schema,
+  buildAutomationV2JsonSchema,
+  guarantees,
+  topologicalOrder,
+} from './index.js';
 
 const base = { schemaVersion: 2, id: 'nightly-report', name: 'Nightly report' };
 const start = { id: 'start', type: 'start' };
@@ -310,5 +315,102 @@ describe('published JSON Schema', () => {
     expect(validate({ ...full, extra: 1 })).toBe(false);
     expect(validate({ ...full, schemaVersion: 1 })).toBe(false);
     expect(validate({ ...full, blocks: [{ id: 'x', type: 'nope' }] })).toBe(false);
+  });
+});
+
+describe('guarantees', () => {
+  const blocks = (...ids: string[]) =>
+    ids.map((id) => ({ id, type: id === 'start' ? 'start' : 'run' }));
+  const sorted = (ids: ReadonlySet<string> | undefined) => [...(ids ?? [])].sort();
+
+  it('knows what ran before a block on a straight path', () => {
+    const known = guarantees({
+      blocks: blocks('start', 'a', 'b'),
+      connections: [
+        { from: 'start', to: 'a' },
+        { from: 'a', to: 'b' },
+      ],
+    });
+    expect(sorted(known.get('start')?.completed)).toEqual([]);
+    expect(sorted(known.get('b')?.completed)).toEqual(['a', 'start']);
+  });
+
+  it('drops what only one side of a decision ran', () => {
+    const known = guarantees({
+      blocks: [...blocks('start', 'a', 'x', 'y', 'm'), { id: 'check', type: 'if' }],
+      connections: [
+        { from: 'start', to: 'a' },
+        { from: 'a', to: 'check' },
+        { from: 'check', output: 'true', to: 'x' },
+        { from: 'check', output: 'false', to: 'y' },
+        { from: 'x', to: 'm' },
+        { from: 'y', to: 'm' },
+      ],
+    });
+    expect(sorted(known.get('m')?.completed)).toEqual(['a', 'check', 'start']);
+    expect(sorted(known.get('x')?.completed)).toEqual(['a', 'check', 'start']);
+  });
+
+  it('counts a block that failed as having run, but not as having left outputs', () => {
+    const known = guarantees({
+      blocks: blocks('start', 'a', 'notify'),
+      connections: [
+        { from: 'start', to: 'a' },
+        { from: 'a', output: 'error', to: 'notify' },
+      ],
+    });
+    expect(sorted(known.get('notify')?.completed)).toEqual(['start']);
+    expect(sorted(known.get('notify')?.ran)).toEqual(['a', 'start']);
+  });
+
+  it('keeps branches apart, and brings what each left together after the Join', () => {
+    const known = guarantees({
+      blocks: [
+        ...blocks('start', 'x', 'y', 'after'),
+        { id: 'fork', type: 'parallel' },
+        { id: 'meet', type: 'join', parallel: 'fork' },
+      ],
+      connections: [
+        { from: 'start', to: 'fork' },
+        { from: 'fork', to: 'x' },
+        { from: 'fork', to: 'y' },
+        { from: 'x', to: 'meet' },
+        { from: 'y', to: 'meet' },
+        { from: 'meet', to: 'after' },
+      ],
+    });
+    expect(sorted(known.get('y')?.completed)).toEqual(['fork', 'start']);
+    expect(sorted(known.get('after')?.completed)).toEqual(['fork', 'meet', 'start', 'x', 'y']);
+  });
+
+  it('leaves out of a branch what only some of its paths ran', () => {
+    const known = guarantees({
+      blocks: [
+        ...blocks('start', 'x', 'only', 'after'),
+        { id: 'fork', type: 'parallel' },
+        { id: 'other', type: 'wait-for-time' },
+        { id: 'check', type: 'if' },
+        { id: 'meet', type: 'join', parallel: 'fork' },
+      ],
+      connections: [
+        { from: 'start', to: 'fork' },
+        { from: 'fork', to: 'x' },
+        { from: 'fork', to: 'other' },
+        { from: 'x', to: 'check' },
+        { from: 'check', output: 'true', to: 'only' },
+        { from: 'check', output: 'false', to: 'meet' },
+        { from: 'only', to: 'meet' },
+        { from: 'other', to: 'meet' },
+        { from: 'meet', to: 'after' },
+      ],
+    });
+    expect(sorted(known.get('after')?.completed)).toEqual([
+      'check',
+      'fork',
+      'meet',
+      'other',
+      'start',
+      'x',
+    ]);
   });
 });
