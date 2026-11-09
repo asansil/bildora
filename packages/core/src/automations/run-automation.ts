@@ -1,11 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { dirname, isAbsolute, normalize, resolve } from 'node:path';
-import { findStepOutputReferences, replaceRunReferences, usesRunFolder } from '@bildora/protocol';
-import type { Automation, AutomationStep, RunStep } from '@bildora/protocol';
+import {
+  DEFAULT_CASE,
+  connectionOutput,
+  findStepOutputReferences,
+  replaceRunReferences,
+  usesRunFolder,
+} from '@bildora/protocol';
+import type { AutomationBlock, AutomationCondition, Automation, RunBlock } from '@bildora/protocol';
 import type {
   AutomationFailure,
   AutomationStepRecord,
+  TakenPath,
   AutomationTrigger,
   RunHistory,
 } from '../history/run-history.js';
@@ -23,6 +30,9 @@ const MS_PER_SECOND = 1000;
 
 /** A step refers to something an earlier step did not leave. */
 class MissingOutputError extends Error {}
+
+/** A condition reads something a block did not leave. */
+class ConditionError extends Error {}
 
 /** Starts one tool for a step. It may throw, and that counts as the step failing. */
 export type StepStarter = (
@@ -64,6 +74,8 @@ export interface AutomationRunOptions {
 }
 
 export interface StepView extends AutomationStepRecord {
+  /** The kind of block, such as `run` or `if`. */
+  readonly type: string;
   readonly progress?: RunProgress;
   /** Set while a manual step waits for someone. */
   readonly message?: string;
@@ -78,6 +90,8 @@ export interface AutomationRunView {
   readonly automationName: string;
   readonly status: 'running' | 'completed' | 'failed' | 'cancelled';
   readonly steps: readonly StepView[];
+  /** The connections followed so far. */
+  readonly paths: readonly TakenPath[];
 }
 
 export interface AutomationResult {
@@ -86,7 +100,7 @@ export interface AutomationResult {
   readonly durationMs: number;
   /** What stopped the run. */
   readonly failure?: AutomationFailure;
-  /** Every step that failed, those set to continue included. */
+  /** Every block that failed, those an Error output handled included. */
   readonly failedSteps: readonly string[];
 }
 
@@ -121,10 +135,6 @@ function waitFor(milliseconds: number, signal: AbortSignal): Promise<void> {
       stop();
     }
   });
-}
-
-function continuesAfterFailure(step: AutomationStep): boolean {
-  return step.type !== 'wait-for-time' && step.onFailure === 'continue';
 }
 
 /** A step without what only matters while it is going on. */
@@ -170,30 +180,85 @@ function outputsOf(
   return outputs;
 }
 
+/** Where a path of blocks runs, so that a Parallel can end its branches without ending the rest. */
+interface Scope {
+  readonly controller: AbortController;
+  readonly live: Set<RecordedToolRun>;
+  readonly children: Set<Scope>;
+}
+
+/** The branches of one Parallel, up to its Join. */
+interface Region {
+  readonly join: string;
+  readonly scope: Scope;
+  readonly onBranchFailure: 'stop-others' | 'let-finish';
+  /** The first failure no Error output handled. */
+  failure?: AutomationFailure;
+}
+
+interface BlockResult {
+  readonly result: 'completed' | 'failed';
+  readonly exitCode?: number | undefined;
+}
+
+function newScope(parent?: Scope): Scope {
+  const scope: Scope = {
+    controller: new AbortController(),
+    live: new Set(),
+    children: new Set(),
+  };
+  if (parent !== undefined) {
+    parent.children.add(scope);
+    if (parent.controller.signal.aborted) {
+      scope.controller.abort();
+    } else {
+      parent.controller.signal.addEventListener('abort', () => {
+        scope.controller.abort();
+      });
+    }
+  }
+  return scope;
+}
+
+/** Ends the tools of a scope and of the scopes inside it. */
+function cancelScope(scope: Scope): void {
+  scope.controller.abort();
+  for (const run of scope.live) {
+    run.cancel();
+  }
+  for (const child of scope.children) {
+    cancelScope(child);
+  }
+}
+
 /**
- * Runs an automation's steps in order. Clients provide what differs between them, which is how a
- * tool starts and how a person answers, so the desktop app and the CLI share every rule. A problem
+ * Runs an automation by walking its blocks. Clients provide what differs between them, which is how
+ * a tool starts and how a person answers, so the desktop app and the CLI share every rule. A problem
  * with the record never changes how a run ends.
  */
 export function startAutomationRun(options: AutomationRunOptions): AutomationRun {
-  const { automation, workspaceId, trigger, dataDir, history, pathVariables } = options;
+  const { workspaceId, trigger, dataDir, history, pathVariables } = options;
+  const { automation } = options;
   const variables: PathVariables = pathVariables ?? new Map<string, string>();
   const delay = options.delay ?? waitFor;
   const runId = options.runId ?? randomUUID();
   const startedAt = Date.now();
-  const controller = new AbortController();
-  const { signal } = controller;
-  // A function, because `cancel()` changes this during the waits below.
-  const isCancelled = (): boolean => signal.aborted;
+  const root = newScope();
 
+  const blocks = new Map(automation.blocks.map((block) => [block.id, block]));
   const steps = new Map<string, StepView>(
-    automation.steps.map((step) => [step.id, { id: step.id, state: 'idle' }]),
+    automation.blocks.map(({ id, type }) => [id, { id, type, state: 'idle' }]),
   );
   const outputs = new Map<string, ReadonlyMap<string, string>>();
-  const live = new Set<RecordedToolRun>();
-  const background = new Map<string, Promise<StepOutcome>>();
-  const waited = new Set<string>();
+  const results = new Map<string, BlockResult>();
+  /** A block reached from several paths still runs once. */
+  const reached = new Set<string>();
   let status: AutomationRunView['status'] = 'running';
+  let cancelledByUser = false;
+  /** The connections the run followed, in order. */
+  const taken: TakenPath[] = [];
+  /** What stopped the run: the first failure that nothing handled. */
+  let stopped: AutomationFailure | undefined;
 
   function view(): AutomationRunView {
     return {
@@ -203,6 +268,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       automationName: automation.name,
       status,
       steps: [...steps.values()],
+      paths: [...taken],
     };
   }
 
@@ -223,7 +289,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
   }
 
   function stepView(id: string): StepView {
-    return steps.get(id) ?? { id, state: 'idle' };
+    return steps.get(id) ?? { id, type: blocks.get(id)?.type ?? '', state: 'idle' };
   }
 
   function setStep(id: string, changes: Partial<StepView>): void {
@@ -231,21 +297,34 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     change();
   }
 
-  /** Settles a step and stores it, so that another process can follow the run. */
+  /** Settles a block and stores it, so that another process can follow the run. */
   function finishStep(id: string, outcome: StepOutcome, startedStep: number): void {
     steps.set(id, {
       ...recordOf(stepView(id)),
+      type: stepView(id).type,
       state: outcome.status,
       durationMs: performance.now() - startedStep,
       ...(outcome.status === 'failed' ? { failure: outcome.failure } : {}),
     });
     change();
     record(() => {
-      history.updateAutomationSteps(runId, records());
+      history.updateAutomationSteps(runId, records(), taken);
     });
   }
 
-  async function valuesFor(step: RunStep, tool: RegisteredTool): Promise<ParameterValues> {
+  /** A block that does nothing but direct the run, which is over as soon as it is reached. */
+  function passThrough(id: string): void {
+    results.set(id, { result: 'completed' });
+    setStep(id, { state: 'completed' });
+  }
+
+  function targets(id: string, output: string): string[] {
+    return automation.connections
+      .filter((connection) => connection.from === id && connectionOutput(connection) === output)
+      .map(({ to }) => to);
+  }
+
+  async function valuesFor(step: RunBlock, tool: RegisteredTool): Promise<ParameterValues> {
     const parameters = tool.manifest.level === 1 ? tool.manifest.parameters : [];
     const values: Record<string, ParameterValue> = {};
     for (const [name, value] of Object.entries(step.values ?? {})) {
@@ -272,7 +351,8 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     return replaced === value ? value : normalize(replaced);
   }
 
-  async function runOnce(step: RunStep): Promise<StepOutcome> {
+  async function runOnce(step: RunBlock, scope: Scope): Promise<StepOutcome> {
+    const isCancelled = (): boolean => scope.controller.signal.aborted;
     let tool: RegisteredTool | undefined;
     try {
       tool = await options.findTool(step.tool);
@@ -307,57 +387,57 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     } catch (error) {
       return failed('not-started', error instanceof Error ? error.message : String(error));
     }
-    live.add(run);
+    scope.live.add(run);
     setStep(step.id, { toolRunId: run.runId });
     if (isCancelled()) {
       run.cancel();
     }
     const result = await run.result;
-    live.delete(run);
+    scope.live.delete(run);
     if (result.status === 'completed') {
       outputs.set(step.id, outputsOf(tool, run, variables));
+      results.set(step.id, { result: 'completed', exitCode: 0 });
       return { status: 'completed' };
+    }
+    if (result.status === 'failed') {
+      results.set(step.id, { result: 'failed', exitCode: result.exitCode });
     }
     return result.status === 'cancelled'
       ? { status: 'cancelled' }
       : { status: 'failed', failure: result.failure };
   }
 
-  /** Runs a tool step to its end, retrying as it says. */
-  async function runTool(step: RunStep): Promise<StepOutcome> {
+  /** Runs a tool block to its end, retrying as it says. */
+  async function runTool(step: RunBlock, scope: Scope): Promise<StepOutcome> {
+    const isCancelled = (): boolean => scope.controller.signal.aborted;
     const startedStep = performance.now();
     const retry = typeof step.onFailure === 'object' ? step.onFailure.retry : undefined;
     const attempts = retry?.attempts ?? 1;
     let outcome: StepOutcome = { status: 'cancelled' };
     for (let attempt = 1; attempt <= attempts && !isCancelled(); attempt += 1) {
       setStep(step.id, { state: 'running', ...(retry === undefined ? {} : { attempt }) });
-      outcome = await runOnce(step);
+      outcome = await runOnce(step, scope);
       if (outcome.status !== 'failed') {
         break;
       }
       if (attempt < attempts) {
-        await delay((retry?.delaySeconds ?? 0) * MS_PER_SECOND, signal);
+        await delay((retry?.delaySeconds ?? 0) * MS_PER_SECOND, scope.controller.signal);
         outcome = isCancelled() ? { status: 'cancelled' } : outcome;
       }
+    }
+    if (outcome.status === 'failed') {
+      results.set(step.id, { result: 'failed', exitCode: results.get(step.id)?.exitCode });
     }
     finishStep(step.id, outcome, startedStep);
     return outcome;
   }
 
-  async function waitForCompletion(target: string): Promise<StepOutcome> {
-    waited.add(target);
-    const outcome = (await background.get(target)) ?? { status: 'completed' };
-    return outcome.status === 'failed'
-      ? failed(outcome.failure.kind, `Step "${target}" failed: ${outcome.failure.message}`)
-      : outcome;
-  }
-
-  async function waitForAction(id: string, message: string): Promise<StepOutcome> {
+  async function waitForAction(id: string, message: string, scope: Scope): Promise<StepOutcome> {
     setStep(id, { message });
     const answer =
       options.askForAction === undefined
         ? 'no-user'
-        : await options.askForAction({ stepId: id, message, signal });
+        : await options.askForAction({ stepId: id, message, signal: scope.controller.signal });
     switch (answer) {
       case 'confirmed':
         return { status: 'completed' };
@@ -368,71 +448,197 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     }
   }
 
-  async function waitForTime(id: string, seconds: number): Promise<StepOutcome> {
+  async function waitForTime(id: string, seconds: number, scope: Scope): Promise<StepOutcome> {
     const milliseconds = seconds * MS_PER_SECOND;
     setStep(id, { resumesAt: Date.now() + milliseconds });
-    await delay(milliseconds, signal);
-    return isCancelled() ? { status: 'cancelled' } : { status: 'completed' };
+    await delay(milliseconds, scope.controller.signal);
+    return scope.controller.signal.aborted ? { status: 'cancelled' } : { status: 'completed' };
   }
 
-  async function runWait(
-    step: Exclude<AutomationStep, RunStep>,
-    wait: () => Promise<StepOutcome>,
-  ): Promise<StepOutcome> {
+  async function runWait(id: string, wait: () => Promise<StepOutcome>): Promise<StepOutcome> {
     const startedStep = performance.now();
-    setStep(step.id, { state: 'running' });
+    setStep(id, { state: 'running' });
     const outcome = await wait();
-    finishStep(step.id, outcome, startedStep);
+    if (outcome.status === 'completed') {
+      results.set(id, { result: 'completed' });
+    } else if (outcome.status === 'failed') {
+      results.set(id, { result: 'failed' });
+    }
+    finishStep(id, outcome, startedStep);
     return outcome;
   }
 
-  async function runStep(step: AutomationStep): Promise<StepOutcome> {
-    switch (step.type) {
+  /** A failure nothing handled: it ends the branches of its Parallel, or the whole run. */
+  function unhandled(failure: AutomationFailure, region: Region | undefined): void {
+    if (region === undefined) {
+      stopped ??= failure;
+      cancelScope(root);
+      return;
+    }
+    region.failure ??= failure;
+    if (region.onBranchFailure === 'stop-others') {
+      cancelScope(region.scope);
+    }
+  }
+
+  function ruleHolds(rule: AutomationCondition['rules'][number]): boolean {
+    const known = results.get(rule.block);
+    if (rule.field === 'result') {
+      const actual = known?.result ?? 'skipped';
+      return rule.operator === 'is' ? actual === rule.value : actual !== rule.value;
+    }
+    const code = known?.exitCode;
+    if (code === undefined) {
+      throw new ConditionError(`Block "${rule.block}" left no exit code to read`);
+    }
+    switch (rule.operator) {
+      case 'equals':
+        return code === rule.value;
+      case 'not-equals':
+        return code !== rule.value;
+      case 'greater-than':
+        return code > rule.value;
+      case 'less-than':
+        return code < rule.value;
+    }
+  }
+
+  function holds({ match, rules }: AutomationCondition): boolean {
+    return match === 'all' ? rules.every(ruleHolds) : rules.some(ruleHolds);
+  }
+
+  /** Follows the connections of an output. Only a Parallel leaves one with several. */
+  async function leave(
+    id: string,
+    output: string,
+    scope: Scope,
+    region: Region | undefined,
+  ): Promise<void> {
+    const next = targets(id, output);
+    for (const to of next) {
+      taken.push({ from: id, output, to });
+    }
+    await Promise.all(next.map((to) => follow(to, scope, region)));
+  }
+
+  /** What follows a block that did work: on to the next, or to wherever its failure leads. */
+  async function after(
+    id: string,
+    outcome: StepOutcome,
+    scope: Scope,
+    region: Region | undefined,
+  ): Promise<void> {
+    if (outcome.status === 'cancelled') {
+      return;
+    }
+    if (outcome.status === 'completed') {
+      return leave(id, 'next', scope, region);
+    }
+    if (targets(id, 'error').length > 0) {
+      return leave(id, 'error', scope, region);
+    }
+    unhandled({ stepId: id, ...outcome.failure }, region);
+  }
+
+  async function runParallel(
+    block: Extract<AutomationBlock, { type: 'parallel' }>,
+    scope: Scope,
+    region: Region | undefined,
+  ): Promise<void> {
+    passThrough(block.id);
+    const join = automation.blocks.find(
+      (candidate) => candidate.type === 'join' && candidate.parallel === block.id,
+    );
+    if (join?.type !== 'join') {
+      return;
+    }
+    const inner: Region = {
+      join: join.id,
+      scope: newScope(scope),
+      onBranchFailure: join.onBranchFailure ?? 'stop-others',
+    };
+    await leave(block.id, 'next', inner.scope, inner);
+    if (scope.controller.signal.aborted) {
+      return;
+    }
+    reached.add(join.id);
+    if (inner.failure !== undefined) {
+      const { kind, message } = inner.failure;
+      results.set(join.id, { result: 'failed' });
+      setStep(join.id, { state: 'failed', failure: { kind, message } });
+      unhandled(inner.failure, region);
+      return;
+    }
+    passThrough(join.id);
+    await leave(join.id, 'next', scope, region);
+  }
+
+  async function walk(
+    block: AutomationBlock,
+    scope: Scope,
+    region: Region | undefined,
+  ): Promise<void> {
+    switch (block.type) {
+      case 'start':
+        passThrough(block.id);
+        return leave(block.id, 'next', scope, region);
       case 'run':
-        if (step.background === true) {
-          // Its failure surfaces where it is waited for, or at the end.
-          background.set(step.id, runTool(step));
-          return { status: 'completed' };
-        }
-        return runTool(step);
-      case 'wait-for-completion':
-        return runWait(step, () => waitForCompletion(step.step));
+        return after(block.id, await runTool(block, scope), scope, region);
       case 'wait-for-time':
-        return runWait(step, () => waitForTime(step.id, step.seconds));
+        return after(
+          block.id,
+          await runWait(block.id, () => waitForTime(block.id, block.seconds, scope)),
+          scope,
+          region,
+        );
       case 'wait-for-manual-action':
-        return runWait(step, () => waitForAction(step.id, step.message));
+        return after(
+          block.id,
+          await runWait(block.id, () => waitForAction(block.id, block.message, scope)),
+          scope,
+          region,
+        );
+      case 'if': {
+        const taken = holds(block.condition);
+        passThrough(block.id);
+        return leave(block.id, taken ? 'true' : 'false', scope, region);
+      }
+      case 'switch': {
+        const taken = block.cases.find(({ condition }) => holds(condition));
+        passThrough(block.id);
+        return leave(block.id, taken?.id ?? DEFAULT_CASE, scope, region);
+      }
+      case 'parallel':
+        return runParallel(block, scope, region);
+      case 'join':
+        // Reached on a path outside its Parallel, which a valid automation does not have.
+        passThrough(block.id);
+        return leave(block.id, 'next', scope, region);
     }
   }
 
-  /** Goes through the steps, and says what stopped them, if anything did. */
-  async function runSteps(): Promise<AutomationFailure | 'cancelled' | undefined> {
-    for (const step of automation.steps) {
-      if (isCancelled()) {
-        return 'cancelled';
-      }
-      const outcome = await runStep(step);
-      if (outcome.status === 'cancelled') {
-        return 'cancelled';
-      }
-      if (outcome.status === 'failed' && !continuesAfterFailure(step)) {
-        return { stepId: step.id, ...outcome.failure };
-      }
+  /** Runs the block, then whatever follows it, and settles when this path has ended. */
+  async function follow(id: string, scope: Scope, region: Region | undefined): Promise<void> {
+    const block = blocks.get(id);
+    if (block === undefined || scope.controller.signal.aborted) {
+      return;
     }
-    return undefined;
-  }
-
-  /** Waits for background steps nobody waited for. A failure among them counts as a stop. */
-  async function settleBackground(): Promise<AutomationFailure | 'cancelled' | undefined> {
-    let stop: AutomationFailure | 'cancelled' | undefined;
-    for (const [id, pending] of background) {
-      const outcome = await pending;
-      if (!waited.has(id) && outcome.status === 'failed') {
-        stop ??= { stepId: id, ...outcome.failure };
-      } else if (!waited.has(id) && outcome.status === 'cancelled') {
-        stop ??= 'cancelled';
-      }
+    if (block.type === 'join' && region?.join === id) {
+      // A branch that reaches its Join ends there, and the Parallel carries on once all have.
+      return;
     }
-    return stop;
+    if (reached.has(id)) {
+      return;
+    }
+    reached.add(id);
+    try {
+      await walk(block, scope, region);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const kind = error instanceof ConditionError ? 'condition' : 'not-started';
+      finishStep(id, failed(kind, message), performance.now());
+      unhandled({ stepId: id, kind, message }, region);
+    }
   }
 
   async function execute(): Promise<AutomationResult> {
@@ -451,21 +657,21 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     });
     change();
 
-    const stopped = await runSteps().catch((error: unknown): AutomationFailure => ({
-      stepId: '',
-      kind: 'not-started',
-      message: error instanceof Error ? error.message : String(error),
-    }));
-    if (stopped !== undefined) {
-      for (const run of live) {
-        run.cancel();
+    const start = automation.blocks.find(({ type }) => type === 'start');
+    if (start !== undefined) {
+      await follow(start.id, root, undefined);
+    }
+
+    status = stopped !== undefined ? 'failed' : cancelledByUser ? 'cancelled' : 'completed';
+    if (status === 'completed') {
+      // What the run did not reach is on a path it did not take.
+      for (const [id, step] of steps) {
+        if (step.state === 'idle') {
+          steps.set(id, { ...step, state: 'skipped' });
+        }
       }
     }
-    const left = await settleBackground();
-    const stop = stopped ?? left;
-
-    status = stop === undefined ? 'completed' : stop === 'cancelled' ? 'cancelled' : 'failed';
-    const failure = typeof stop === 'object' ? stop : undefined;
+    const failure = stopped;
     const durationMs = Date.now() - startedAt;
     const finalStatus = status;
     record(() => {
@@ -474,6 +680,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
         durationMs,
         failure,
         steps: records(),
+        paths: taken,
       });
     });
     change();
@@ -498,10 +705,8 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     runId,
     result: execute(),
     cancel() {
-      controller.abort();
-      for (const run of live) {
-        run.cancel();
-      }
+      cancelledByUser = true;
+      cancelScope(root);
     },
     view,
   };

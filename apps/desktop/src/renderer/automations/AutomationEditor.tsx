@@ -19,7 +19,6 @@ const CHECK_DELAY_MS = 200;
 
 const STEP_KINDS: readonly { readonly kind: StepKind; readonly label: MessageKey }[] = [
   { kind: 'run', label: 'automation.addRun' },
-  { kind: 'wait-for-completion', label: 'automation.addCompletion' },
   { kind: 'wait-for-time', label: 'automation.addTime' },
   { kind: 'wait-for-manual-action', label: 'automation.addManual' },
 ];

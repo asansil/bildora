@@ -86,15 +86,19 @@ function describeStep({ state, durationMs, failure, attempt }: StepView): string
   }
 }
 
+const WORK_BLOCKS = ['run', 'wait-for-time', 'wait-for-manual-action'];
+
 /** Prints a line each time a step changes state, and nothing for progress within one. */
 function stepPrinter(io: CliIo): (view: AutomationRunView) => void {
   const shown = new Map<string, string>();
   return ({ steps }) => {
-    steps.forEach((step, index) => {
+    // Blocks that only direct the run, such as Start and If, are over as soon as they begin.
+    const work = steps.filter(({ type }) => WORK_BLOCKS.includes(type));
+    work.forEach((step, index) => {
       const text = describeStep(step);
       if (step.state !== 'idle' && shown.get(step.id) !== text) {
         shown.set(step.id, text);
-        io.out(`[${String(index + 1)}/${String(steps.length)}] ${step.id}: ${text}`);
+        io.out(`[${String(index + 1)}/${String(work.length)}] ${step.id}: ${text}`);
       }
     });
   };

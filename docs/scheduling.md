@@ -16,19 +16,19 @@ bildora run <automation> [--workspace <id or name>]
 
 If several Workspaces hold the same automation, the command stops and lists them, and `--workspace` chooses one. Use `--workspace` in a scheduled task, so a later automation with the same name cannot stop it.
 
-Each step prints one line. Tool output goes to run history, where the app shows it, marked as coming from the command line.
+Each block that runs a tool or waits prints one line, such as `[2/3] report: completed (4.1 s)`, and one that was on a path the run did not take prints `skipped`. Tool output goes to run history, where the app shows it, marked as coming from the command line.
 
 ### Exit codes
 
-| Code | Meaning                                                                     |
-| ---- | --------------------------------------------------------------------------- |
-| 0    | Every step succeeded                                                        |
-| 1    | A failed step stopped the automation                                        |
-| 2    | The command was used incorrectly                                            |
-| 3    | The automation finished, but a step set to continue failed                  |
-| 4    | It stopped at a manual step, because nobody could answer                    |
-| 5    | It could not start: not found, in several Workspaces, or with a broken step |
-| 130  | It was cancelled                                                            |
+| Code | Meaning                                                                      |
+| ---- | ---------------------------------------------------------------------------- |
+| 0    | Every block that ran succeeded                                               |
+| 1    | A failed block stopped the automation                                        |
+| 2    | The command was used incorrectly                                             |
+| 3    | The automation finished, but a block failed and its Error output handled it  |
+| 4    | It stopped at a manual block, because nobody could answer                    |
+| 5    | It could not start: not found, in several Workspaces, or with a broken block |
+| 130  | It was cancelled                                                             |
 
 Task Scheduler shows this number as the task's last run result.
 
@@ -47,7 +47,8 @@ Tools that need an interpreter, such as `node` or `python`, must find it on the 
 
 ## What to keep in mind
 
-- **Manual steps:** with nobody at a terminal, a wait-for-manual-action step fails at once, under its failure policy. The command never waits forever. With `stop`, the exit code is 4. With `continue`, the automation goes on and the exit code is 3.
+- **Manual blocks:** with nobody at a terminal, a wait-for-manual-action block fails at once. The command never waits forever. With nothing on its Error output, the automation stops and the exit code is 4. With its Error output connected, the automation follows that path and the exit code is 3.
+- **Older files:** an automation written as a list of steps runs as it always did. A step set to continue becomes an Error output to the next step, and a background step with its wait becomes parallel branches. A `continue` on the very last step has no next step to lead to, so a failure there now stops the automation with exit code 1, where it used to finish with exit code 3.
 - **The app can stay open.** The command and the app can run at the same time, even the same automation. Each run has its own folder, but a tool that always writes to one fixed path is not protected from a second run.
 - **Registered programs:** a level 0 tool opens in its own window, as it does in the app. A program that waits for someone to close it holds the automation until then, so give the task a time limit.
 - **Level 2 tools** cannot run in an automation yet.

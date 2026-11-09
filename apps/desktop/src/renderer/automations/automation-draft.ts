@@ -1,4 +1,5 @@
 import { RUN_FOLDER_REFERENCE, stepOutputReference } from '@bildora/protocol';
+import type { AutomationBlock } from '@bildora/protocol';
 import { t } from '../../shared/i18n/translate.js';
 import type { AutomationStep, ToolView } from '../../shared/ipc-contract.js';
 
@@ -50,12 +51,6 @@ export function newStep(
         ? undefined
         : { id: newStepId(tool.id, steps), type: 'run', tool: tool.id };
     }
-    case 'wait-for-completion': {
-      const [target] = backgroundSteps(steps, steps.length);
-      return target === undefined
-        ? undefined
-        : { id: newStepId('wait', steps), type: kind, step: target.id };
-    }
     case 'wait-for-time':
       return { id: newStepId('pause', steps), type: kind, seconds: 60 };
     case 'wait-for-manual-action':
@@ -80,16 +75,6 @@ export function moveStep(
   }
   const others = steps.filter((_step, position) => position !== index);
   return [...others.slice(0, target), moved, ...others.slice(target)];
-}
-
-/** Background steps before a position, which a wait-for-completion step can name. */
-export function backgroundSteps(
-  steps: readonly AutomationStep[],
-  index: number,
-): readonly RunStep[] {
-  return steps
-    .slice(0, index)
-    .filter((step): step is RunStep => step.type === 'run' && step.background === true);
 }
 
 export interface ReferenceOption {
@@ -136,27 +121,43 @@ export function withFailureChoice(step: RunStep, choice: FailureChoice): RunStep
   }
 }
 
-/** Marks a step to run in the background, which leaves its failure to the step that waits. */
-export function withBackground(step: RunStep, background: boolean): RunStep {
-  const rest: RunStep = without(step, 'onFailure', 'background');
-  return background ? { ...rest, background: true } : rest;
-}
+/** What a label needs of a step, so that a step and a block of the same kind read the same. */
+type Labelled =
+  | { readonly type: 'run'; readonly tool: string }
+  | { readonly type: 'wait-for-time'; readonly seconds: number }
+  | { readonly type: 'wait-for-manual-action'; readonly message: string };
 
 /** A step in a sentence, as lists show it. */
-export function stepLabel(step: AutomationStep, tools: readonly ToolView[]): string {
+export function stepLabel(step: Labelled, tools: readonly ToolView[]): string {
   switch (step.type) {
     case 'run': {
       const name = tools.find(({ id }) => id === step.tool)?.name ?? step.tool;
-      return t(step.background === true ? 'automation.labelBackground' : 'automation.labelRun', {
-        name,
-      });
+      return t('automation.labelRun', { name });
     }
-    case 'wait-for-completion':
-      return t('automation.labelCompletion', { step: step.step });
     case 'wait-for-time':
       return t('automation.labelTime', { count: step.seconds });
     case 'wait-for-manual-action':
       return step.message;
+  }
+}
+
+/** A block in a sentence, for an automation that is not a list. */
+export function blockLabel(block: AutomationBlock, tools: readonly ToolView[]): string {
+  switch (block.type) {
+    case 'run':
+    case 'wait-for-time':
+    case 'wait-for-manual-action':
+      return stepLabel(block, tools);
+    case 'start':
+      return t('automation.blockStart');
+    case 'if':
+      return t('automation.blockIf', { id: block.id });
+    case 'switch':
+      return t('automation.blockSwitch', { id: block.id });
+    case 'parallel':
+      return t('automation.blockParallel', { id: block.id });
+    case 'join':
+      return t('automation.blockJoin', { id: block.id });
   }
 }
 

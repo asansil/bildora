@@ -27,15 +27,58 @@ export {
   startsWithPathVariable,
 } from './path-variables.js';
 export {
+  AUTOMATION_BLOCK_LIMIT,
+  AUTOMATION_CONNECTION_LIMIT,
   AUTOMATION_SCHEMA_VERSION,
-  AUTOMATION_STEP_LIMIT,
+  CONDITION_RULES_MAX,
   RETRY_ATTEMPTS_MAX,
   RETRY_DELAY_SECONDS_MAX,
+  SWITCH_CASES_MAX,
   WAIT_SECONDS_MAX,
   automationSchema,
   buildAutomationJsonSchema,
 } from './automation.js';
-export type { Automation, AutomationInput, AutomationStep, RunStep } from './automation.js';
+export type {
+  Automation,
+  AutomationBlock,
+  AutomationCondition,
+  AutomationConnection,
+  AutomationInput,
+  RunBlock,
+} from './automation.js';
+export {
+  AUTOMATION_V1_SCHEMA_VERSION,
+  AUTOMATION_V1_STEP_LIMIT,
+  automationV1Schema,
+} from './automation-v1.js';
+export type {
+  AutomationV1,
+  AutomationV1Input,
+  AutomationV1Step,
+  RunStepV1,
+} from './automation-v1.js';
+export { fromLinear, linearOf, linearStepSchema } from './automation-linear.js';
+export type { LinearRunStep, LinearStep } from './automation-linear.js';
+export {
+  DEFAULT_CASE,
+  DEFAULT_OUTPUT,
+  ERROR_OUTPUT,
+  buildGraph,
+  connectionOutput,
+  graphIssues,
+  guarantees,
+  outputsOf,
+  reachableFrom,
+  topologicalOrder,
+} from './automation-graph.js';
+export type {
+  Graph,
+  GraphBlock,
+  GraphConnection,
+  GraphIssue,
+  GraphShape,
+  Guarantee,
+} from './automation-graph.js';
 export {
   RUN_FOLDER_REFERENCE,
   findStepOutputReferences,

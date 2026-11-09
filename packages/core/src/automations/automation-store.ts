@@ -1,6 +1,12 @@
 import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { AUTOMATION_SCHEMA_VERSION, automationSchema, isValidIdentifier } from '@bildora/protocol';
+import {
+  AUTOMATION_SCHEMA_VERSION,
+  AUTOMATION_V1_SCHEMA_VERSION,
+  automationSchema,
+  automationV1Schema,
+  isValidIdentifier,
+} from '@bildora/protocol';
 import type { Automation } from '@bildora/protocol';
 import { parseDocument, stringify } from 'yaml';
 import type { RemovedAutomationRun, RunHistory } from '../history/run-history.js';
@@ -16,6 +22,7 @@ import { DefinitionError } from '../storage/definition-error.js';
 import { migrateDefinition } from '../storage/migrations.js';
 import type { VersionedFormat } from '../storage/migrations.js';
 import { listWorkspaces } from '../workspaces/workspace-store.js';
+import { convertAutomationV1 } from './convert-v1.js';
 
 const EXTENSION = '.yaml';
 const format: VersionedFormat = {
@@ -24,6 +31,9 @@ const format: VersionedFormat = {
   currentVersion: AUTOMATION_SCHEMA_VERSION,
   migrations: [],
 };
+
+/** A list of steps that cannot become blocks. Its file stays as it is until someone rearranges it. */
+export class UnconvertibleAutomationError extends DefinitionError {}
 
 /** A stored automation that cannot be used. It never hides the healthy ones around it. */
 export interface AutomationFileProblem {
@@ -51,7 +61,33 @@ function automationFile(dataDir: string, workspaceId: string, id: string): strin
   return join(automationsDirectory(dataDir, workspaceId), `${id}${EXTENSION}`);
 }
 
-/** Reads an automation from YAML text, upgrading an older format and validating the result. */
+function issuesOf(error: { readonly issues: readonly { path: PropertyKey[]; message: string }[] }) {
+  return error.issues.map((issue) => ({
+    path: issue.path.map(String).join('.'),
+    message: issue.message,
+  }));
+}
+
+/** Turns a list of steps, the format before blocks, into blocks. */
+function convertSteps(content: object): Automation {
+  const steps = automationV1Schema.safeParse(content);
+  if (!steps.success) {
+    throw new DefinitionError('The automation is not valid', issuesOf(steps.error));
+  }
+  const converted = convertAutomationV1(steps.data);
+  if (!converted.ok) {
+    throw new UnconvertibleAutomationError(
+      'The automation is a list of steps that cannot be converted to blocks, and its file is left as it is',
+      converted.problems.map((message) => ({ path: '', message })),
+    );
+  }
+  return converted.automation;
+}
+
+/**
+ * Reads an automation from YAML text. A list of steps is converted to blocks, and the file changes
+ * only when the automation is next saved.
+ */
 export function parseAutomation(text: string): Automation {
   const document = parseDocument(text, { uniqueKeys: true });
   if (document.errors.length > 0) {
@@ -64,12 +100,12 @@ export function parseAutomation(text: string): Automation {
   if (typeof content !== 'object' || content === null || Array.isArray(content)) {
     throw new DefinitionError('The automation must be a YAML mapping');
   }
+  if ((content as { schemaVersion?: unknown }).schemaVersion === AUTOMATION_V1_SCHEMA_VERSION) {
+    return convertSteps(content);
+  }
   const result = automationSchema.safeParse(migrateDefinition({ ...content }, format));
   if (!result.success) {
-    throw new DefinitionError(
-      'The automation is not valid',
-      result.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })),
-    );
+    throw new DefinitionError('The automation is not valid', issuesOf(result.error));
   }
   return result.data;
 }
@@ -129,7 +165,7 @@ export async function listAutomations(
   return { automations, problems };
 }
 
-/** Stores an automation, refusing to replace a file written by a newer build. */
+/** Stores an automation, refusing to replace a file it cannot read the way its author meant. */
 export async function saveAutomation(
   dataDir: string,
   workspaceId: string,
@@ -139,8 +175,12 @@ export async function saveAutomation(
   try {
     await getAutomation(dataDir, workspaceId, checked.id);
   } catch (error) {
-    // A damaged file may be replaced. One from a newer build has to stay.
-    if (error instanceof DefinitionError && error.message.includes('Update Bildora')) {
+    // A damaged file may be replaced. One from a newer build, or steps that could not be
+    // converted, have to stay.
+    if (
+      error instanceof UnconvertibleAutomationError ||
+      (error instanceof DefinitionError && error.message.includes('Update Bildora'))
+    ) {
       throw error;
     }
   }

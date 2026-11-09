@@ -138,7 +138,7 @@ describe('RunHistory', () => {
 
     const untouched = new Connection(file);
     expect(untouched.pragma('user_version', { simple: true })).toBe(99);
-    untouched.pragma('user_version = 3');
+    untouched.pragma('user_version = 4');
     untouched.close();
     history = await RunHistory.open(dataDir);
   });
@@ -322,7 +322,7 @@ describe('RunHistory with several processes', () => {
 
   it('stores a run and its failure, and reads them back', () => {
     history.startAutomationRun({ ...automationRun, runId: 'a' });
-    history.updateAutomationSteps('a', [{ id: 'first', state: 'completed' }]);
+    history.updateAutomationSteps('a', [{ id: 'first', state: 'completed' }], []);
     expect(history.listAutomationRuns('work', 'flow')[0]?.steps).toEqual([
       { id: 'first', state: 'completed' },
     ]);
@@ -332,20 +332,71 @@ describe('RunHistory with several processes', () => {
       durationMs: 9,
       failure,
       steps: [{ id: 'first', state: 'failed' }],
+      paths: [{ from: 'start', output: 'next', to: 'first' }],
     });
     expect(history.listAutomationRuns('work', 'flow')[0]).toMatchObject({
       status: 'failed',
       durationMs: 9,
       failure,
       trigger: 'cli',
+      format: 'blocks',
+      paths: [{ from: 'start', output: 'next', to: 'first' }],
     });
+  });
+
+  it('upgrades a file from version 3, showing the runs it holds as the steps they were', async () => {
+    history.startAutomationRun({ ...automationRun, runId: 'old' });
+    history.close();
+    const { default: Connection } = await import('better-sqlite3');
+    const old = new Connection(join(dataDir, 'history.db'));
+    old.exec(
+      'ALTER TABLE automation_runs DROP COLUMN format; ALTER TABLE automation_runs DROP COLUMN paths;',
+    );
+    old.pragma('user_version = 3');
+    old.close();
+
+    history = await RunHistory.open(dataDir);
+    expect(history.listAutomationRuns('work', 'flow')[0]).toMatchObject({
+      runId: 'old',
+      format: 'steps',
+      paths: [],
+    });
+    history.startAutomationRun({ ...automationRun, runId: 'new' });
+    expect(
+      history.listAutomationRuns('work', 'flow').map(({ runId, format }) => [runId, format]),
+    ).toEqual(
+      expect.arrayContaining([
+        ['old', 'steps'],
+        ['new', 'blocks'],
+      ]),
+    );
+  });
+
+  it('keeps a skipped block and treats damaged paths as none', async () => {
+    history.startAutomationRun({ ...automationRun, runId: 'a' });
+    history.updateAutomationSteps('a', [{ id: 'later', state: 'skipped' }], []);
+    expect(history.listAutomationRuns('work', 'flow')[0]?.steps).toEqual([
+      { id: 'later', state: 'skipped' },
+    ]);
+    history.close();
+    const { default: Connection } = await import('better-sqlite3');
+    const raw = new Connection(join(dataDir, 'history.db'));
+    raw.exec("UPDATE automation_runs SET paths = 'not json'");
+    raw.close();
+    history = await RunHistory.open(dataDir);
+    expect(history.listAutomationRuns('work', 'flow')[0]?.paths).toEqual([]);
   });
 
   it('keeps the newest runs of an automation, never one still going', () => {
     for (const runId of ['a', 'b', 'c']) {
       history.startAutomationRun({ ...automationRun, runId });
       if (runId !== 'a') {
-        history.finishAutomationRun(runId, { status: 'completed', durationMs: 1, steps: [] });
+        history.finishAutomationRun(runId, {
+          status: 'completed',
+          durationMs: 1,
+          steps: [],
+          paths: [],
+        });
       }
     }
     expect(history.pruneAutomationRuns('work', 'flow', 1)).toEqual([
@@ -360,7 +411,12 @@ describe('RunHistory with several processes', () => {
   it('applies a lower limit, clears and forgets automation runs too', () => {
     for (const runId of ['a', 'b']) {
       history.startAutomationRun({ ...automationRun, runId });
-      history.finishAutomationRun(runId, { status: 'completed', durationMs: 1, steps: [] });
+      history.finishAutomationRun(runId, {
+        status: 'completed',
+        durationMs: 1,
+        steps: [],
+        paths: [],
+      });
     }
     expect(history.pruneAll(1).map(({ runId }) => runId)).toEqual(['a']);
     expect(history.clear('work').map(({ runId }) => runId)).toEqual(['b']);

@@ -358,6 +358,9 @@ test('the rail reorders by dragging, and the panel resizes with the pointer', as
   await window.mouse.move(box.x + 102, box.y + 100, { steps: 4 });
   await window.mouse.up();
   await expect(window.locator('#tool-panel')).toHaveCSS('width', '348px');
+  // The width reaches the disk a moment after the page draws it, and a slow machine can reload first.
+  const file = join(dataDir, 'workspaces', 'default', 'workspace.yaml');
+  await expect.poll(() => readFile(file, 'utf8')).toContain('panelWidth: 348');
 
   await window.reload();
   await expect(names.first()).toHaveText('Bbeta');

@@ -13,12 +13,10 @@ import { ParameterForm } from '../tools/ParameterForm.js';
 import { parameterProblem, submittedValues } from '../tools/parameter-form.js';
 import type { FormValue, FormValues } from '../tools/parameter-form.js';
 import {
-  backgroundSteps,
   failureChoice,
   referenceOptions,
   runnableTools,
   without,
-  withBackground,
   withFailureChoice,
 } from './automation-draft.js';
 import type { FailureChoice, RunStep } from './automation-draft.js';
@@ -27,7 +25,6 @@ const api = window.bildora;
 
 const KIND_LABELS: Readonly<Record<AutomationStep['type'], MessageKey>> = {
   run: 'automation.kindRun',
-  'wait-for-completion': 'automation.kindCompletion',
   'wait-for-time': 'automation.kindTime',
   'wait-for-manual-action': 'automation.kindManual',
 };
@@ -270,27 +267,13 @@ function RunStepFields({ step, index, steps, tools, onChange, onError }: RunStep
           />
         </>
       )}
-      <label className="field-check">
-        <input
-          type="checkbox"
-          checked={step.background === true}
-          onChange={(event) => {
-            onChange(withBackground(step, event.target.checked));
-          }}
-        />
-        {t('automation.background')}
-      </label>
-      {step.background === true ? (
-        <p className="field-hint">{t('automation.backgroundHint')}</p>
-      ) : (
-        <FailureSelect
-          value={failureChoice(step)}
-          allowRetry
-          onChange={(choice) => {
-            onChange(withFailureChoice(step, choice));
-          }}
-        />
-      )}
+      <FailureSelect
+        value={failureChoice(step)}
+        allowRetry
+        onChange={(choice) => {
+          onChange(withFailureChoice(step, choice));
+        }}
+      />
       {typeof step.onFailure === 'object' ? (
         <div className="automation-retry">
           <NumberField
@@ -330,55 +313,11 @@ interface StepEditorProps {
   readonly onError: (error: unknown) => void;
 }
 
-function CompletionFields({
-  step,
-  index,
-  steps,
-  onChange,
-}: {
-  readonly step: Extract<AutomationStep, { type: 'wait-for-completion' }>;
-  readonly index: number;
-  readonly steps: readonly AutomationStep[];
-  readonly onChange: (step: AutomationStep) => void;
-}) {
-  const id = useId();
-  const targets = backgroundSteps(steps, index);
-  return (
-    <>
-      <div className="field">
-        <label className="field-label" htmlFor={id}>
-          {t('automation.waitFor')}
-        </label>
-        <select
-          id={id}
-          value={step.step}
-          onChange={(event) => {
-            onChange({ ...step, step: event.target.value });
-          }}
-        >
-          {targets.some(({ id: target }) => target === step.step) ? null : (
-            <option value={step.step}>{step.step}</option>
-          )}
-          {targets.map(({ id: target }) => (
-            <option key={target} value={target}>
-              {target}
-            </option>
-          ))}
-        </select>
-      </div>
-      <PlainFailure step={step} onChange={onChange} />
-    </>
-  );
-}
-
 function PlainFailure({
   step,
   onChange,
 }: {
-  readonly step: Extract<
-    AutomationStep,
-    { type: 'wait-for-completion' | 'wait-for-manual-action' }
-  >;
+  readonly step: Extract<AutomationStep, { type: 'wait-for-manual-action' }>;
   readonly onChange: (step: AutomationStep) => void;
 }) {
   return (
@@ -481,9 +420,6 @@ export function StepEditor({
             onChange={onChange}
             onError={onError}
           />
-        ) : null}
-        {step.type === 'wait-for-completion' ? (
-          <CompletionFields step={step} index={index} steps={steps} onChange={onChange} />
         ) : null}
         {step.type === 'wait-for-time' ? (
           <NumberField

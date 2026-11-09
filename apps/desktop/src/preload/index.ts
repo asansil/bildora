@@ -60,7 +60,8 @@ const api: ShellApi = {
   removeAutomation: (id) => invoke(CHANNELS.automationsRemove, { id }),
   startAutomation: (id) => invoke(CHANNELS.automationsStart, { id }),
   cancelAutomation: (runId) => invoke(CHANNELS.automationsCancel, { runId }),
-  confirmAutomation: (runId) => invoke(CHANNELS.automationsConfirm, { runId }),
+  confirmAutomation: (runId, stepId) =>
+    invoke(CHANNELS.automationsConfirm, { runId, ...(stepId === undefined ? {} : { stepId }) }),
   listAutomationRuns: () => invoke(CHANNELS.automationsRuns),
   onAutomationsChanged: (listener) => {
     const forward = (_event: IpcRendererEvent, runs: readonly AutomationRunStateView[]): void => {

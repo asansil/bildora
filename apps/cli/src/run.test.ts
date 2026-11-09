@@ -7,11 +7,10 @@ import {
   ToolRegistry,
   createWorkspace,
   createMemorySecretStore,
-  saveAutomation,
   workspaceScope,
 } from '@bildora/core';
-import { automationSchema, toolManifestSchema } from '@bildora/protocol';
-import type { AutomationInput } from '@bildora/protocol';
+import { automationV1Schema, toolManifestSchema } from '@bildora/protocol';
+import type { AutomationV1Input } from '@bildora/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { EXIT_CODES, runCli } from './run.js';
 import type { CliIo } from './run.js';
@@ -65,21 +64,28 @@ describe.skipIf(process.platform !== 'win32')('bildora run', () => {
   }
 
   async function saveFlow(
-    steps: AutomationInput['steps'],
+    steps: AutomationV1Input['steps'],
     workspace = workspaceId,
     name = 'Flow',
   ): Promise<void> {
-    const parsed = automationSchema.parse({ schemaVersion: 1, id: 'flow', name, steps });
-    await saveAutomation(dataDir, workspace, parsed);
+    // Written as a list of steps, the way files were before blocks, so the command reads those too.
+    const parsed = automationV1Schema.parse({ schemaVersion: 1, id: 'flow', name, steps });
+    const folder = join(dataDir, 'workspaces', workspace, 'automations');
+    await mkdir(folder, { recursive: true });
+    await writeFile(join(folder, 'flow.yaml'), JSON.stringify(parsed));
   }
 
-  const run = (id: string, tool: string, extra: object = {}): AutomationInput['steps'][number] => ({
+  const run = (
+    id: string,
+    tool: string,
+    extra: object = {},
+  ): AutomationV1Input['steps'][number] => ({
     id,
     type: 'run',
     tool,
     ...extra,
   });
-  const manual: AutomationInput['steps'][number] = {
+  const manual: AutomationV1Input['steps'][number] = {
     id: 'look',
     type: 'wait-for-manual-action',
     message: 'Check the result',
@@ -143,6 +149,37 @@ describe.skipIf(process.platform !== 'win32')('bildora run', () => {
     expect((await runCli(['run', 'flow'], '1', io())).exitCode).toBe(
       EXIT_CODES.continuedPastFailure,
     );
+  });
+
+  it('runs blocks and connections, and exits 3 when an Error output handled a failure', async () => {
+    const folder = join(dataDir, 'workspaces', workspaceId, 'automations');
+    await mkdir(folder, { recursive: true });
+    const block = (id: string, tool: string) => ({ id, type: 'run', tool });
+    await writeFile(
+      join(folder, 'flow.yaml'),
+      JSON.stringify({
+        schemaVersion: 2,
+        id: 'flow',
+        name: 'Flow',
+        blocks: [
+          { id: 'start', type: 'start' },
+          block('one', 'bad'),
+          block('notify', 'good'),
+          block('skipped-one', 'good'),
+        ],
+        connections: [
+          { from: 'start', to: 'one' },
+          { from: 'one', output: 'error', to: 'notify' },
+          { from: 'one', to: 'skipped-one' },
+        ],
+      }),
+    );
+    expect((await runCli(['run', 'flow'], '1', io())).exitCode).toBe(
+      EXIT_CODES.continuedPastFailure,
+    );
+    expect(lines).toContain('[1/3] one: failed: The tool exited with code 7');
+    expect(lines.some((line) => line.startsWith('[2/3] notify: completed'))).toBe(true);
+    expect(lines).toContain('[3/3] skipped-one: skipped');
   });
 
   it('exits 4 at once at a manual step with no terminal', async () => {

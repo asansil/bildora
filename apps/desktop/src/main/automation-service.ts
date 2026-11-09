@@ -20,8 +20,15 @@ import type {
   RunHistory,
   ToolRegistry,
 } from '@bildora/core';
-import { AUTOMATION_SCHEMA_VERSION, automationSchema } from '@bildora/protocol';
+import {
+  AUTOMATION_SCHEMA_VERSION,
+  automationSchema,
+  fromLinear,
+  linearOf,
+  linearStepSchema,
+} from '@bildora/protocol';
 import type { Automation } from '@bildora/protocol';
+import { z } from 'zod';
 import type {
   AutomationDraft,
   AutomationListView,
@@ -51,24 +58,35 @@ interface ActiveAutomation {
   readonly run: AutomationRun;
   readonly workspaceId: string;
   readonly automationId: string;
-  /** Who is waiting for a person, by run. Answering a step settles it. */
-  answer?: (answer: ManualAnswer) => void;
+  /** Who is waiting for a person, by block. Answering a block settles it. */
+  readonly answers: Map<string, (answer: ManualAnswer) => void>;
+}
+
+function issuesOf(error: {
+  readonly issues: readonly { readonly path: PropertyKey[]; readonly message: string }[];
+}) {
+  return error.issues.map((issue) => ({
+    path: issue.path.map(String).join('.'),
+    message: issue.message,
+  }));
 }
 
 function draftToAutomation(draft: AutomationDraft, id: string): Automation {
-  const { name, description, steps } = draft;
+  const { name, description } = draft;
+  const listed = z.array(linearStepSchema).safeParse(draft.steps);
+  if (!listed.success) {
+    throw new DefinitionError('The automation is not valid', issuesOf(listed.error));
+  }
+  const steps = listed.data;
   const result = automationSchema.safeParse({
     schemaVersion: AUTOMATION_SCHEMA_VERSION,
     id,
     name,
     ...(description === undefined ? {} : { description }),
-    steps,
+    ...fromLinear(steps),
   });
   if (!result.success) {
-    throw new DefinitionError(
-      'The automation is not valid',
-      result.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })),
-    );
+    throw new DefinitionError('The automation is not valid', issuesOf(result.error));
   }
   return result.data;
 }
@@ -89,12 +107,15 @@ export class AutomationService {
 
   private async viewOf(automation: Automation, workspaceId: string): Promise<AutomationView> {
     const { registry } = this.options;
-    const { id, name, description, steps } = automation;
+    const { id, name, description, blocks } = automation;
+    const steps = linearOf(automation);
     return {
       id,
       name,
       ...(description === undefined ? {} : { description }),
-      steps,
+      steps: steps ?? [],
+      editable: steps !== undefined,
+      blocks,
       problems: await checkAutomation(automation, registry, workspaceId),
     };
   }
@@ -116,6 +137,12 @@ export class AutomationService {
     const { automations } = await listAutomations(dataDir, workspace);
     const taken = automations.map(({ id }) => id);
     const id = draft.id ?? newAutomationId(draft.name, taken);
+    const existing =
+      draft.id === undefined ? undefined : automations.find((item) => item.id === id);
+    if (existing !== undefined && linearOf(existing) === undefined) {
+      // The list cannot say what its branches do, so saving it would lose them.
+      throw new Error('This automation has branches, so it can only be changed in its file');
+    }
     const saved = await saveAutomation(dataDir, workspace, draftToAutomation(draft, id));
     return this.viewOf(saved, workspace);
   }
@@ -172,6 +199,7 @@ export class AutomationService {
     const entry: ActiveAutomation = {
       workspaceId: workspace,
       automationId: id,
+      answers: new Map(),
       run: startAutomationRun({
         automation,
         workspaceId: workspace,
@@ -199,24 +227,38 @@ export class AutomationService {
     return run.view();
   }
 
-  private waitForAnswer(entry: ActiveAutomation, { signal }: ManualRequest): Promise<ManualAnswer> {
+  private waitForAnswer(
+    entry: ActiveAutomation,
+    { stepId, signal }: ManualRequest,
+  ): Promise<ManualAnswer> {
     return new Promise((resolve) => {
       const settle = (answer: ManualAnswer): void => {
         signal.removeEventListener('abort', onAbort);
-        delete entry.answer;
+        entry.answers.delete(stepId);
         resolve(answer);
       };
       const onAbort = (): void => {
         settle('cancelled');
       };
       signal.addEventListener('abort', onAbort);
-      entry.answer = settle;
+      entry.answers.set(stepId, settle);
     });
   }
 
-  /** Answers the manual step a run is waiting on, if it is still waiting. */
-  confirm(runId: string): void {
-    this.active.get(runId)?.answer?.('confirmed');
+  /**
+   * Answers a manual block a run is waiting on, if it still is. With no block named, it answers the
+   * ones waiting now, because a list has only one.
+   */
+  confirm(runId: string, stepId?: string): void {
+    const answers = this.active.get(runId)?.answers;
+    if (answers === undefined) {
+      return;
+    }
+    for (const [id, settle] of [...answers]) {
+      if (stepId === undefined || stepId === id) {
+        settle('confirmed');
+      }
+    }
   }
 
   cancel(runId: string): void {
