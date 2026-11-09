@@ -37,6 +37,41 @@ export {
 } from './automation.js';
 export type { Automation, AutomationInput, AutomationStep, RunStep } from './automation.js';
 export {
+  AUTOMATION_BLOCK_LIMIT,
+  AUTOMATION_CONNECTION_LIMIT,
+  AUTOMATION_V2_SCHEMA_VERSION,
+  CONDITION_RULES_MAX,
+  SWITCH_CASES_MAX,
+  automationV2Schema,
+  buildAutomationV2JsonSchema,
+} from './automation-v2.js';
+export type {
+  AutomationBlock,
+  AutomationCondition,
+  AutomationConnection,
+  AutomationV2,
+  AutomationV2Input,
+  RunBlock,
+} from './automation-v2.js';
+export {
+  DEFAULT_CASE,
+  DEFAULT_OUTPUT,
+  ERROR_OUTPUT,
+  buildGraph,
+  connectionOutput,
+  graphIssues,
+  outputsOf,
+  reachableFrom,
+  topologicalOrder,
+} from './automation-graph.js';
+export type {
+  Graph,
+  GraphBlock,
+  GraphConnection,
+  GraphIssue,
+  GraphShape,
+} from './automation-graph.js';
+export {
   RUN_FOLDER_REFERENCE,
   findStepOutputReferences,
   findUnknownReferences,
