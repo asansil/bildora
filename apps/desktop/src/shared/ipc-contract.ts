@@ -373,7 +373,7 @@ export interface AutomationListView {
   readonly problems: readonly { readonly file: string; readonly message: string }[];
 }
 
-export type StepStateView = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type StepStateView = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped';
 
 export interface StepRunView {
   readonly id: string;

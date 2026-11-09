@@ -98,9 +98,10 @@ describe('convertAutomationV1', () => {
       'quicker>slow-join',
       'slow-join>after',
     ]);
-    expect(converted.result?.blocks.find(({ id }) => id === 'slow-join')).toMatchObject({
+    expect(converted.result?.blocks.find(({ id }) => id === 'slow-join')).toEqual({
+      id: 'slow-join',
+      type: 'join',
       parallel: 'slow-parallel',
-      onBranchFailure: 'let-finish',
     });
   });
 

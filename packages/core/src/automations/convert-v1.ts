@@ -159,7 +159,7 @@ class Converter {
     const first = beside.first;
     if (first === undefined) throw new Unconvertible(`Nothing runs beside "${step.id}"`);
     const join = this.unique(`${step.id}-join`);
-    this.blocks.push({ id: join, type: 'join', parallel, onBranchFailure: 'let-finish' });
+    this.blocks.push({ id: join, type: 'join', parallel });
     this.link([{ id: parallel, output: 'next' }], step.id);
     this.link([{ id: parallel, output: 'next' }], first);
     this.link(background.exits, join);

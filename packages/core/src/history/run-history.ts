@@ -109,7 +109,7 @@ export interface RunFinish {
 
 export type AutomationTrigger = 'app' | 'cli';
 
-export type StepState = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type StepState = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped';
 
 export interface AutomationFailure {
   readonly stepId: string;

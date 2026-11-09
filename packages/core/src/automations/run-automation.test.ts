@@ -2,8 +2,8 @@ import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { automationSchema, toolManifestSchema } from '@bildora/protocol';
-import type { Automation, AutomationInput } from '@bildora/protocol';
+import { automationSchema, automationV2Schema, toolManifestSchema } from '@bildora/protocol';
+import type { Automation, AutomationInput, AutomationV2 } from '@bildora/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RunHistory } from '../history/run-history.js';
 import { saveProfile } from '../profiles/profile-store.js';
@@ -63,6 +63,14 @@ const run = (id: string, extra: object = {}): AutomationInput['steps'][number] =
   ...extra,
 });
 
+/** One block of a run, by id, whatever its place in the list. */
+function stepOf<T extends { readonly id: string }>(
+  steps: readonly T[] | undefined,
+  id: string,
+): T | undefined {
+  return steps?.find((step) => step.id === id);
+}
+
 /** A tool run a test ends by hand, with what it was started with. */
 interface FakeRun {
   readonly values: Readonly<Record<string, unknown>>;
@@ -106,7 +114,7 @@ describe('startAutomationRun', () => {
     return Promise.resolve(toolRun);
   };
 
-  function start(automation: Automation, extra: Partial<AutomationRunOptions> = {}) {
+  function start(automation: Automation | AutomationV2, extra: Partial<AutomationRunOptions> = {}) {
     return startAutomationRun({
       automation,
       workspaceId: 'work',
@@ -154,6 +162,7 @@ describe('startAutomationRun', () => {
     const [recorded] = history.listAutomationRuns('work', 'flow');
     expect(recorded).toMatchObject({ status: 'completed', trigger: 'cli', automationName: 'Flow' });
     expect(recorded?.steps.map(({ id, state }) => [id, state])).toEqual([
+      ['start', 'completed'],
       ['first', 'completed'],
       ['pause', 'completed'],
       ['second', 'completed'],
@@ -170,7 +179,9 @@ describe('startAutomationRun', () => {
       failure: { stepId: 'first', kind: 'exit-code' },
     });
     expect(started).toHaveLength(1);
-    expect(history.listAutomationRuns('work', 'flow')[0]?.steps[1]?.state).toBe('idle');
+    expect(stepOf(history.listAutomationRuns('work', 'flow')[0]?.steps, 'second')?.state).toBe(
+      'idle',
+    );
   });
 
   it('goes on past a step set to continue, and still reports it', async () => {
@@ -196,11 +207,9 @@ describe('startAutomationRun', () => {
     expect(result.status).toBe('completed');
     expect(started).toHaveLength(3);
     expect(waits).toEqual([2000, 2000]);
-    expect(history.listAutomationRuns('work', 'flow')[0]?.steps[0]).toMatchObject({
-      state: 'completed',
-      attempt: 3,
-    });
-    expect(history.listAutomationRuns('work', 'flow')[0]?.steps[0]?.failure).toBeUndefined();
+    const flaky = stepOf(history.listAutomationRuns('work', 'flow')[0]?.steps, 'flaky');
+    expect(flaky).toMatchObject({ state: 'completed', attempt: 3 });
+    expect(flaky?.failure).toBeUndefined();
   });
 
   it('stops once retries run out', async () => {
@@ -221,9 +230,10 @@ describe('startAutomationRun', () => {
     ]);
     const running = start(automation);
     await until(() => started.length === 2);
-    expect(running.view().steps[0]?.state).toBe('running');
+    expect(stepOf(running.view().steps, 'slow')?.state).toBe('running');
     started[1]?.finish(COMPLETED);
-    await until(() => running.view().steps[2]?.state === 'running');
+    await until(() => stepOf(running.view().steps, 'quick')?.state === 'completed');
+    expect(stepOf(running.view().steps, 'after')?.state).toBe('idle');
     expect(started).toHaveLength(2);
 
     started[0]?.finish(COMPLETED);
@@ -241,7 +251,7 @@ describe('startAutomationRun', () => {
     script = [failedResult(), COMPLETED];
     const result = await start(automationOf(steps)).result;
 
-    expect(result).toMatchObject({ status: 'completed', failedSteps: ['slow', 'meet'] });
+    expect(result).toMatchObject({ status: 'completed', failedSteps: ['slow'] });
     expect(started).toHaveLength(2);
   });
 
@@ -249,7 +259,7 @@ describe('startAutomationRun', () => {
     const running = start(automationOf([run('slow', { background: true }), run('quick')]));
     await until(() => started.length === 2);
     started[1]?.finish(COMPLETED);
-    await until(() => running.view().steps[1]?.state === 'completed');
+    await until(() => stepOf(running.view().steps, 'quick')?.state === 'completed');
     expect(running.view().status).toBe('running');
 
     started[0]?.finish(failedResult());
@@ -266,7 +276,7 @@ describe('startAutomationRun', () => {
 
     expect(await running.result).toMatchObject({ status: 'failed', failure: { stepId: 'bad' } });
     expect(started[0]?.cancelled).toBe(true);
-    expect(running.view().steps[0]?.state).toBe('cancelled');
+    expect(stepOf(running.view().steps, 'slow')?.state).toBe('cancelled');
   });
 
   it('asks for a manual step, and goes on when confirmed', async () => {
@@ -347,7 +357,7 @@ describe('startAutomationRun', () => {
           });
         }),
     });
-    await until(() => running.view().steps.at(-1)?.state === 'running');
+    await until(() => running.view().steps.some(({ state }) => state === 'running'));
     await new Promise((resolve) => setImmediate(resolve));
     running.cancel();
 
@@ -393,9 +403,9 @@ describe('startAutomationRun', () => {
     const result = await start(automationOf(steps)).result;
 
     expect(result).toMatchObject({ status: 'completed', failedSteps: ['extract', 'report'] });
-    expect(history.listAutomationRuns('work', 'flow')[0]?.steps[1]?.failure?.kind).toBe(
-      'reference',
-    );
+    expect(
+      stepOf(history.listAutomationRuns('work', 'flow')[0]?.steps, 'report')?.failure?.kind,
+    ).toBe('reference');
     expect(started).toHaveLength(2);
   });
 
@@ -446,12 +456,365 @@ describe('startAutomationRun', () => {
     script = [COMPLETED];
     const states: string[] = [];
     await start(automationOf([run('first')]), {
-      onChange: ({ status, steps }) => states.push(`${status}/${steps[0]?.state ?? ''}`),
+      onChange: ({ status, steps }) =>
+        states.push(`${status}/${stepOf(steps, 'first')?.state ?? ''}`),
     }).result;
 
     expect(states[0]).toBe('running/idle');
     expect(states).toContain('running/running');
     expect(states.at(-1)).toBe('completed/completed');
+  });
+
+  describe('blocks and connections', () => {
+    const block = (id: string, extra: object = {}) => ({
+      id,
+      type: 'run',
+      tool: 'sample',
+      ...extra,
+    });
+    const flow = (blocks: object[], connections: object[]): AutomationV2 =>
+      automationV2Schema.parse({
+        schemaVersion: 2,
+        id: 'flow',
+        name: 'Flow',
+        blocks: [{ id: 'start', type: 'start' }, ...blocks],
+        connections,
+      });
+    const exitCodeIs = (of: string, value: number) => ({
+      match: 'all',
+      rules: [{ block: of, field: 'exit-code', operator: 'equals', value }],
+    });
+    const stateOf = (
+      run: { view(): { steps: readonly { id: string; state: string }[] } },
+      id: string,
+    ) => stepOf(run.view().steps, id)?.state;
+
+    /** Start, a Parallel with branches x and y, their Join, and a block after it. */
+    const forked = (join: object = {}): AutomationV2 =>
+      flow(
+        [
+          { id: 'fork', type: 'parallel' },
+          block('x'),
+          block('y'),
+          { id: 'meet', type: 'join', parallel: 'fork', ...join },
+          block('after'),
+        ],
+        [
+          { from: 'start', to: 'fork' },
+          { from: 'fork', to: 'x' },
+          { from: 'fork', to: 'y' },
+          { from: 'x', to: 'meet' },
+          { from: 'y', to: 'meet' },
+          { from: 'meet', to: 'after' },
+        ],
+      );
+
+    it('takes one side of an If and skips the other', async () => {
+      script = [COMPLETED, COMPLETED];
+      const automation = flow(
+        [
+          block('a'),
+          {
+            id: 'check',
+            type: 'if',
+            condition: {
+              match: 'all',
+              rules: [{ block: 'a', field: 'result', operator: 'is', value: 'completed' }],
+            },
+          },
+          block('yes'),
+          block('no'),
+        ],
+        [
+          { from: 'start', to: 'a' },
+          { from: 'a', to: 'check' },
+          { from: 'check', output: 'true', to: 'yes' },
+          { from: 'check', output: 'false', to: 'no' },
+        ],
+      );
+      const running = start(automation);
+      const result = await running.result;
+
+      expect(result).toMatchObject({ status: 'completed', failedSteps: [] });
+      expect(started).toHaveLength(2);
+      expect(stateOf(running, 'yes')).toBe('completed');
+      expect(stateOf(running, 'no')).toBe('skipped');
+      const recorded = history.listAutomationRuns('work', 'flow')[0]?.steps;
+      expect(stepOf(recorded, 'no')?.state).toBe('skipped');
+    });
+
+    it('reads the exit code of a failed block that an Error output handled', async () => {
+      script = [failedResult(3), COMPLETED];
+      const automation = flow(
+        [
+          block('a'),
+          { id: 'check', type: 'if', condition: exitCodeIs('a', 3) },
+          block('three'),
+          block('other'),
+        ],
+        [
+          { from: 'start', to: 'a' },
+          { from: 'a', output: 'error', to: 'check' },
+          { from: 'check', output: 'true', to: 'three' },
+          { from: 'check', output: 'false', to: 'other' },
+        ],
+      );
+      const running = start(automation);
+      const result = await running.result;
+
+      expect(result).toMatchObject({ status: 'completed', failedSteps: ['a'] });
+      expect(result.failure).toBeUndefined();
+      expect(stateOf(running, 'three')).toBe('completed');
+      expect(stateOf(running, 'other')).toBe('skipped');
+    });
+
+    const routed = (): AutomationV2 =>
+      flow(
+        [
+          block('a'),
+          {
+            id: 'route',
+            type: 'switch',
+            cases: [
+              { id: 'seven', condition: exitCodeIs('a', 7) },
+              { id: 'zero', condition: exitCodeIs('a', 0) },
+            ],
+          },
+          block('on-seven'),
+          block('on-zero'),
+          block('fallback'),
+        ],
+        [
+          { from: 'start', to: 'a' },
+          { from: 'a', output: 'next', to: 'route' },
+          { from: 'a', output: 'error', to: 'route' },
+          { from: 'route', output: 'seven', to: 'on-seven' },
+          { from: 'route', output: 'zero', to: 'on-zero' },
+          { from: 'route', output: 'default', to: 'fallback' },
+        ],
+      );
+
+    it('takes the first Switch case that holds', async () => {
+      script = [COMPLETED, COMPLETED];
+      const running = start(routed());
+      await running.result;
+      expect([
+        stateOf(running, 'on-seven'),
+        stateOf(running, 'on-zero'),
+        stateOf(running, 'fallback'),
+      ]).toEqual(['skipped', 'completed', 'skipped']);
+    });
+
+    it('takes Default when no case holds', async () => {
+      script = [failedResult(2), COMPLETED];
+      const running = start(routed());
+      await running.result;
+      expect([
+        stateOf(running, 'on-seven'),
+        stateOf(running, 'on-zero'),
+        stateOf(running, 'fallback'),
+      ]).toEqual(['skipped', 'skipped', 'completed']);
+    });
+
+    it('fails an If whose rule reads an exit code that was never left', async () => {
+      const automation = flow(
+        [
+          { id: 'pause', type: 'wait-for-time', seconds: 1 },
+          { id: 'check', type: 'if', condition: exitCodeIs('pause', 0) },
+          block('yes'),
+        ],
+        [
+          { from: 'start', to: 'pause' },
+          { from: 'pause', to: 'check' },
+          { from: 'check', output: 'true', to: 'yes' },
+        ],
+      );
+      expect(await start(automation).result).toMatchObject({
+        status: 'failed',
+        failure: { stepId: 'check', kind: 'condition' },
+      });
+      expect(started).toHaveLength(0);
+    });
+
+    it('stops when a block fails with nothing on its Error output', async () => {
+      script = [failedResult()];
+      const automation = flow(
+        [block('a'), block('b')],
+        [
+          { from: 'start', to: 'a' },
+          { from: 'a', to: 'b' },
+        ],
+      );
+      expect(await start(automation).result).toMatchObject({
+        status: 'failed',
+        failure: { stepId: 'a' },
+      });
+    });
+
+    it('starts every branch of a Parallel, and goes on only when all have ended', async () => {
+      const running = start(forked());
+      await until(() => started.length === 2);
+      expect(stateOf(running, 'x')).toBe('running');
+      expect(stateOf(running, 'y')).toBe('running');
+
+      started[0]?.finish(COMPLETED);
+      await until(() => stateOf(running, 'x') === 'completed');
+      expect(started).toHaveLength(2);
+      expect(stateOf(running, 'meet')).toBe('idle');
+
+      started[1]?.finish(COMPLETED);
+      await until(() => started.length === 3);
+      started[2]?.finish(COMPLETED);
+      expect(await running.result).toMatchObject({ status: 'completed', failedSteps: [] });
+      expect(stateOf(running, 'meet')).toBe('completed');
+    });
+
+    it('ends the other branches when one fails, by default', async () => {
+      const running = start(forked());
+      await until(() => started.length === 2);
+      started[0]?.finish(failedResult(4));
+
+      expect(await running.result).toMatchObject({
+        status: 'failed',
+        failure: { stepId: 'x', kind: 'exit-code' },
+      });
+      expect(started[1]?.cancelled).toBe(true);
+      expect(stateOf(running, 'y')).toBe('cancelled');
+      expect(stateOf(running, 'meet')).toBe('failed');
+      expect(stateOf(running, 'after')).toBe('idle');
+      expect(started).toHaveLength(2);
+    });
+
+    it('lets the other branches finish when the Join says so, and then fails', async () => {
+      const running = start(forked({ onBranchFailure: 'let-finish' }));
+      await until(() => started.length === 2);
+      started[0]?.finish(failedResult());
+      await until(() => stateOf(running, 'x') === 'failed');
+      expect(started[1]?.cancelled).toBe(false);
+      expect(stateOf(running, 'y')).toBe('running');
+
+      started[1]?.finish(COMPLETED);
+      expect(await running.result).toMatchObject({
+        status: 'failed',
+        failure: { stepId: 'x' },
+        failedSteps: ['x', 'meet'],
+      });
+      expect(stateOf(running, 'y')).toBe('completed');
+      expect(stateOf(running, 'after')).toBe('idle');
+    });
+
+    it('does not fail the Join for a branch failure an Error output handled', async () => {
+      const automation = flow(
+        [
+          { id: 'fork', type: 'parallel' },
+          block('x'),
+          block('y'),
+          block('notify'),
+          { id: 'meet', type: 'join', parallel: 'fork' },
+        ],
+        [
+          { from: 'start', to: 'fork' },
+          { from: 'fork', to: 'x' },
+          { from: 'fork', to: 'y' },
+          { from: 'x', output: 'error', to: 'notify' },
+          { from: 'notify', to: 'meet' },
+          { from: 'y', to: 'meet' },
+        ],
+      );
+      script = [failedResult(), COMPLETED, COMPLETED];
+      const result = await start(automation).result;
+      expect(result).toMatchObject({ status: 'completed', failedSteps: ['x'] });
+      expect(started).toHaveLength(3);
+    });
+
+    it('ends every branch when a failure reaches the outer Parallel', async () => {
+      const automation = flow(
+        [
+          { id: 'outer', type: 'parallel' },
+          { id: 'inner', type: 'parallel' },
+          block('a'),
+          block('b'),
+          block('c'),
+          { id: 'inner-join', type: 'join', parallel: 'inner' },
+          { id: 'outer-join', type: 'join', parallel: 'outer' },
+        ],
+        [
+          { from: 'start', to: 'outer' },
+          { from: 'outer', to: 'inner' },
+          { from: 'outer', to: 'c' },
+          { from: 'inner', to: 'a' },
+          { from: 'inner', to: 'b' },
+          { from: 'a', to: 'inner-join' },
+          { from: 'b', to: 'inner-join' },
+          { from: 'inner-join', to: 'outer-join' },
+          { from: 'c', to: 'outer-join' },
+        ],
+      );
+      const running = start(automation);
+      await until(() => started.length === 3);
+      started[0]?.finish(failedResult());
+
+      expect(await running.result).toMatchObject({ status: 'failed', failure: { stepId: 'a' } });
+      expect(started[1]?.cancelled).toBe(true);
+      expect(started[2]?.cancelled).toBe(true);
+    });
+
+    it('asks about manual blocks on different branches at the same time', async () => {
+      const automation = flow(
+        [
+          { id: 'fork', type: 'parallel' },
+          { id: 'one', type: 'wait-for-manual-action', message: 'First' },
+          { id: 'two', type: 'wait-for-manual-action', message: 'Second' },
+          { id: 'meet', type: 'join', parallel: 'fork' },
+        ],
+        [
+          { from: 'start', to: 'fork' },
+          { from: 'fork', to: 'one' },
+          { from: 'fork', to: 'two' },
+          { from: 'one', to: 'meet' },
+          { from: 'two', to: 'meet' },
+        ],
+      );
+      const answers = new Map<string, (answer: ManualAnswer) => void>();
+      const running = start(automation, {
+        askForAction: ({ stepId }) =>
+          new Promise((resolve) => {
+            answers.set(stepId, resolve);
+          }),
+      });
+      await until(() => answers.size === 2);
+      answers.get('two')?.('confirmed');
+      await until(() => stateOf(running, 'two') === 'completed');
+      expect(stateOf(running, 'one')).toBe('running');
+      answers.get('one')?.('confirmed');
+      expect((await running.result).status).toBe('completed');
+    });
+
+    it('cancels every branch of a Parallel', async () => {
+      const running = start(forked());
+      await until(() => started.length === 2);
+      running.cancel();
+
+      const result = await running.result;
+      expect(result.status).toBe('cancelled');
+      expect(result.failure).toBeUndefined();
+      expect(started.every(({ cancelled }) => cancelled)).toBe(true);
+      expect(stateOf(running, 'after')).toBe('idle');
+    });
+
+    it('runs a block reached from two outputs of one block only once', async () => {
+      script = [COMPLETED, COMPLETED];
+      const automation = flow(
+        [block('a'), block('b')],
+        [
+          { from: 'start', to: 'a' },
+          { from: 'a', to: 'b' },
+          { from: 'a', output: 'error', to: 'b' },
+        ],
+      );
+      await start(automation).result;
+      expect(started).toHaveLength(2);
+    });
   });
 
   it('runs even if its record cannot be written', async () => {
@@ -562,6 +925,7 @@ writeFileSync(to, (from === '-' ? 'start' : readFileSync(from, 'utf8')) + ':' + 
             values: { from: '{{steps.one.outputs.file}}', to: '{{run.folder}}/two.txt' },
           },
           { id: 'bad', type: 'run', tool: failing.manifest.id, onFailure: 'continue' },
+          { id: 'pause', type: 'wait-for-time', seconds: 1 },
         ]),
       ).result;
 
@@ -571,10 +935,10 @@ writeFileSync(to, (from === '-' ? 'start' : readFileSync(from, 'utf8')) + ':' + 
 
       const [record] = history.listAutomationRuns('work', 'flow');
       expect(JSON.stringify(record)).not.toContain(SECRET);
-      const stepRun = history.get('work', record?.steps[1]?.toolRunId ?? '');
+      const stepRun = history.get('work', stepOf(record?.steps, 'two')?.toolRunId ?? '');
       expect(stepRun?.status).toBe('completed');
       expect(JSON.stringify(stepRun)).not.toContain(SECRET);
-      expect(history.get('work', record?.steps[2]?.toolRunId ?? '')?.exitCode).toBe(7);
+      expect(history.get('work', stepOf(record?.steps, 'bad')?.toolRunId ?? '')?.exitCode).toBe(7);
     });
   },
 );

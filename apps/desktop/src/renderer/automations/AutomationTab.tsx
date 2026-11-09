@@ -63,7 +63,9 @@ function StepRow({ step, state, tools, problems, onContinue, onShowTool }: StepR
       data-step-id={step.id}
       data-state={state?.state ?? 'idle'}
     >
-      <RunStateIcon state={state?.state ?? 'idle'} />
+      <RunStateIcon
+        state={state === undefined || state.state === 'skipped' ? 'idle' : state.state}
+      />
       <div className="automation-step-text">
         <span className="truncate" title={stepLabel(step, tools)}>
           {stepLabel(step, tools)}
