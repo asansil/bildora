@@ -1,4 +1,4 @@
-import { automationSchema } from '@bildora/protocol';
+import { automationV1Schema } from '@bildora/protocol';
 import { describe, expect, it } from 'vitest';
 import { convertAutomationV1 } from './convert-v1.js';
 
@@ -11,7 +11,12 @@ const wait = (id: string, step: string, onFailure?: string) => ({
 });
 
 function convert(steps: object[]) {
-  const automation = automationSchema.parse({ schemaVersion: 1, id: 'flow', name: 'Flow', steps });
+  const automation = automationV1Schema.parse({
+    schemaVersion: 1,
+    id: 'flow',
+    name: 'Flow',
+    steps,
+  });
   const result = convertAutomationV1(automation);
   if (!result.ok) return { problems: result.problems };
   const { blocks, connections } = result.automation;

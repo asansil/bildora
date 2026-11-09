@@ -343,3 +343,90 @@ test('the command palette starts an automation', async () => {
     'completed',
   );
 });
+
+test('an automation with branches runs, shows what it skipped, and cannot be edited as a list', async () => {
+  test.setTimeout(90_000);
+  await fakeTool('bad', 'Bad', ['exit', '7']);
+  await fakeTool('good', 'Good', ['exit', '0']);
+  const file = join(dataDir, 'workspaces', 'default', 'automations', 'branching.yaml');
+  const text = `schemaVersion: 2
+id: branching
+name: Branching
+blocks:
+  - { id: start, type: start }
+  - { id: check, type: run, tool: bad }
+  - { id: handled, type: if, condition: { match: all, rules: [{ block: check, field: exit-code, operator: equals, value: 7 }] } }
+  - { id: cleanup, type: run, tool: good }
+  - { id: other, type: run, tool: good }
+connections:
+  - { from: start, to: check }
+  - { from: check, output: error, to: handled }
+  - { from: handled, output: 'true', to: cleanup }
+  - { from: handled, output: 'false', to: other }
+`;
+  await writeFile(file, text);
+
+  const { window } = await launchShell();
+  await openAutomation(window, 'Branching');
+  await expect(window.getByTestId('automation-branched')).toBeVisible();
+  await expect(window.getByRole('button', { name: 'Edit', exact: true })).toBeDisabled();
+
+  await window.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(window.locator('.tool-header .state-badge')).toHaveText('Completed, 1 step failed', {
+    timeout: 30_000,
+  });
+  await expect(step(window, 'check')).toHaveAttribute('data-state', 'failed');
+  await expect(step(window, 'cleanup')).toHaveAttribute('data-state', 'completed');
+  await expect(step(window, 'other')).toHaveAttribute('data-state', 'skipped');
+  await expect(step(window, 'other')).toContainText('On a path this run did not take');
+  expect(await readFile(file, 'utf8')).toBe(text);
+});
+
+test('a list of steps from before blocks still runs, and is rewritten only when saved', async () => {
+  test.setTimeout(90_000);
+  await fakeTool('good', 'Good', ['exit', '0']);
+  const old = await writeAutomation(
+    'old-list',
+    'Old list',
+    `  - { id: first, type: run, tool: good, onFailure: continue }
+  - { id: second, type: run, tool: good }
+`,
+  );
+  const before = await readFile(old, 'utf8');
+
+  const { window } = await launchShell();
+  await openAutomation(window, 'Old list');
+  await expect(window.getByTestId('automation-branched')).toHaveCount(0);
+  await window.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(window.locator('.tool-header .state-badge')).toHaveText('Completed', {
+    timeout: 30_000,
+  });
+  expect(await readFile(old, 'utf8')).toBe(before);
+
+  await window.getByRole('button', { name: 'Edit', exact: true }).click();
+  await window.getByRole('button', { name: 'Save automation' }).click();
+  await expect(window.getByTestId('automation-detail')).toBeVisible();
+  const saved = await readFile(old, 'utf8');
+  expect(saved).toContain('schemaVersion: 2');
+  expect(saved).toContain('blocks:');
+});
+
+test('a list of steps that cannot become blocks shows as a problem and stays as it is', async () => {
+  await fakeTool('good', 'Good', ['exit', '0']);
+  const file = await writeAutomation(
+    'overlap',
+    'Overlap',
+    `  - { id: one, type: run, tool: good, background: true }
+  - { id: two, type: run, tool: good, background: true }
+  - { id: w1, type: wait-for-completion, step: one }
+  - { id: w2, type: wait-for-completion, step: two }
+`,
+  );
+  const before = await readFile(file, 'utf8');
+
+  const { window } = await launchShell();
+  await rail(window, 'Automations').click();
+  await expect(automationsPanel(window)).toContainText('overlap.yaml');
+  await expect(automationsPanel(window)).toContainText('cannot be converted');
+  expect(await readFile(file, 'utf8')).toBe(before);
+});

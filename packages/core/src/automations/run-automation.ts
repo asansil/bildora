@@ -8,16 +8,11 @@ import {
   replaceRunReferences,
   usesRunFolder,
 } from '@bildora/protocol';
-import type {
-  Automation,
-  AutomationBlock,
-  AutomationCondition,
-  AutomationV2,
-  RunBlock,
-} from '@bildora/protocol';
+import type { AutomationBlock, AutomationCondition, Automation, RunBlock } from '@bildora/protocol';
 import type {
   AutomationFailure,
   AutomationStepRecord,
+  TakenPath,
   AutomationTrigger,
   RunHistory,
 } from '../history/run-history.js';
@@ -30,7 +25,6 @@ import type { RecordedToolRun } from '../runner/recorded-run.js';
 import { automationRunFolder } from '../storage/data-directory.js';
 import { DEFAULT_PREFERENCES, readPreferences } from '../storage/preferences.js';
 import { removeRunFolders } from './automation-store.js';
-import { convertAutomationV1 } from './convert-v1.js';
 
 const MS_PER_SECOND = 1000;
 
@@ -62,8 +56,7 @@ export interface ManualRequest {
 }
 
 export interface AutomationRunOptions {
-  /** A list of steps is converted to blocks first. One that cannot be converted throws. */
-  readonly automation: Automation | AutomationV2;
+  readonly automation: Automation;
   readonly workspaceId: string;
   readonly trigger: AutomationTrigger;
   readonly dataDir: string;
@@ -97,6 +90,8 @@ export interface AutomationRunView {
   readonly automationName: string;
   readonly status: 'running' | 'completed' | 'failed' | 'cancelled';
   readonly steps: readonly StepView[];
+  /** The connections followed so far. */
+  readonly paths: readonly TakenPath[];
 }
 
 export interface AutomationResult {
@@ -185,18 +180,6 @@ function outputsOf(
   return outputs;
 }
 
-/** The automation as blocks, converting a list of steps. */
-function blocksOf(automation: Automation | AutomationV2): AutomationV2 {
-  if (automation.schemaVersion === 2) {
-    return automation;
-  }
-  const converted = convertAutomationV1(automation);
-  if (!converted.ok) {
-    throw new Error(converted.problems.join(' '));
-  }
-  return converted.automation;
-}
-
 /** Where a path of blocks runs, so that a Parallel can end its branches without ending the rest. */
 interface Scope {
   readonly controller: AbortController;
@@ -255,7 +238,7 @@ function cancelScope(scope: Scope): void {
  */
 export function startAutomationRun(options: AutomationRunOptions): AutomationRun {
   const { workspaceId, trigger, dataDir, history, pathVariables } = options;
-  const automation = blocksOf(options.automation);
+  const { automation } = options;
   const variables: PathVariables = pathVariables ?? new Map<string, string>();
   const delay = options.delay ?? waitFor;
   const runId = options.runId ?? randomUUID();
@@ -272,6 +255,8 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
   const reached = new Set<string>();
   let status: AutomationRunView['status'] = 'running';
   let cancelledByUser = false;
+  /** The connections the run followed, in order. */
+  const taken: TakenPath[] = [];
   /** What stopped the run: the first failure that nothing handled. */
   let stopped: AutomationFailure | undefined;
 
@@ -283,6 +268,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       automationName: automation.name,
       status,
       steps: [...steps.values()],
+      paths: [...taken],
     };
   }
 
@@ -322,7 +308,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     });
     change();
     record(() => {
-      history.updateAutomationSteps(runId, records());
+      history.updateAutomationSteps(runId, records(), taken);
     });
   }
 
@@ -528,7 +514,11 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     scope: Scope,
     region: Region | undefined,
   ): Promise<void> {
-    await Promise.all(targets(id, output).map((to) => follow(to, scope, region)));
+    const next = targets(id, output);
+    for (const to of next) {
+      taken.push({ from: id, output, to });
+    }
+    await Promise.all(next.map((to) => follow(to, scope, region)));
   }
 
   /** What follows a block that did work: on to the next, or to wherever its failure leads. */
@@ -690,6 +680,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
         durationMs,
         failure,
         steps: records(),
+        paths: taken,
       });
     });
     change();

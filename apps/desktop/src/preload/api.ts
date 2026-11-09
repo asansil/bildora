@@ -71,7 +71,7 @@ export interface ShellApi {
   startAutomation(id: string): Promise<AutomationRunStateView>;
   cancelAutomation(runId: string): Promise<void>;
   /** Answers the manual step a run is waiting on. */
-  confirmAutomation(runId: string): Promise<void>;
+  confirmAutomation(runId: string, stepId?: string): Promise<void>;
   listAutomationRuns(): Promise<readonly AutomationRunStateView[]>;
   /** Calls back on every automation run change, and returns how to stop listening. */
   onAutomationsChanged(listener: (runs: readonly AutomationRunStateView[]) => void): () => void;

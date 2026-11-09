@@ -2,8 +2,8 @@ import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { automationSchema, automationV2Schema, toolManifestSchema } from '@bildora/protocol';
-import type { Automation, AutomationInput, AutomationV2 } from '@bildora/protocol';
+import { automationV1Schema, automationSchema, toolManifestSchema } from '@bildora/protocol';
+import type { Automation, AutomationV1Input } from '@bildora/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RunHistory } from '../history/run-history.js';
 import { saveProfile } from '../profiles/profile-store.js';
@@ -12,6 +12,7 @@ import type { RegisteredTool } from '../registry/tool-registry.js';
 import type { RecordedToolRun } from '../runner/recorded-run.js';
 import type { RunResult } from '../runner/run-tool.js';
 import { createMemorySecretStore } from '../secrets/secret-store.js';
+import { convertAutomationV1 } from './convert-v1.js';
 import { startAutomationRun } from './run-automation.js';
 import type { AutomationRunOptions, ManualAnswer, StepStarter } from './run-automation.js';
 import { startToolRun } from './tool-starter.js';
@@ -52,11 +53,18 @@ function tool(id: string, extra: Record<string, unknown> = {}): RegisteredTool {
   };
 }
 
-function automationOf(steps: AutomationInput['steps']): Automation {
-  return automationSchema.parse({ schemaVersion: 1, id: 'flow', name: 'Flow', steps });
+/** An automation as blocks, from the list of steps it used to be written as. */
+function automationOf(steps: AutomationV1Input['steps'], id = 'flow', name = 'Flow'): Automation {
+  const converted = convertAutomationV1(
+    automationV1Schema.parse({ schemaVersion: 1, id, name, steps }),
+  );
+  if (!converted.ok) {
+    throw new Error(converted.problems.join(' '));
+  }
+  return converted.automation;
 }
 
-const run = (id: string, extra: object = {}): AutomationInput['steps'][number] => ({
+const run = (id: string, extra: object = {}): AutomationV1Input['steps'][number] => ({
   id,
   type: 'run',
   tool: 'sample',
@@ -114,7 +122,7 @@ describe('startAutomationRun', () => {
     return Promise.resolve(toolRun);
   };
 
-  function start(automation: Automation | AutomationV2, extra: Partial<AutomationRunOptions> = {}) {
+  function start(automation: Automation, extra: Partial<AutomationRunOptions> = {}) {
     return startAutomationRun({
       automation,
       workspaceId: 'work',
@@ -247,7 +255,7 @@ describe('startAutomationRun', () => {
       run('slow', { background: true }),
       { id: 'meet', type: 'wait-for-completion', step: 'slow', onFailure: 'continue' },
       run('after'),
-    ] satisfies AutomationInput['steps'];
+    ] satisfies AutomationV1Input['steps'];
     script = [failedResult(), COMPLETED];
     const result = await start(automationOf(steps)).result;
 
@@ -283,7 +291,7 @@ describe('startAutomationRun', () => {
     script = [COMPLETED];
     const asked: string[] = [];
     const steps = [{ id: 'look', type: 'wait-for-manual-action', message: 'Look' }, run('next')];
-    const result = await start(automationOf(steps as AutomationInput['steps']), {
+    const result = await start(automationOf(steps as AutomationV1Input['steps']), {
       askForAction: ({ message }) => {
         asked.push(message);
         return Promise.resolve('confirmed' satisfies ManualAnswer);
@@ -295,7 +303,7 @@ describe('startAutomationRun', () => {
   });
 
   it('reaches back to its client only after the client holds the run', async () => {
-    const steps: AutomationInput['steps'] = [
+    const steps: AutomationV1Input['steps'] = [
       { id: 'look', type: 'wait-for-manual-action', message: 'Look' },
     ];
     let returned = false;
@@ -312,7 +320,7 @@ describe('startAutomationRun', () => {
   });
 
   it('fails a manual step at once when nobody can answer', async () => {
-    const steps: AutomationInput['steps'] = [
+    const steps: AutomationV1Input['steps'] = [
       { id: 'look', type: 'wait-for-manual-action', message: 'Look' },
     ];
     expect(await start(automationOf(steps)).result).toMatchObject({
@@ -323,7 +331,7 @@ describe('startAutomationRun', () => {
 
   it('keeps going after nobody answered a step set to continue', async () => {
     script = [COMPLETED];
-    const steps: AutomationInput['steps'] = [
+    const steps: AutomationV1Input['steps'] = [
       { id: 'look', type: 'wait-for-manual-action', message: 'Look', onFailure: 'continue' },
       run('next'),
     ];
@@ -339,7 +347,7 @@ describe('startAutomationRun', () => {
     ['a manual step', [{ id: 'look', type: 'wait-for-manual-action', message: 'Look' }]],
     ['a background step', [run('hang', { background: true }), run('hang2')]],
     ['a retry', [run('hang', { onFailure: { retry: { attempts: 5, delaySeconds: 600 } } })]],
-  ] as [string, AutomationInput['steps']][])('cancels during %s', async (label, steps) => {
+  ] as [string, AutomationV1Input['steps']][])('cancels during %s', async (label, steps) => {
     if (label === 'a retry') {
       script = [failedResult()];
     }
@@ -472,8 +480,8 @@ describe('startAutomationRun', () => {
       tool: 'sample',
       ...extra,
     });
-    const flow = (blocks: object[], connections: object[]): AutomationV2 =>
-      automationV2Schema.parse({
+    const flow = (blocks: object[], connections: object[]): Automation =>
+      automationSchema.parse({
         schemaVersion: 2,
         id: 'flow',
         name: 'Flow',
@@ -490,7 +498,7 @@ describe('startAutomationRun', () => {
     ) => stepOf(run.view().steps, id)?.state;
 
     /** Start, a Parallel with branches x and y, their Join, and a block after it. */
-    const forked = (join: object = {}): AutomationV2 =>
+    const forked = (join: object = {}): Automation =>
       flow(
         [
           { id: 'fork', type: 'parallel' },
@@ -541,6 +549,12 @@ describe('startAutomationRun', () => {
       expect(stateOf(running, 'no')).toBe('skipped');
       const recorded = history.listAutomationRuns('work', 'flow')[0]?.steps;
       expect(stepOf(recorded, 'no')?.state).toBe('skipped');
+      expect(history.listAutomationRuns('work', 'flow')[0]?.paths).toEqual([
+        { from: 'start', output: 'next', to: 'a' },
+        { from: 'a', output: 'next', to: 'check' },
+        { from: 'check', output: 'true', to: 'yes' },
+      ]);
+      expect(running.view().paths).toHaveLength(3);
     });
 
     it('reads the exit code of a failed block that an Error output handled', async () => {
@@ -568,7 +582,7 @@ describe('startAutomationRun', () => {
       expect(stateOf(running, 'other')).toBe('skipped');
     });
 
-    const routed = (): AutomationV2 =>
+    const routed = (): Automation =>
       flow(
         [
           block('a'),

@@ -1,8 +1,7 @@
 import { findStepOutputReferences, findUnknownReferences, guarantees } from '@bildora/protocol';
 import type {
-  Automation,
   AutomationCondition,
-  AutomationV2,
+  Automation,
   Guarantee,
   RunBlock,
   ToolParameter,
@@ -11,7 +10,6 @@ import { getProfile, isSecretParameter } from '../profiles/profile-store.js';
 import type { Profile } from '../profiles/profile-store.js';
 import type { RegisteredTool, ToolRegistry } from '../registry/tool-registry.js';
 import { findVisibleTool } from '../workspaces/visible-tools.js';
-import { convertAutomationV1 } from './convert-v1.js';
 
 /** Something that keeps an automation from running. */
 export interface AutomationProblem {
@@ -37,7 +35,7 @@ function hasRightType(parameter: ToolParameter, value: StepValue): boolean {
 }
 
 function checkReferences(
-  automation: AutomationV2,
+  automation: Automation,
   certain: Guarantee,
   text: string,
   tools: ReadonlyMap<string, RegisteredTool>,
@@ -66,7 +64,7 @@ function checkReferences(
 }
 
 function checkValues(
-  automation: AutomationV2,
+  automation: Automation,
   certain: Guarantee,
   step: RunBlock,
   tool: RegisteredTool,
@@ -120,7 +118,7 @@ async function findTool(
 
 /** Rules that read what a block left, which has to exist whichever way the run got there. */
 function checkConditions(
-  automation: AutomationV2,
+  automation: Automation,
   blockId: string,
   condition: AutomationCondition,
   certain: Guarantee,
@@ -142,33 +140,19 @@ function checkConditions(
   return problems;
 }
 
-/** An automation as blocks, or what stops a list of steps from becoming them. */
-function blocksOf(automation: Automation | AutomationV2): AutomationV2 | readonly string[] {
-  if (automation.schemaVersion === 2) {
-    return automation;
-  }
-  const converted = convertAutomationV1(automation);
-  return converted.ok ? converted.automation : converted.problems;
-}
-
 /**
  * Checks an automation against what is installed in its Workspace. It only reports: an automation
  * whose tool has gone stays as it was, and works again if the tool comes back.
  */
 export async function checkAutomation(
-  source: Automation | AutomationV2,
+  automation: Automation,
   registry: ToolRegistry,
   workspaceId: string,
 ): Promise<readonly AutomationProblem[]> {
-  const automation = blocksOf(source);
-  if (Array.isArray(automation)) {
-    return (automation as readonly string[]).map((message) => ({ stepId: '', message }));
-  }
-  const flow = automation as AutomationV2;
-  const known = guarantees(flow);
+  const known = guarantees(automation);
   const nobody: Guarantee = { completed: new Set(), ran: new Set() };
   const tools = new Map<string, RegisteredTool>();
-  for (const block of flow.blocks) {
+  for (const block of automation.blocks) {
     if (block.type === 'run') {
       const tool = await findTool(registry, workspaceId, block.tool);
       if (typeof tool !== 'string') {
@@ -178,17 +162,17 @@ export async function checkAutomation(
   }
 
   const problems: AutomationProblem[] = [];
-  for (const block of flow.blocks) {
+  for (const block of automation.blocks) {
     const certain = known.get(block.id) ?? nobody;
     const report = (message: string): void => {
       problems.push({ stepId: block.id, message });
     };
     if (block.type === 'if') {
-      checkConditions(flow, block.id, block.condition, certain).forEach(report);
+      checkConditions(automation, block.id, block.condition, certain).forEach(report);
     }
     if (block.type === 'switch') {
       block.cases
-        .flatMap(({ condition }) => checkConditions(flow, block.id, condition, certain))
+        .flatMap(({ condition }) => checkConditions(automation, block.id, condition, certain))
         .forEach(report);
     }
     if (block.type !== 'run') {
@@ -207,7 +191,7 @@ export async function checkAutomation(
     if (block.profile !== undefined && profile === undefined) {
       report(`Profile "${block.profile}" no longer exists`);
     }
-    checkValues(flow, certain, block, tool, tools).forEach(report);
+    checkValues(automation, certain, block, tool, tools).forEach(report);
     checkRequired(block, tool, profile).forEach(report);
   }
   return problems;

@@ -17,6 +17,7 @@ import { t } from '../shared/i18n/translate.js';
 import {
   automationDraftSchema,
   automationIdSchema,
+  automationConfirmSchema,
   automationRunIdSchema,
   categoryMenuSchema,
   createWorkspaceSchema,
@@ -305,8 +306,8 @@ export function registerIpc(context: IpcContext): void {
   handle(CHANNELS.automationsCancel, automationRunIdSchema, ({ runId }) => {
     automations.cancel(runId);
   });
-  handle(CHANNELS.automationsConfirm, automationRunIdSchema, ({ runId }) => {
-    automations.confirm(runId);
+  handle(CHANNELS.automationsConfirm, automationConfirmSchema, ({ runId, stepId }) => {
+    automations.confirm(runId, stepId);
   });
   handle(CHANNELS.automationsRuns, noInputSchema, () => automations.views());
   handle(CHANNELS.automationsHistory, automationIdSchema, ({ id }) =>

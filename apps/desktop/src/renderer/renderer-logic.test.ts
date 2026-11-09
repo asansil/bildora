@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  backgroundSteps,
+  blockLabel,
   failureChoice,
   moveStep,
   newStep,
@@ -8,7 +8,6 @@ import {
   referenceOptions,
   runnableTools,
   stepLabel,
-  withBackground,
   withFailureChoice,
   without,
 } from './automations/automation-draft.js';
@@ -57,12 +56,6 @@ describe('automation drafts', () => {
   it('starts a step only when there is something for it to work with', () => {
     expect(newStep('run', [], [])).toBeUndefined();
     expect(newStep('run', [], tools)).toEqual(run);
-    expect(newStep('wait-for-completion', [run], tools)).toBeUndefined();
-    expect(newStep('wait-for-completion', [{ ...run, background: true }], tools)).toEqual({
-      id: 'wait',
-      type: 'wait-for-completion',
-      step: 'report',
-    });
     expect(newStep('wait-for-time', [], tools)).toMatchObject({ seconds: 60 });
     expect(newStep('wait-for-manual-action', [], tools)?.id).toBe('review');
   });
@@ -76,9 +69,6 @@ describe('automation drafts', () => {
   });
 
   it('offers only what came before', () => {
-    const steps = [{ ...run, background: true }, pause, run];
-    expect(backgroundSteps(steps, 0)).toEqual([]);
-    expect(backgroundSteps(steps, 2).map(({ id }) => id)).toEqual(['report']);
     expect(referenceOptions([run, pause], 0, tools).map(({ value }) => value)).toEqual([
       '{{run.folder}}/',
     ]);
@@ -96,26 +86,28 @@ describe('automation drafts', () => {
     expect(failureChoice(pause)).toBe('stop');
   });
 
-  it('drops the policy of a step moved to the background', () => {
-    const step = withBackground(withFailureChoice(run, 'continue'), true);
-    expect(step).toEqual({ ...run, background: true });
-    expect(withBackground(step, false)).toEqual(run);
-  });
-
   it('removes fields altogether', () => {
     expect(Object.keys(without({ a: 1, b: 2 }, 'a'))).toEqual(['b']);
   });
 
   it('describes each kind of step', () => {
     expect(stepLabel(run, tools)).toBe('Run ACME.REPORT');
-    expect(stepLabel({ ...run, tool: 'gone', background: true }, tools)).toBe(
-      'Run gone in the background',
-    );
-    expect(stepLabel({ id: 'w', type: 'wait-for-completion', step: 'x' }, tools)).toBe(
-      'Wait for x',
-    );
+    expect(stepLabel({ ...run, tool: 'gone' }, tools)).toBe('Run gone');
     expect(stepLabel({ ...pause, seconds: 1 }, tools)).toBe('Wait 1 second');
     expect(stepLabel(look, tools)).toBe('Look');
+  });
+
+  it('describes the blocks that only a file can hold', () => {
+    expect(blockLabel({ id: 'start', type: 'start' }, tools)).toBe('Start');
+    expect(blockLabel({ id: 'fork', type: 'parallel' }, tools)).toBe(
+      'Start parallel branches (fork)',
+    );
+    expect(blockLabel({ id: 'meet', type: 'join', parallel: 'fork' }, tools)).toBe(
+      'Join the branches (meet)',
+    );
+    expect(blockLabel({ id: 'report', type: 'run', tool: 'acme.report' }, tools)).toBe(
+      'Run ACME.REPORT',
+    );
   });
 });
 

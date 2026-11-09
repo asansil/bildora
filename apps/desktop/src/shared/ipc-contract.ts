@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { AutomationStep } from '@bildora/protocol';
+import type { AutomationBlock, LinearStep } from '@bildora/protocol';
 
 /** Longest path Windows accepts. */
 const PATH_MAX_LENGTH = 32_767;
@@ -82,7 +82,12 @@ export const startRunSchema = z.strictObject({
 });
 export const automationIdSchema = z.strictObject({ id: idSchema });
 export const automationRunIdSchema = z.strictObject({ runId: idSchema });
-/** The steps are checked by `automationSchema` in main, whose messages the editor can show. */
+export const automationConfirmSchema = z.strictObject({
+  runId: idSchema,
+  /** The block to answer, when a run waits on several at once. */
+  stepId: idSchema.optional(),
+});
+/** The steps are checked in main by `linearStepSchema`, whose messages the editor can show. */
 export const automationDraftSchema = z.strictObject({
   id: idSchema.optional(),
   name: textSchema.min(1),
@@ -156,7 +161,8 @@ export type StartRunInput = z.infer<typeof startRunSchema>;
 export type RunRequest = Omit<StartRunInput, 'id'>;
 export type SaveProfileInput = z.infer<typeof saveProfileSchema>;
 export type AutomationDraft = z.infer<typeof automationDraftSchema>;
-export type { AutomationStep };
+/** A step of the list editor. Automations with branches are shown but not edited as a list. */
+export type AutomationStep = LinearStep;
 
 export interface ShellPreferences {
   readonly historyRunLimit: number;
@@ -362,7 +368,12 @@ export interface AutomationView {
   readonly id: string;
   readonly name: string;
   readonly description?: string;
+  /** The list of steps, when the automation is a straight line. Empty when it is not. */
   readonly steps: readonly AutomationStep[];
+  /** False when the automation has branches or parallel work, which the list cannot show. */
+  readonly editable: boolean;
+  /** Every block, for showing an automation that is not a list. */
+  readonly blocks: readonly AutomationBlock[];
   /** What keeps it from running now. Empty means that it can run. */
   readonly problems: readonly AutomationProblemView[];
 }

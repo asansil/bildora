@@ -4,7 +4,7 @@ import type { RecordedParameter } from '../runner/resolve-values.js';
 import { DefinitionError } from '../storage/definition-error.js';
 
 const HISTORY_FILE = 'history.db';
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 /** Rows a listing returns at most. */
 const LIST_LIMIT = 500;
 
@@ -50,6 +50,15 @@ const UPGRADE_TO_AUTOMATIONS = `
   );
   CREATE INDEX automation_runs_by_automation
     ON automation_runs (workspace_id, automation_id, started_at DESC);
+`;
+
+/**
+ * What blocks add. A run from before them holds steps, and a client shows it as the list it was.
+ * `paths` holds the connections a run followed.
+ */
+const UPGRADE_TO_BLOCKS = `
+  ALTER TABLE automation_runs ADD COLUMN format TEXT NOT NULL DEFAULT 'steps';
+  ALTER TABLE automation_runs ADD COLUMN paths TEXT NOT NULL DEFAULT '[]';
 `;
 
 /** Runs older than Workspaces belong to the one every upgraded installation starts with. */
@@ -117,7 +126,17 @@ export interface AutomationFailure {
   readonly message: string;
 }
 
-/** One step of an automation run, as it stands. */
+/** Whether a run holds the steps of a list or the blocks of a graph. */
+export type AutomationRunFormat = 'steps' | 'blocks';
+
+/** A connection a run followed: the output of a block, and the block it led to. */
+export interface TakenPath {
+  readonly from: string;
+  readonly output: string;
+  readonly to: string;
+}
+
+/** One block of an automation run, as it stands. */
 export interface AutomationStepRecord {
   readonly id: string;
   readonly state: StepState;
@@ -140,7 +159,9 @@ export interface AutomationRunSummary {
   readonly durationMs?: number;
   /** What stopped the run. A step set to continue shows failed in `steps` and is not here. */
   readonly failure?: AutomationFailure;
+  readonly format: AutomationRunFormat;
   readonly steps: readonly AutomationStepRecord[];
+  readonly paths: readonly TakenPath[];
 }
 
 export interface AutomationRunStart {
@@ -158,6 +179,7 @@ export interface AutomationRunFinish {
   readonly durationMs: number;
   readonly failure?: AutomationFailure | undefined;
   readonly steps: readonly AutomationStepRecord[];
+  readonly paths: readonly TakenPath[];
 }
 
 /** Names an automation run whose record went, so that its folder can go too. */
@@ -204,12 +226,23 @@ interface AutomationRow {
   failure_kind: string | null;
   failure_message: string | null;
   steps: string;
+  format: AutomationRunFormat;
+  paths: string;
 }
 
 function stepsOf(text: string): readonly AutomationStepRecord[] {
   try {
     const parsed: unknown = JSON.parse(text);
     return Array.isArray(parsed) ? (parsed as AutomationStepRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function pathsOf(text: string): readonly TakenPath[] {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return Array.isArray(parsed) ? (parsed as TakenPath[]) : [];
   } catch {
     return [];
   }
@@ -234,7 +267,9 @@ function automationSummaryOf(row: AutomationRow): AutomationRunSummary {
             message: row.failure_message ?? '',
           },
         }),
+    format: row.format,
     steps: stepsOf(row.steps),
+    paths: pathsOf(row.paths),
   };
 }
 
@@ -303,7 +338,10 @@ export class RunHistory {
           if (version < 2) {
             database.exec(version === 0 ? SCHEMA : UPGRADE_TO_WORKSPACES);
           }
-          database.exec(UPGRADE_TO_AUTOMATIONS);
+          if (version < 3) {
+            database.exec(UPGRADE_TO_AUTOMATIONS);
+          }
+          database.exec(UPGRADE_TO_BLOCKS);
           database.pragma(`user_version = ${String(SCHEMA_VERSION)}`);
         })();
       }
@@ -390,8 +428,8 @@ export class RunHistory {
       .prepare(
         `INSERT INTO automation_runs
            (id, workspace_id, automation_id, automation_name, trigger, started_at, status, steps,
-            owner_pid)
-         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
+            owner_pid, format, paths)
+         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, 'blocks', '[]')`,
       )
       .run(
         run.runId,
@@ -406,17 +444,21 @@ export class RunHistory {
   }
 
   /** Stores where a run has got to, so that another process can show it. */
-  updateAutomationSteps(runId: string, steps: readonly AutomationStepRecord[]): void {
+  updateAutomationSteps(
+    runId: string,
+    steps: readonly AutomationStepRecord[],
+    paths: readonly TakenPath[],
+  ): void {
     this.database
-      .prepare('UPDATE automation_runs SET steps = ? WHERE id = ?')
-      .run(JSON.stringify(steps), runId);
+      .prepare('UPDATE automation_runs SET steps = ?, paths = ? WHERE id = ?')
+      .run(JSON.stringify(steps), JSON.stringify(paths), runId);
   }
 
   finishAutomationRun(runId: string, run: AutomationRunFinish): void {
     this.database
       .prepare(
         `UPDATE automation_runs SET status = ?, duration_ms = ?, failure_step = ?, failure_kind = ?,
-         failure_message = ?, steps = ? WHERE id = ?`,
+         failure_message = ?, steps = ?, paths = ? WHERE id = ?`,
       )
       .run(
         run.status,
@@ -425,6 +467,7 @@ export class RunHistory {
         run.failure?.kind ?? null,
         run.failure?.message ?? null,
         JSON.stringify(run.steps),
+        JSON.stringify(run.paths),
         runId,
       );
   }

@@ -1,16 +1,16 @@
-import { automationV2Schema } from '@bildora/protocol';
+import { automationSchema } from '@bildora/protocol';
 import type {
+  AutomationV1,
+  AutomationV1Step,
   Automation,
-  AutomationStep,
-  AutomationV2,
-  AutomationV2Input,
+  AutomationInput,
 } from '@bildora/protocol';
 
-type Block = AutomationV2Input['blocks'][number];
-type Connection = AutomationV2Input['connections'][number];
+type Block = AutomationInput['blocks'][number];
+type Connection = AutomationInput['connections'][number];
 
 export type ConversionResult =
-  | { readonly ok: true; readonly automation: AutomationV2 }
+  | { readonly ok: true; readonly automation: Automation }
   | { readonly ok: false; readonly problems: readonly string[] };
 
 /** A place a path leaves from, waiting to be joined to whatever comes next. */
@@ -37,10 +37,10 @@ const ID_MAX = 56;
  * nest cannot convert. A `continue` on the very last step has no next block to lead to, so there
  * the converted automation stops where the old one carried on.
  */
-export function convertAutomationV1(automation: Automation): ConversionResult {
+export function convertAutomationV1(automation: AutomationV1): ConversionResult {
   try {
     const converted = new Converter(automation.steps).convert(automation);
-    const checked = automationV2Schema.safeParse(converted);
+    const checked = automationSchema.safeParse(converted);
     if (!checked.success) {
       return { ok: false, problems: checked.error.issues.map((issue) => issue.message) };
     }
@@ -54,15 +54,15 @@ export function convertAutomationV1(automation: Automation): ConversionResult {
 class Converter {
   private readonly blocks: Block[] = [];
   private readonly connections: Connection[] = [];
-  private readonly steps: readonly AutomationStep[];
+  private readonly steps: readonly AutomationV1Step[];
   private readonly taken: Set<string>;
 
-  constructor(steps: readonly AutomationStep[]) {
+  constructor(steps: readonly AutomationV1Step[]) {
     this.steps = steps;
     this.taken = new Set(steps.map(({ id }) => id));
   }
 
-  convert(automation: Automation): AutomationV2Input {
+  convert(automation: AutomationV1): AutomationInput {
     const start = this.unique('start');
     this.blocks.push({ id: start, type: 'start', mode: 'button' });
     const body = this.sequence(0, this.steps.length);
@@ -146,7 +146,7 @@ class Converter {
 
   /** A Parallel of the background step and what runs beside it, ended by a Join. */
   private parallel(
-    step: Extract<AutomationStep, { type: 'run' }>,
+    step: Extract<AutomationV1Step, { type: 'run' }>,
     index: number,
     wait: number,
     policy: 'stop' | 'continue' | undefined,
@@ -168,7 +168,7 @@ class Converter {
   }
 
   private blockFor(
-    step: AutomationStep,
+    step: AutomationV1Step,
     policy:
       | 'stop'
       | 'continue'

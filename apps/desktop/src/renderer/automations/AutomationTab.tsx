@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Pencil, Play, Square, Trash2, TriangleAlert } from 'lucide-react';
+import { Info, Pencil, Play, Square, Trash2, TriangleAlert } from 'lucide-react';
+import type { AutomationBlock } from '@bildora/protocol';
 import { t } from '../../shared/i18n/translate.js';
 import type {
   AutomationDraft,
@@ -14,7 +15,7 @@ import { formatDuration, formatTime, historyState } from '../history/history-for
 import { Dialog } from '../shell/Dialog.js';
 import { RunStateBadge, RunStateIcon } from '../shell/RunStateBadge.js';
 import { AutomationEditor } from './AutomationEditor.js';
-import { commandFor, stepLabel } from './automation-draft.js';
+import { blockLabel, commandFor } from './automation-draft.js';
 
 const api = window.bildora;
 
@@ -27,7 +28,7 @@ function finishedLabel(status: string, steps: readonly StepRunView[]): { readonl
 }
 
 interface StepRowProps {
-  readonly step: AutomationStep;
+  readonly step: AutomationStep | AutomationBlock;
   readonly state: StepRunView | undefined;
   readonly tools: readonly ToolView[];
   readonly problems: readonly string[];
@@ -44,6 +45,9 @@ function stepDetail(state: StepRunView | undefined): string | undefined {
   }
   if (state.resumesAt !== undefined) {
     return t('automation.resumesAt', { time: new Date(state.resumesAt).toLocaleTimeString('en') });
+  }
+  if (state.state === 'skipped') {
+    return t('automation.skipped');
   }
   if (state.state === 'running' && state.attempt !== undefined && state.attempt > 1) {
     return t('automation.attempt', { number: state.attempt });
@@ -67,8 +71,8 @@ function StepRow({ step, state, tools, problems, onContinue, onShowTool }: StepR
         state={state === undefined || state.state === 'skipped' ? 'idle' : state.state}
       />
       <div className="automation-step-text">
-        <span className="truncate" title={stepLabel(step, tools)}>
-          {stepLabel(step, tools)}
+        <span className="truncate" title={blockLabel(step as AutomationBlock, tools)}>
+          {blockLabel(step as AutomationBlock, tools)}
         </span>
         {waitingForUser ? <span className="muted">{t('automation.waitingForYou')}</span> : null}
         {detail === undefined ? null : <span className="muted">{detail}</span>}
@@ -194,6 +198,12 @@ function AutomationDetail({
           <p>{t('automation.broken')}</p>
         </div>
       )}
+      {automation.editable ? null : (
+        <div className="notice" role="status" data-testid="automation-branched">
+          <Info className="icon" aria-hidden="true" />
+          <p>{t('automation.branched')}</p>
+        </div>
+      )}
       <div className="actions">
         {running ? (
           <button
@@ -216,7 +226,7 @@ function AutomationDetail({
             {t('automation.run')}
           </button>
         )}
-        <button type="button" onClick={onEdit}>
+        <button type="button" disabled={!automation.editable} onClick={onEdit}>
           <Pencil className="icon" aria-hidden="true" />
           {t('automation.edit')}
         </button>
@@ -227,7 +237,10 @@ function AutomationDetail({
       </div>
       <h2>{t('automation.steps')}</h2>
       <ol className="automation-steps">
-        {automation.steps.map((step) => (
+        {(automation.editable
+          ? automation.steps
+          : automation.blocks.filter(({ type }) => type !== 'start')
+        ).map((step) => (
           <StepRow
             key={step.id}
             step={step}
@@ -238,7 +251,7 @@ function AutomationDetail({
               .map(({ message }) => message)}
             onContinue={() => {
               if (run !== undefined) {
-                void api.confirmAutomation(run.runId).catch(onError);
+                void api.confirmAutomation(run.runId, step.id).catch(onError);
               }
             }}
             onShowTool={onShowTool}

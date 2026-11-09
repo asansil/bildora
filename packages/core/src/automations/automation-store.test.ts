@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { automationSchema, automationV2Schema, toolManifestSchema } from '@bildora/protocol';
-import type { Automation, AutomationInput } from '@bildora/protocol';
+import { automationV1Schema, automationSchema, toolManifestSchema } from '@bildora/protocol';
+import type { Automation, AutomationV1Input } from '@bildora/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RunHistory } from '../history/run-history.js';
 import { ToolRegistry } from '../registry/tool-registry.js';
@@ -18,13 +18,21 @@ import {
   removeAutomation,
   saveAutomation,
 } from './automation-store.js';
+import { convertAutomationV1 } from './convert-v1.js';
 import { checkAutomation } from './check-automation.js';
 
-function automationOf(steps: AutomationInput['steps'], id = 'flow', name = 'Flow'): Automation {
-  return automationSchema.parse({ schemaVersion: 1, id, name, steps });
+/** An automation as blocks, from the list of steps it used to be written as. */
+function automationOf(steps: AutomationV1Input['steps'], id = 'flow', name = 'Flow'): Automation {
+  const converted = convertAutomationV1(
+    automationV1Schema.parse({ schemaVersion: 1, id, name, steps }),
+  );
+  if (!converted.ok) {
+    throw new Error(converted.problems.join(' '));
+  }
+  return converted.automation;
 }
 
-const quickStep: AutomationInput['steps'][number] = {
+const quickStep: AutomationV1Input['steps'][number] = {
   id: 'pause',
   type: 'wait-for-time',
   seconds: 1,
@@ -86,6 +94,64 @@ describe('automation files', () => {
       /Update Bildora/,
     );
     expect(await readFile(join(folder, 'flow.yaml'), 'utf8')).toBe(newer);
+  });
+
+  describe('files written as a list of steps', () => {
+    const folderOf = (dir: string) => join(dir, 'workspaces', 'work', 'automations');
+    const listOfSteps = [
+      'schemaVersion: 1',
+      'id: flow',
+      'name: Old flow',
+      'steps:',
+      '  - { id: first, type: run, tool: sample, onFailure: continue }',
+      '  - { id: second, type: run, tool: sample }',
+      '',
+    ].join('\n');
+    const overlapping = [
+      'schemaVersion: 1',
+      'id: flow',
+      'name: Overlapping',
+      'steps:',
+      '  - { id: one, type: run, tool: sample, background: true }',
+      '  - { id: two, type: run, tool: sample, background: true }',
+      '  - { id: w1, type: wait-for-completion, step: one }',
+      '  - { id: w2, type: wait-for-completion, step: two }',
+      '',
+    ].join('\n');
+
+    it('are read as blocks, and the file changes only on the next save', async () => {
+      const folder = folderOf(dataDir);
+      await mkdir(folder, { recursive: true });
+      await writeFile(join(folder, 'flow.yaml'), listOfSteps);
+
+      const automation = await getAutomation(dataDir, 'work', 'flow');
+      expect(automation).toMatchObject({ schemaVersion: 2, name: 'Old flow' });
+      expect(automation?.blocks.map(({ id }) => id)).toEqual(['start', 'first', 'second']);
+      expect(await readFile(join(folder, 'flow.yaml'), 'utf8')).toBe(listOfSteps);
+
+      if (automation === undefined) throw new Error('Not read');
+      await saveAutomation(dataDir, 'work', automation);
+      const saved = await readFile(join(folder, 'flow.yaml'), 'utf8');
+      expect(saved).toContain('schemaVersion: 2');
+      expect(await getAutomation(dataDir, 'work', 'flow')).toEqual(automation);
+    });
+
+    it('that cannot convert show as a problem, and are never replaced', async () => {
+      const folder = folderOf(dataDir);
+      await mkdir(folder, { recursive: true });
+      await writeFile(join(folder, 'flow.yaml'), overlapping);
+
+      const { automations, problems } = await listAutomations(dataDir, 'work');
+      expect(automations).toEqual([]);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]?.message).toContain('cannot be converted');
+      expect(problems[0]?.message).toContain('overlaps another one');
+
+      await expect(saveAutomation(dataDir, 'work', automationOf([quickStep]))).rejects.toThrow(
+        /cannot be converted/,
+      );
+      expect(await readFile(join(folder, 'flow.yaml'), 'utf8')).toBe(overlapping);
+    });
   });
 
   it('refuses an id that could leave the folder', async () => {
@@ -162,7 +228,7 @@ describe('checkAutomation', () => {
     outputs: [{ name: 'csv', param: 'out' }],
   };
 
-  async function problems(steps: AutomationInput['steps']): Promise<readonly string[]> {
+  async function problems(steps: AutomationV1Input['steps']): Promise<readonly string[]> {
     const found = await checkAutomation(automationOf(steps), registry, 'work');
     return found.map(({ stepId, message }) => `${stepId}: ${message}`);
   }
@@ -171,7 +237,7 @@ describe('checkAutomation', () => {
     id: string,
     values: object,
     extra: object = {},
-  ): AutomationInput['steps'][number] => ({
+  ): AutomationV1Input['steps'][number] => ({
     id,
     type: 'run',
     tool: 'declared',
@@ -325,7 +391,7 @@ describe('checkAutomation', () => {
       values: { in: 'C:\\in', ...values },
     });
     async function blockProblems(blocks: object[], connections: object[]) {
-      const automation = automationV2Schema.parse({
+      const automation = automationSchema.parse({
         schemaVersion: 2,
         id: 'flow',
         name: 'Flow',
@@ -447,19 +513,6 @@ describe('checkAutomation', () => {
           ],
         ),
       ).toEqual([]);
-    });
-
-    it('reports a list of steps that cannot become blocks, without a block', async () => {
-      const overlapping = automationOf([
-        { ...run('one', {}), background: true },
-        { ...run('two', {}), background: true },
-        { id: 'w1', type: 'wait-for-completion', step: 'one' },
-        { id: 'w2', type: 'wait-for-completion', step: 'two' },
-      ] as AutomationInput['steps']);
-      const found = await checkAutomation(overlapping, registry, 'work');
-      expect(found).toHaveLength(1);
-      expect(found[0]?.stepId).toBe('');
-      expect(found[0]?.message).toContain('overlaps another one');
     });
   });
 
