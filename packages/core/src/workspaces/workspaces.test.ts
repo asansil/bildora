@@ -99,6 +99,17 @@ describe('Workspaces', () => {
       });
     });
 
+    it('remembers which tools answer their console script', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      await updateWorkspace(dataDir, 'work', { layout: { scriptAnswers: ['a', 'b', 'a'] } });
+      const kept = await updateWorkspace(dataDir, 'work', { layout: { panelWidth: 300 } });
+      expect(kept.layout.scriptAnswers).toEqual(['a', 'b']);
+      expect((await getWorkspace(dataDir, 'work'))?.layout.scriptAnswers).toEqual(['a', 'b']);
+
+      const cleared = await updateWorkspace(dataDir, 'work', { layout: { scriptAnswers: [] } });
+      expect(cleared.layout).not.toHaveProperty('scriptAnswers');
+    });
+
     it('drops a stored panel width out of limits', async () => {
       await createWorkspace(dataDir, 'Work', 'light');
       const file = join(dataDir, 'workspaces', 'work', 'workspace.yaml');

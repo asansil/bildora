@@ -19,6 +19,8 @@ const FAKE_TOOL = fileURLToPath(
   new URL('../../../examples/fixtures/fake-tool.mjs', import.meta.url),
 );
 
+const MENU_BATCH = fileURLToPath(new URL('../../../examples/fixtures/menu.bat', import.meta.url));
+
 const silentIo: CliIo = {
   env: {},
   out: () => undefined,
@@ -135,6 +137,33 @@ describe.skipIf(process.platform !== 'win32')('bildora run', () => {
   it('finds an automation by its name, in any case', async () => {
     await saveFlow([run('one', 'good')], workspaceId, 'Nightly Report');
     expect((await runCli(['run', 'nightly report'], '1', io())).exitCode).toBe(0);
+  });
+
+  it('always answers a console script, and fails a step whose wait runs out', async () => {
+    const registry = await ToolRegistry.open({ dataDir });
+    const menu = (id: string, expected: string) =>
+      registry.register(
+        toolManifestSchema.parse({
+          schemaVersion: 1,
+          id,
+          name: id,
+          version: '1.0.0',
+          level: 1,
+          run: { program: MENU_BATCH },
+          parameters: [{ name: 'pick', type: 'integer', label: 'Pick', stdin: true }],
+          stdin: [{ expect: expected, send: '{{params.pick}}', timeout: 1 }],
+        }),
+        { scope: workspaceScope(workspaceId) },
+      );
+    await menu('menu', 'Pick a number:');
+    await menu('stuck', 'Never shown');
+
+    await saveFlow([run('ask', 'menu', { values: { pick: 7 } })]);
+    expect((await runCli(['run', 'flow'], '1', io())).exitCode).toBe(EXIT_CODES.completed);
+
+    await saveFlow([run('ask', 'stuck', { values: { pick: 7 } })]);
+    expect((await runCli(['run', 'flow'], '1', io())).exitCode).toBe(EXIT_CODES.stopped);
+    expect(lines.join('\n')).toContain('"Never shown"');
   });
 
   it('exits 1 when a failed step stops the automation', async () => {

@@ -12,6 +12,17 @@ export interface SubmittedValues {
   readonly secrets: Readonly<Record<string, string>>;
 }
 
+/**
+ * The parameters a form shows. Those marked for the console script appear only when the script
+ * answers, because otherwise the person types them in the console.
+ */
+export function shownParameters(
+  parameters: readonly ParameterView[],
+  answerWithScript: boolean,
+): readonly ParameterView[] {
+  return answerWithScript ? parameters : parameters.filter(({ delivery }) => delivery !== 'script');
+}
+
 /** Fills a form from a profile and from the declared defaults. Secrets always start empty. */
 export function initialValues(
   parameters: readonly ParameterView[],

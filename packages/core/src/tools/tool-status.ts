@@ -30,12 +30,10 @@ export async function checkRuntime(
   }
   const { manifest, directory } = expanded;
   const env = options.env === undefined ? {} : { env: options.env };
-  if (manifest.level !== 2) {
-    const { program } = manifest.run;
-    const found = await resolveExecutable(program, { ...env, searchFirst: [directory] });
-    if (found === undefined) {
-      return { status: 'missing-program', program };
-    }
+  const { program } = manifest.run;
+  const found = await resolveExecutable(program, { ...env, searchFirst: [directory] });
+  if (found === undefined) {
+    return { status: 'missing-program', program };
   }
   const { interpreter } = manifest;
   if (interpreter !== undefined && (await resolveExecutable(interpreter, env)) === undefined) {
@@ -52,9 +50,6 @@ export async function locateProgram(
   tool: RegisteredTool,
   options: RuntimeCheckOptions = {},
 ): Promise<string | undefined> {
-  if (tool.manifest.level === 2) {
-    return undefined;
-  }
   let expanded: RegisteredTool;
   try {
     expanded = expandToolCommand(tool, options.pathVariables ?? new Map<string, string>());
@@ -65,9 +60,6 @@ export async function locateProgram(
     throw error;
   }
   const { manifest, directory } = expanded;
-  if (manifest.level === 2) {
-    return undefined;
-  }
   const env = options.env === undefined ? {} : { env: options.env };
   return resolveExecutable(manifest.run.program, { ...env, searchFirst: [directory] });
 }

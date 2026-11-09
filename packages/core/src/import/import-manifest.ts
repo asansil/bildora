@@ -60,9 +60,6 @@ async function readLevelOneManifest(path: string): Promise<ToolManifest & { leve
   if (manifest.level === 0) {
     throw new DefinitionError('This is a level 0 manifest. Add its program directly instead');
   }
-  if (manifest.level === 2) {
-    throw new DefinitionError('Level 2 tools need a later version of Bildora');
-  }
   return manifest;
 }
 

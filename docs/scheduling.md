@@ -51,7 +51,7 @@ Tools that need an interpreter, such as `node` or `python`, must find it on the 
 - **Older files:** an automation written as a list of steps runs as it always did. A step set to continue becomes an Error output to the next step, and a background step with its wait becomes parallel branches. A `continue` on the very last step has no next step to lead to, so a failure there now stops the automation with exit code 1, where it used to finish with exit code 3.
 - **The app can stay open.** The command and the app can run at the same time, even the same automation. Each run has its own folder, but a tool that always writes to one fixed path is not protected from a second run.
 - **Registered programs:** a level 0 tool opens in its own window, as it does in the app. A program that waits for someone to close it holds the automation until then, so give the task a time limit.
-- **Level 2 tools** cannot run in an automation yet.
+- **Console scripts:** a tool that declares a console script always has it applied, because nobody is there to answer. If the text a script waits for never appears, the tool is ended after the wait's time limit, 30 seconds unless the manifest sets another, and its block fails.
 - **Ending a task:** stopping the task from Task Scheduler ends the command at once. A tool in a Bildora console ends with it. A registered program in its own window can stay open, and the run shows as cancelled with a note that its result is unknown.
 
 ## Running with the user logged off

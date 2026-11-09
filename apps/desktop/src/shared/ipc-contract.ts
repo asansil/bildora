@@ -16,6 +16,7 @@ const HISTORY_RUN_LIMIT_MAX = 100_000;
 const WORKSPACE_NAME_MAX_LENGTH = 80;
 const PATH_VARIABLE_NAME_MAX_LENGTH = 64;
 const FAVORITES_MAX = 1000;
+const SCRIPT_ANSWERS_MAX = 1000;
 const AUTOMATION_STEPS_MAX = 200;
 const CATEGORIES_MAX = 1000;
 const WORKSPACE_TABS_MAX = 100;
@@ -79,6 +80,8 @@ export const startRunSchema = z.strictObject({
   values: valuesSchema.optional(),
   columns: columnsSchema.optional(),
   rows: rowsSchema.optional(),
+  /** Types the tool's console script. Off, the person answers in the console. */
+  answerWithScript: z.boolean().optional(),
 });
 export const automationIdSchema = z.strictObject({ id: idSchema });
 export const automationRunIdSchema = z.strictObject({ runId: idSchema });
@@ -138,6 +141,7 @@ export const updateWorkspaceSchema = z.strictObject({
       tabs: z.array(workspaceTabSchema).max(WORKSPACE_TABS_MAX).optional(),
       activeTab: textSchema.nullable().optional(),
       historyFilter: idSchema.nullable().optional(),
+      scriptAnswers: z.array(idSchema).max(SCRIPT_ANSWERS_MAX).optional(),
     })
     .optional(),
 });
@@ -179,6 +183,8 @@ export interface WorkspaceLayoutView {
   readonly activeTab?: string;
   /** The tool id the History tab is filtered by. */
   readonly historyFilter?: string;
+  /** Ids of the tools whose form answers their console script. */
+  readonly scriptAnswers?: readonly string[];
 }
 
 export interface WorkspaceTabView {
@@ -233,7 +239,7 @@ export interface ParameterView {
   readonly choices?: readonly string[];
   readonly secret?: boolean;
   /** How the value reaches the tool, which matters for a secret. */
-  readonly delivery: 'argument' | 'environment';
+  readonly delivery: 'argument' | 'environment' | 'script';
 }
 
 export interface ToolView {
@@ -242,16 +248,17 @@ export interface ToolView {
   readonly id: string;
   readonly scope: ToolScopeChoice;
   readonly name: string;
-  readonly level: 0 | 1 | 2;
+  readonly level: 0 | 1;
   readonly category?: string;
   readonly description?: string;
   readonly interpreter?: string;
-  /** Absent for level 2 tools, which run through a backend. */
-  readonly program?: string;
+  readonly program: string;
   /** Absent for level 0 tools, which have none. */
   readonly parameters?: readonly ParameterView[];
   /** Names of declared outputs, which automation steps can refer to. */
   readonly outputs?: readonly string[];
+  /** Present when the tool declares a console script, which its form can choose to answer. */
+  readonly hasScript?: true;
   readonly permissions: readonly string[];
   readonly runtime: ToolRuntime;
 }
@@ -315,6 +322,7 @@ export type RunFailureCode =
   | 'launcher'
   | 'credentials'
   | 'path-variable'
+  | 'stdin-timeout'
   | 'exit-code';
 
 export interface RunView {

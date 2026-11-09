@@ -1,0 +1,38 @@
+# A sample level 1 tool whose program asks its questions in a console menu. The program is left
+# untouched: the stdin script below waits for each question and types the answer.
+schemaVersion: 1
+id: bildora.sample.menu
+name: Greeting Writer
+version: 1.0.0
+level: 1
+category: Samples
+description: Answers a console menu that asks for a format and a name.
+interpreter: python
+run:
+  program: menu.py
+parameters:
+  # Marked stdin: these reach the program only through the script, never as arguments.
+  - name: format
+    type: choice
+    label: Format
+    choices: [csv, json]
+    default: csv
+    stdin: true
+  - name: name
+    type: string
+    label: Name
+    required: true
+    stdin: true
+  # An ordinary flag, which the program reads from its command line as usual.
+  - name: upper
+    type: boolean
+    label: Capitals
+    flag: --upper
+stdin:
+  - expect: 'Format [csv/json]:'
+    send: '{{params.format}}'
+  - expect: 'Your name:'
+    send: '{{params.name}}'
+  - expect: 'Continue? [y/n]'
+    send: 'y'
+    timeout: 10

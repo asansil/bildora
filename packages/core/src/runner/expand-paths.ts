@@ -27,9 +27,6 @@ export function expandPath(text: string, variables: PathVariables): string {
 /** The tool as it runs on this machine. The manifest itself keeps its references. */
 export function expandToolCommand(tool: RegisteredTool, variables: PathVariables): RegisteredTool {
   const { manifest } = tool;
-  if (manifest.level === 2) {
-    return tool;
-  }
   const run = {
     ...manifest.run,
     program: expandPath(manifest.run.program, variables),

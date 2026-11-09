@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { History, Play, Square } from 'lucide-react';
 import { t } from '../../shared/i18n/translate.js';
 import type {
@@ -15,7 +15,7 @@ import type { ConsoleSize } from './ConsolePane.js';
 import { ParameterForm } from './ParameterForm.js';
 import { ProfileBar } from './ProfileBar.js';
 import { FavoriteButton, RuntimeWarning, failureText } from './ToolDetails.js';
-import { formProblems, initialValues, submittedValues } from './parameter-form.js';
+import { formProblems, initialValues, shownParameters, submittedValues } from './parameter-form.js';
 import type { FormValue, FormValues } from './parameter-form.js';
 import { summarizeRuns } from './run-state.js';
 
@@ -37,6 +37,9 @@ interface ToolRunnerProps {
   readonly onError: (error: unknown) => void;
   /** Called when the form or profile changes, which pins a preview tab. */
   readonly onUsed?: () => void;
+  /** Whether the form answers the tool's console script, as the Workspace remembers it. */
+  readonly answerWithScript?: boolean;
+  readonly onAnswerWithScriptChange?: (answer: boolean) => void;
 }
 
 /** A level 1 tool in the work area: its generated form, saved profiles and live console. */
@@ -54,8 +57,20 @@ export function ToolRunner({
   onToggleFavorite,
   onError,
   onUsed,
+  answerWithScript = false,
+  onAnswerWithScriptChange,
 }: ToolRunnerProps) {
   const parameters = tool.parameters ?? NO_PARAMETERS;
+  // Shown at once, while the Workspace stores it. A stored choice that arrives later wins.
+  const [scriptChoice, setScriptChoice] = useState(answerWithScript);
+  const [storedChoice, setStoredChoice] = useState(answerWithScript);
+  if (storedChoice !== answerWithScript) {
+    setStoredChoice(answerWithScript);
+    setScriptChoice(answerWithScript);
+  }
+  const scripted = tool.hasScript === true && scriptChoice;
+  const shown = shownParameters(parameters, scripted);
+  const scriptHintId = useId();
   const [profiles, setProfiles] = useState<readonly ProfileView[]>([]);
   const [profileId, setProfileId] = useState<string | undefined>(undefined);
   const [values, setValues] = useState<FormValues>(() => initialValues(parameters));
@@ -87,7 +102,7 @@ export function ToolRunner({
   const shownRun = active ?? summary.last;
   const profile = profiles.find((item) => item.id === profileId);
   const savedSecrets = (profile?.secrets ?? []).filter((name) => !forgotten.includes(name));
-  const problems = formProblems(parameters, values, savedSecrets);
+  const problems = formProblems(shown, values, savedSecrets);
   const hasProblems = Object.keys(problems).length > 0;
   const failure = summary.last === undefined ? undefined : failureText(summary.last, tool);
   const runnable = tool.runtime.status === 'ready' && !isRunning;
@@ -126,12 +141,13 @@ export function ToolRunner({
     if (hasProblems) {
       return;
     }
-    const { plain, secrets } = submittedValues(parameters, values);
+    const { plain, secrets } = submittedValues(shown, values);
     const size = consoleSize.current;
     onRun({
       values: { ...plain, ...secrets },
       ...(profileId === undefined ? {} : { profileId }),
       ...(size === undefined ? {} : size),
+      ...(tool.hasScript === true ? { answerWithScript: scripted } : {}),
     });
   }
 
@@ -201,8 +217,32 @@ export function ToolRunner({
         onRemove={removeProfile}
       />
 
+      {tool.hasScript === true ? (
+        <div className="field script-choice">
+          <label className="field-check">
+            <input
+              type="checkbox"
+              checked={scripted}
+              disabled={isRunning}
+              aria-describedby={scriptHintId}
+              data-testid="answer-with-script"
+              onChange={(event) => {
+                onUsed?.();
+                setChecked(false);
+                setScriptChoice(event.target.checked);
+                onAnswerWithScriptChange?.(event.target.checked);
+              }}
+            />
+            {t('runner.answerWithScript')}
+          </label>
+          <span className="field-hint" id={scriptHintId}>
+            {t(scripted ? 'runner.answerWithScriptHint' : 'runner.answerInConsole')}
+          </span>
+        </div>
+      ) : null}
+
       <ParameterForm
-        parameters={parameters}
+        parameters={shown}
         values={values}
         problems={checked ? problems : {}}
         savedSecrets={savedSecrets}

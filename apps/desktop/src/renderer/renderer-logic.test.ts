@@ -6,7 +6,6 @@ import {
   newStep,
   newStepId,
   referenceOptions,
-  runnableTools,
   stepLabel,
   withFailureChoice,
   without,
@@ -17,6 +16,7 @@ import {
   formProblems,
   initialValues,
   parameterProblem,
+  shownParameters,
   submittedValues,
 } from './tools/parameter-form.js';
 import type { AutomationStep, ParameterView, ToolView } from '../shared/ipc-contract.js';
@@ -28,17 +28,18 @@ import { categoryInitial, placeCategory, toggleCategory } from './tools/category
 import { countRunning, summarizeRuns } from './tools/run-state.js';
 
 describe('automation drafts', () => {
-  const tool = (id: string, level: 0 | 1 | 2, outputs?: readonly string[]): ToolView => ({
+  const tool = (id: string, level: 0 | 1, outputs?: readonly string[]): ToolView => ({
     key: `global/${id}`,
     id,
     scope: 'global',
     name: id.toUpperCase(),
     level,
+    program: `C:\tools\${id}.exe`,
     permissions: [],
     runtime: { status: 'ready' },
     ...(outputs === undefined ? {} : { outputs }),
   });
-  const tools = [tool('acme.report', 1, ['csv']), tool('plain', 0), tool('panel', 2)];
+  const tools = [tool('acme.report', 1, ['csv']), tool('plain', 0)];
   const run: RunStep = { id: 'report', type: 'run', tool: 'acme.report' };
   const pause: AutomationStep = { id: 'pause', type: 'wait-for-time', seconds: 5 };
   const look: AutomationStep = { id: 'look', type: 'wait-for-manual-action', message: 'Look' };
@@ -47,10 +48,6 @@ describe('automation drafts', () => {
     expect(newStepId('acme.report', [])).toBe('report');
     expect(newStepId('acme.report', [run])).toBe('report-2');
     expect(newStepId('1-2-3', [])).toBe('step');
-  });
-
-  it('leaves out tools that need a panel', () => {
-    expect(runnableTools(tools).map(({ id }) => id)).toEqual(['acme.report', 'plain']);
   });
 
   it('starts a step only when there is something for it to work with', () => {
@@ -277,6 +274,17 @@ describe('parameter form', () => {
     text('mode', { type: 'choice', choices: ['a', 'b'], default: 'a' }),
     text('token', { secret: true, required: true }),
   ];
+
+  it('shows the parameters of the console script only when the script answers', () => {
+    const answered = text('choice', { delivery: 'script', required: true });
+    const all = [parameters[0], answered].filter((item) => item !== undefined);
+
+    expect(shownParameters(all, false).map(({ name }) => name)).toEqual(['input']);
+    expect(shownParameters(all, true).map(({ name }) => name)).toEqual(['input', 'choice']);
+    expect(formProblems(shownParameters(all, false), {}, [])).toEqual({
+      input: 'runner.required',
+    });
+  });
 
   it('starts from the defaults, with text for everything but checkboxes', () => {
     expect(initialValues(parameters)).toEqual({

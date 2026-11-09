@@ -183,10 +183,6 @@ export async function checkAutomation(
       report(`Tool "${block.tool}" is not installed, or cannot be read`);
       continue;
     }
-    if (tool.manifest.level === 2) {
-      report('Level 2 tools cannot run in an automation yet');
-      continue;
-    }
     const profile = block.profile === undefined ? undefined : await getProfile(tool, block.profile);
     if (block.profile !== undefined && profile === undefined) {
       report(`Profile "${block.profile}" no longer exists`);

@@ -261,16 +261,6 @@ describe('checkAutomation', () => {
         run: { program: 'C:\\plain.exe' },
       }),
     );
-    await registry.register(
-      toolManifestSchema.parse({
-        schemaVersion: 1,
-        id: 'panel',
-        name: 'Panel',
-        version: '1.0.0',
-        level: 2,
-        entryPoint: { panel: 'index.html', backend: { program: 'b.exe' } },
-      }),
-    );
   });
 
   afterEach(async () => {
@@ -302,15 +292,9 @@ describe('checkAutomation', () => {
     expect(await problems([{ id: 'a', type: 'run', tool: 'own' }])).toEqual([]);
   });
 
-  it('reports a missing tool as broken, and a level 2 tool as not ready', async () => {
-    expect(
-      await problems([
-        { id: 'gone', type: 'run', tool: 'nothing' },
-        { id: 'rich', type: 'run', tool: 'panel' },
-      ]),
-    ).toEqual([
+  it('reports a missing tool as broken', async () => {
+    expect(await problems([{ id: 'gone', type: 'run', tool: 'nothing' }])).toEqual([
       'gone: Tool "nothing" is not installed, or cannot be read',
-      'rich: Level 2 tools cannot run in an automation yet',
     ]);
   });
 

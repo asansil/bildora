@@ -9,6 +9,8 @@ import {
   quoteForCmd,
   quoteForProgram,
   renderArguments,
+  renderEnvironment,
+  renderScript,
 } from './command-line.js';
 
 function parametersOf(parameters: unknown[]): ToolParameter[] {
@@ -84,6 +86,55 @@ describe('renderArguments', () => {
     }
     expect(message).not.toBe('');
     expect(message).not.toContain('hunter2');
+  });
+});
+
+describe('console scripts', () => {
+  const manifest = toolManifestSchema.parse({
+    schemaVersion: 1,
+    id: 'a.tool',
+    name: 'Tool',
+    version: '1.0.0',
+    level: 1,
+    run: { program: 'a' },
+    parameters: [
+      { name: 'option', type: 'choice', label: 'O', choices: ['1', '2'], stdin: true },
+      { name: 'count', type: 'integer', label: 'C', stdin: true, required: true },
+      { name: 'note', type: 'string', label: 'N', stdin: true },
+      { name: 'out', type: 'path', label: 'Out', flag: '--out' },
+    ],
+    stdin: [
+      { expect: 'Option:', send: '{{params.option}}' },
+      { expect: 'Count:', send: '{{params.count}} x{{params.count}}', timeout: 5 },
+      { send: '{{params.note}}' },
+    ],
+  });
+  const parameters = manifest.level === 1 ? manifest.parameters : [];
+  const script = manifest.level === 1 ? (manifest.stdin ?? []) : [];
+
+  it('keeps stdin parameters out of the arguments and the environment', () => {
+    const values = { option: '2', count: 3, note: 'n', out: 'x' };
+    expect(renderArguments(parameters, values)).toEqual(['--out', 'x']);
+    expect(renderEnvironment(parameters, values)).toEqual({});
+  });
+
+  it('does not ask for a required stdin parameter when building arguments', () => {
+    expect(renderArguments(parameters, {})).toEqual([]);
+  });
+
+  it('fills the answers, with an empty line for an unset optional', () => {
+    expect(renderScript(parameters, script, { option: '1', count: 7 })).toEqual([
+      { expect: 'Option:', send: '1', timeout: undefined },
+      { expect: 'Count:', send: '7 x7', timeout: 5 },
+      { expect: undefined, send: '', timeout: undefined },
+    ]);
+  });
+
+  it.each([
+    ['a missing required answer', { option: '1' }, /"count" is required/],
+    ['a value outside the choices', { option: '3', count: 1 }, /"option" must be one of/],
+  ])('rejects %s', (_name, values, message) => {
+    expect(() => renderScript(parameters, script, values)).toThrow(message);
   });
 });
 

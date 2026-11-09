@@ -278,9 +278,6 @@ export function registerIpc(context: IpcContext): void {
 
   handle(CHANNELS.runsStart, startRunSchema, async ({ id, ...request }) => {
     const tool = await tools.get(id);
-    if (tool.manifest.level === 2) {
-      throw new Error(`Tool "${id}" needs a later version of Bildora`);
-    }
     if (tool.manifest.level === 1 && runs.isRunning(toolKey(tool))) {
       throw new Error(`Tool "${id}" is already running`);
     }

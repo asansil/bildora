@@ -9,6 +9,8 @@ export function isSupportedProtocolVersion(version: unknown): boolean {
 export {
   MANIFEST_SCHEMA_VERSION,
   PERMISSIONS,
+  STDIN_SCRIPT_MAX_ENTRIES,
+  STDIN_TIMEOUT_DEFAULT_SECONDS,
   buildToolManifestJsonSchema,
   isValidIdentifier,
   toolManifestSchema,
@@ -20,6 +22,7 @@ export type {
   ToolManifestInput,
   ToolOutput,
   ToolParameter,
+  ToolScriptEntry,
 } from './manifest.js';
 export {
   isPathVariableName,
@@ -81,8 +84,11 @@ export type {
 } from './automation-graph.js';
 export {
   RUN_FOLDER_REFERENCE,
+  findParameterReferences,
   findStepOutputReferences,
+  findUnknownParameterReferences,
   findUnknownReferences,
+  replaceParameterReferences,
   replaceRunReferences,
   stepOutputReference,
   usesRunFolder,

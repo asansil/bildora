@@ -35,13 +35,6 @@ module.exports = {
       to: { path: '^packages/', pathNot: '^packages/protocol/' },
     },
     {
-      name: 'panel-sdk-not-to-core',
-      comment: 'Panels reach Bildora through the bridge, never through core.',
-      severity: 'error',
-      from: { path: '^packages/panel-sdk/' },
-      to: { path: '^packages/core/' },
-    },
-    {
       name: 'renderer-stays-unprivileged',
       comment: 'The renderer reaches the OS only through the preload bridge.',
       severity: 'error',

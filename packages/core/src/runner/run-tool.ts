@@ -1,6 +1,6 @@
 import { spawn as spawnProcess } from 'node:child_process';
 import { basename, dirname } from 'node:path';
-import type { ToolCommand, ToolManifest } from '@bildora/protocol';
+import type { ToolManifest } from '@bildora/protocol';
 import type { RegisteredTool } from '../registry/tool-registry.js';
 import {
   ParameterError,
@@ -9,12 +9,15 @@ import {
   programCommandLine,
   renderArguments,
   renderEnvironment,
+  renderScript,
 } from './command-line.js';
 import type { ParameterValues } from './command-line.js';
 import { LAUNCHER_FAILURES, defaultLauncherPath } from './launcher.js';
 import { createProgressParser } from './progress-lines.js';
 import type { RunProgress } from './progress-lines.js';
 import { readEnv, resolveExecutable } from './resolve-executable.js';
+import { createScriptDriver } from './stdin-script.js';
+import type { ScriptAnswer } from './stdin-script.js';
 
 export const TERMINAL_COLUMNS = 120;
 export const TERMINAL_ROWS = 30;
@@ -27,6 +30,7 @@ export type RunFailureKind =
   | 'launcher'
   | 'credentials'
   | 'path-variable'
+  | 'stdin-timeout'
   | 'exit-code';
 
 export interface RunFailure {
@@ -59,9 +63,17 @@ export interface RunOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   /** Where the launcher is. Packaged apps pass a path outside the ASAR. */
   readonly launcherPath?: string;
+  /**
+   * Types the manifest's console script into the tool. Off, parameters marked `stdin` are not
+   * handed over, and the person answers in the console.
+   */
+  readonly answerWithScript?: boolean;
 }
 
-export type WindowRunOptions = Omit<RunOptions, 'columns' | 'onOutput' | 'onProgress' | 'rows'>;
+export type WindowRunOptions = Omit<
+  RunOptions,
+  'answerWithScript' | 'columns' | 'onOutput' | 'onProgress' | 'rows'
+>;
 
 export interface ToolRun {
   /** Settles when the tool has ended and all its output was delivered. It never rejects. */
@@ -78,6 +90,8 @@ interface PreparedRun {
   readonly commandLine: string;
   readonly cwd: string;
   readonly env: Record<string, string>;
+  /** Present when the run answers the tool's console script. */
+  readonly answers?: readonly ScriptAnswer[];
 }
 
 /** Reported instead of thrown past the runner, so `result` has one way to carry a failure. */
@@ -103,16 +117,6 @@ function toolEnvironment(env: RunOptions['env'] = process.env): Record<string, s
   );
 }
 
-function commandOf(manifest: ToolManifest): ToolCommand {
-  if (manifest.level === 2) {
-    throw new RunPreparationError({
-      kind: 'unsupported',
-      message: 'Level 2 tools run through their panel, which this build cannot host yet',
-    });
-  }
-  return manifest.run;
-}
-
 /** Sets variables, replacing any other spelling of a name: Windows reads them without case. */
 function setVariables(env: Record<string, string>, variables: Record<string, string>): void {
   for (const [name, value] of Object.entries(variables)) {
@@ -128,15 +132,20 @@ function setVariables(env: Record<string, string>, variables: Record<string, str
 
 async function prepare(tool: RegisteredTool, options: RunOptions): Promise<PreparedRun> {
   const { manifest, directory } = tool;
-  const command = commandOf(manifest);
+  const command = manifest.run;
   const env = toolEnvironment(options.env);
   const parameters = manifest.level === 0 ? [] : manifest.parameters;
 
+  const script =
+    manifest.level === 1 && options.answerWithScript === true ? manifest.stdin : undefined;
+
   let args: string[];
+  let answers: readonly ScriptAnswer[] | undefined;
   try {
     const values = options.parameters ?? {};
     args = [...command.args, ...renderArguments(parameters, values)];
     setVariables(env, renderEnvironment(parameters, values));
+    answers = script === undefined ? undefined : renderScript(parameters, script, values);
   } catch (error) {
     if (error instanceof ParameterError) {
       throw new RunPreparationError({ kind: 'invalid-parameters', message: error.message });
@@ -154,7 +163,8 @@ async function prepare(tool: RegisteredTool, options: RunOptions): Promise<Prepa
 
   const cwd = options.cwd ?? dirname(program);
   try {
-    return { commandLine: await commandLineFor(manifest, program, args, env), cwd, env };
+    const commandLine = await commandLineFor(manifest, program, args, env);
+    return { commandLine, cwd, env, ...(answers === undefined ? {} : { answers }) };
   } catch (error) {
     if (error instanceof ParameterError) {
       throw new RunPreparationError({ kind: 'invalid-parameters', message: error.message });
@@ -225,6 +235,8 @@ interface StartedProcess {
   kill(): void;
   write?(data: string): void;
   resize?(columns: number, rows: number): void;
+  /** Why the run failed although the process ended, read once it has. */
+  failure?(): RunFailure | undefined;
 }
 
 type ProcessStarter = (launcherPath: string, mode: string, run: PreparedRun) => StartedProcess;
@@ -273,9 +285,13 @@ function trackRun(
     }
     const exitCode = await started.exit;
     live = undefined;
-    return isCancelled()
-      ? { status: 'cancelled', durationMs: elapsed() }
-      : resultOfExit(exitCode, elapsed());
+    if (isCancelled()) {
+      return { status: 'cancelled', durationMs: elapsed() };
+    }
+    const failure = started.failure?.();
+    return failure === undefined
+      ? resultOfExit(exitCode, elapsed())
+      : { status: 'failed', durationMs: elapsed(), failure };
   }
 
   const result = execute().catch((error: unknown): RunResult => {
@@ -332,18 +348,42 @@ export function startRun(tool: RegisteredTool, options: RunOptions = {}): ToolRu
       });
       const { onProgress } = options;
       const progress = onProgress === undefined ? undefined : createProgressParser(onProgress);
+      let scriptFailure: RunFailure | undefined;
+      const script =
+        prepared.answers === undefined
+          ? undefined
+          : createScriptDriver({
+              answers: prepared.answers,
+              write: (data) => {
+                ignoringEndedProcess(() => {
+                  terminal.write(data);
+                });
+              },
+              onTimeout: (expected, seconds) => {
+                scriptFailure = {
+                  kind: 'stdin-timeout',
+                  message: `Waited ${String(seconds)} s for "${expected}" in the output, which never appeared`,
+                };
+                ignoringEndedProcess(() => {
+                  process.kill(terminal.pid);
+                });
+              },
+            });
       terminal.onData((data) => {
         options.onOutput?.(data);
         progress?.feed(data);
+        script?.feed(data);
       });
       return {
         // On Windows this fires after node-pty has drained the output.
         exit: new Promise((resolve) => {
           terminal.onExit(({ exitCode }) => {
             progress?.end();
+            script?.stop();
             resolve(exitCode);
           });
         }),
+        failure: () => scriptFailure,
         // `pty.kill()` would miss detached children and print a stack trace when the console has
         // gone, so the launcher is killed instead.
         kill: () => {

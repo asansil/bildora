@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import css from '../theme/tokens.css?raw';
-import { themeTokenProperty } from './index.js';
+import css from './tokens.css?raw';
 
 type Scheme = 'light' | 'dark';
 type Rgb = readonly [number, number, number];
@@ -84,10 +83,10 @@ const TEXTS = [
 ];
 
 describe('theme tokens', () => {
-  it('uses only names the panel SDK can produce', () => {
+  it('uses only lowercase names with the shared prefix', () => {
     expect(tokens.size).toBeGreaterThan(0);
     for (const name of tokens.keys()) {
-      expect(themeTokenProperty(name.replace('--bildora-', ''))).toBe(name);
+      expect(name).toMatch(/^--bildora-[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
     }
   });
 

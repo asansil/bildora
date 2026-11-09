@@ -5,6 +5,7 @@ import { _electron as electron, expect, test } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
 
 const MANIFEST = resolve('examples/level-1-file-report/tool.yaml');
+const MENU_MANIFEST = resolve('examples/level-1-menu-cli/tool.yaml');
 const SECRET = 'e2e-Secret-Value-4711';
 
 function electronEnvironment(extra: Record<string, string>): Record<string, string> {
@@ -264,4 +265,58 @@ run:
   await second.window.getByRole('button', { name: 'Run history' }).click();
   await second.window.locator('.history-row').first().click();
   await expect(second.window.getByTestId('history-detail')).toContainText('Cancelled');
+});
+
+test('answers a console menu by hand or with the script, and remembers the choice', async () => {
+  const first = await launchShell();
+  await stubPicker(first.app, [MENU_MANIFEST]);
+  await first.window.getByRole('menuitem', { name: 'File' }).click();
+  await first.window.getByRole('menuitem', { name: 'Add a tool…' }).click();
+  await first.window.getByRole('button', { name: 'Import 1 tool' }).click();
+  const window = first.window;
+  await expect(window.getByRole('heading', { name: 'Greeting Writer', level: 1 })).toBeVisible();
+
+  const choice = window.getByLabel('Answer with the script');
+  await expect(choice).not.toBeChecked();
+  await expect(window.getByLabel('Name (required)')).toHaveCount(0);
+  await expect(window.getByLabel('Capitals')).toBeVisible();
+
+  await runSample(window);
+  await expect(consoleOf(window)).toContainText('Format [csv/json]:');
+  await consoleOf(window).click();
+  await window.keyboard.type('csv');
+  await window.keyboard.press('Enter');
+  await expect(consoleOf(window)).toContainText('Your name:');
+  await window.keyboard.type('Bob');
+  await window.keyboard.press('Enter');
+  await expect(consoleOf(window)).toContainText('Continue? [y/n]');
+  await window.keyboard.type('y');
+  await window.keyboard.press('Enter');
+  await expect(consoleOf(window)).toContainText('Hello, Bob');
+  await expect(window.locator('.tool-header .state-badge')).toHaveAttribute(
+    'data-state',
+    'completed',
+  );
+
+  await choice.check();
+  await runSample(window);
+  await expect(window.getByText('This field is required.')).toBeVisible();
+  await window.getByLabel('Name (required)').fill('Ada');
+  await window.getByLabel('Format').selectOption('json');
+  await runSample(window);
+  await expect(consoleOf(window)).toContainText('"greeting": "Hello, Ada"');
+  await expect(window.locator('.tool-header .state-badge')).toHaveAttribute(
+    'data-state',
+    'completed',
+  );
+
+  await first.app.close();
+  open = [];
+  const second = await launchShell();
+  await expect(
+    second.window.getByRole('heading', { name: 'Greeting Writer', level: 1 }),
+  ).toBeVisible();
+  await expect(second.window.getByLabel('Answer with the script')).toBeChecked();
+  await expect(second.window.getByLabel('Name (required)')).toBeVisible();
+  expect(problems).toEqual([]);
 });

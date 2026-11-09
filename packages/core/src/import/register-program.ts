@@ -119,7 +119,7 @@ export interface ToolChanges extends ToolDetails {
 }
 
 function changedRun(manifest: ToolManifest, program: string | undefined): object {
-  if (program === undefined || manifest.level === 2 || program === manifest.run.program) {
+  if (program === undefined || program === manifest.run.program) {
     return {};
   }
   if (!isAbsolute(program) && !win32.isAbsolute(program) && !startsWithPathVariable(program)) {

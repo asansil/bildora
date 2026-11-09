@@ -267,9 +267,6 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
-      '@bildora/panel-sdk':
-        specifier: workspace:*
-        version: link:../../packages/panel-sdk
       '@bildora/typescript-config':
         specifier: workspace:*
         version: link:../../packages/typescript-config
@@ -337,12 +334,6 @@ importers:
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
-
-  packages/panel-sdk:
-    devDependencies:
-      '@bildora/typescript-config':
-        specifier: workspace:*
-        version: link:../typescript-config
 
   packages/protocol:
     dependencies:

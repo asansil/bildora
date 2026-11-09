@@ -142,6 +142,7 @@ export function App() {
   );
   const theme: ShellTheme = workspace?.theme ?? 'system';
   const favorites = workspace?.favorites ?? EMPTY_RECENT;
+  const scriptAnswers = workspace?.layout.scriptAnswers ?? EMPTY_RECENT;
   const workspaceName = workspace?.name ?? '';
 
   const applyCatalog = useCallback((next: ToolCatalog): ToolCatalog => {
@@ -986,6 +987,11 @@ export function App() {
         }}
         onUsed={() => {
           pinTab(tab.key);
+        }}
+        answerWithScript={scriptAnswers.includes(tool.id)}
+        onAnswerWithScriptChange={(answer) => {
+          const others = scriptAnswers.filter((id) => id !== tool.id);
+          saveWorkspace({ layout: { scriptAnswers: answer ? [...others, tool.id] : others } });
         }}
         onError={report}
       />

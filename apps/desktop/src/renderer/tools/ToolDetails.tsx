@@ -152,11 +152,9 @@ export function ToolDetails({
             : {})}
         />
       </header>
-      {tool.program === undefined ? null : (
-        <code className="path" title={tool.program}>
-          {tool.program}
-        </code>
-      )}
+      <code className="path" title={tool.program}>
+        {tool.program}
+      </code>
       {tool.description === undefined ? null : (
         <p className="tool-description">{tool.description}</p>
       )}

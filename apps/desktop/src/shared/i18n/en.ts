@@ -117,6 +117,9 @@ export const en = {
   'runner.noChoice': 'Not set',
   'runner.secretSaved': 'Saved in the credential store',
   'runner.forgetSecret': 'Forget saved value',
+  'runner.answerWithScript': 'Answer with the script',
+  'runner.answerWithScriptHint': "Bildora answers the program's questions with these values.",
+  'runner.answerInConsole': "Answer the program's questions in the console.",
   'runner.secretArgument':
     'This tool receives the value as an argument, which other programs you run can read while it runs.',
 
