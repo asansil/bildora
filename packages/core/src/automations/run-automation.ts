@@ -42,6 +42,8 @@ export type StepStarter = (
     readonly profileId?: string | undefined;
     readonly values: ParameterValues;
     readonly onProgress: (progress: RunProgress) => void;
+    /** Nobody may be there to answer, so a console script always applies. */
+    readonly answerWithScript: true;
   },
 ) => Promise<RecordedToolRun>;
 
@@ -380,6 +382,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
         automationRunId: runId,
         profileId: step.profile,
         values,
+        answerWithScript: true,
         onProgress: (progress) => {
           setStep(step.id, { progress });
         },

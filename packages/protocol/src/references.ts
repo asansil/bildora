@@ -4,6 +4,8 @@ const RUN_REFERENCE_PATTERN = new RegExp(
   'g',
 );
 const ANY_REFERENCE_PATTERN = /\{\{[^{}]*\}\}/g;
+const PARAMETER_REFERENCE_PATTERN = new RegExp(`\\{\\{params\\.(${NAME})\\}\\}`, 'g');
+const ONE_PARAMETER_REFERENCE_PATTERN = new RegExp(`^\\{\\{params\\.${NAME}\\}\\}$`);
 const KNOWN_REFERENCE_PATTERN = new RegExp(
   `^\\{\\{(?:paths\\.${NAME}|run\\.folder|steps\\.${NAME}\\.outputs\\.${NAME})\\}\\}$`,
 );
@@ -51,4 +53,26 @@ export function replaceRunReferences(text: string, values: RunReferenceValues): 
     (_match, folder: string | undefined, step: string, output: string) =>
       folder === undefined ? values.stepOutput({ step, output }) : values.runFolder(),
   );
+}
+
+/** The parameters a console script answer refers to, in order. */
+export function findParameterReferences(text: string): readonly string[] {
+  return [...text.matchAll(PARAMETER_REFERENCE_PATTERN)].flatMap(([, name]) =>
+    name === undefined ? [] : [name],
+  );
+}
+
+/** Double-brace text in a console script answer that names no parameter. */
+export function findUnknownParameterReferences(text: string): readonly string[] {
+  return (text.match(ANY_REFERENCE_PATTERN) ?? []).filter(
+    (reference) => !ONE_PARAMETER_REFERENCE_PATTERN.test(reference),
+  );
+}
+
+/** Replaces parameter references in a console script answer. Replacements are not read again. */
+export function replaceParameterReferences(
+  text: string,
+  valueOf: (name: string) => string,
+): string {
+  return text.replace(PARAMETER_REFERENCE_PATTERN, (_match, name: string) => valueOf(name));
 }

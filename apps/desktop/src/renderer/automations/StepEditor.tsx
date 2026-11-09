@@ -12,13 +12,7 @@ import type {
 import { ParameterForm } from '../tools/ParameterForm.js';
 import { parameterProblem, submittedValues } from '../tools/parameter-form.js';
 import type { FormValue, FormValues } from '../tools/parameter-form.js';
-import {
-  failureChoice,
-  referenceOptions,
-  runnableTools,
-  without,
-  withFailureChoice,
-} from './automation-draft.js';
+import { failureChoice, referenceOptions, without, withFailureChoice } from './automation-draft.js';
 import type { FailureChoice, RunStep } from './automation-draft.js';
 
 const api = window.bildora;
@@ -165,7 +159,6 @@ function RunStepFields({ step, index, steps, tools, onChange, onError }: RunStep
   const [profiles, setProfiles] = useState<readonly ProfileView[]>([]);
   const references = referenceOptions(steps, index, tools);
   const toolLevel = tool?.level;
-  const selectable = runnableTools(tools);
 
   useEffect(() => {
     let current = true;
@@ -216,7 +209,7 @@ function RunStepFields({ step, index, steps, tools, onChange, onError }: RunStep
           {tool === undefined ? (
             <option value={step.tool}>{t('automation.toolMissing', { id: step.tool })}</option>
           ) : null}
-          {selectable.map(({ id, name }) => (
+          {tools.map(({ id, name }) => (
             <option key={id} value={id}>
               {name}
             </option>

@@ -33,11 +33,6 @@ export function newStepId(text: string, steps: readonly AutomationStep[]): strin
   return candidate;
 }
 
-/** Tools a step can run. Level 2 tools need a panel, which an automation has no place for. */
-export function runnableTools(tools: readonly ToolView[]): readonly ToolView[] {
-  return tools.filter(({ level }) => level !== 2);
-}
-
 /** Starts a step of a kind, or gives nothing when that kind has nothing to work with yet. */
 export function newStep(
   kind: StepKind,
@@ -46,7 +41,7 @@ export function newStep(
 ): AutomationStep | undefined {
   switch (kind) {
     case 'run': {
-      const [tool] = runnableTools(tools);
+      const [tool] = tools;
       return tool === undefined
         ? undefined
         : { id: newStepId(tool.id, steps), type: 'run', tool: tool.id };

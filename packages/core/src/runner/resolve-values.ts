@@ -27,6 +27,8 @@ export interface ValueSources {
   readonly values?: ParameterValues | undefined;
   readonly store: SecretStore;
   readonly pathVariables?: PathVariables | undefined;
+  /** Off, parameters marked `stdin` are left out, because the person answers in the console. */
+  readonly answerWithScript?: boolean | undefined;
 }
 
 function recordedParameter(
@@ -50,7 +52,8 @@ export async function resolveRunValues(
   tool: RegisteredTool,
   sources: ValueSources,
 ): Promise<ResolvedValues> {
-  const parameters = tool.manifest.level === 0 ? [] : tool.manifest.parameters;
+  const declared = tool.manifest.level === 0 ? [] : tool.manifest.parameters;
+  const parameters = declared.filter(({ stdin }) => !stdin || sources.answerWithScript === true);
   const { profile, store } = sources;
   const profileSecrets =
     profile === undefined ? {} : await readProfileSecrets(tool, profile, store);
@@ -65,6 +68,10 @@ export async function resolveRunValues(
   }
   // Unknown names stay in, because a form asking for one is a mistake the runner must report.
   Object.assign(values, sources.values);
+  for (const { name } of declared.filter((parameter) => !parameters.includes(parameter))) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- a plain value map
+    delete values[name];
+  }
 
   // Only paths expand: any other text is the user's, and may hold these characters on purpose.
   for (const parameter of parameters.filter(({ type }) => type === 'path')) {

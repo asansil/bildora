@@ -9,6 +9,7 @@ import { saveProfile } from '../profiles/profile-store.js';
 import { ToolRegistry } from '../registry/tool-registry.js';
 import type { RegisteredTool } from '../registry/tool-registry.js';
 import { createMemorySecretStore } from '../secrets/secret-store.js';
+import { waitUntil } from './process-test-helpers.js';
 import { startRecordedRun } from './recorded-run.js';
 import type { RecordedRunOptions } from './recorded-run.js';
 import type { RunProgress } from './progress-lines.js';
@@ -124,6 +125,77 @@ if (process.env.HANG_TOOL) { process.stdin.resume(); process.stdin.once('data', 
       }
     }
     history = await RunHistory.open(dataDir);
+  });
+
+  describe('console scripts', () => {
+    async function askingTool(): Promise<RegisteredTool> {
+      const asking = join(scriptFolder, 'ask.mjs');
+      await writeFile(
+        asking,
+        `import { createInterface } from 'node:readline/promises';
+const lines = createInterface({ input: process.stdin, output: process.stdout });
+const answer = await lines.question('Password: ');
+lines.close();
+process.stdout.write('GOT ' + answer + '\\n', () => process.exit(answer === '' ? 3 : 0));`,
+      );
+      return registry.register(
+        toolManifestSchema.parse({
+          schemaVersion: MANIFEST_SCHEMA_VERSION,
+          id: 'asking',
+          name: 'Asking',
+          version: '1.0.0',
+          level: 1,
+          interpreter: 'node',
+          run: { program: asking },
+          parameters: [
+            { name: 'password', type: 'string', label: 'Password', secret: true, stdin: true },
+          ],
+          stdin: [{ expect: 'Password:', send: '{{params.password}}' }],
+        }),
+      );
+    }
+
+    it('hides a secret answer in the console and in history', async () => {
+      const tool = await askingTool();
+      const shown: string[] = [];
+
+      const run = await startRecordedRun(
+        tool,
+        options({
+          answerWithScript: true,
+          values: { password: 'plain-secret' },
+          onOutput: (data) => shown.push(data),
+        }),
+      );
+
+      expect(await run.result).toMatchObject({ status: 'completed' });
+      expect(run.parameters).toEqual([{ name: 'password', label: 'Password', secret: true }]);
+      const record = history.get('work', run.runId);
+      expect(record?.output).toContain('GOT ••••••');
+      expect(JSON.stringify(record)).not.toContain('plain-secret');
+      expect(shown.join('')).not.toContain('plain-secret');
+    });
+
+    it('leaves stdin parameters out when the script is off', async () => {
+      const tool = await askingTool();
+
+      let shown = '';
+      const run = await startRecordedRun(
+        tool,
+        options({
+          values: { password: 'plain-secret' },
+          onOutput: (data) => {
+            shown += data;
+          },
+        }),
+      );
+      expect(run.parameters).toEqual([]);
+      await waitUntil(() => shown.includes('Password:'), 15_000);
+      run.write('typed\r');
+
+      expect(await run.result).toMatchObject({ status: 'completed' });
+      expect(history.get('work', run.runId)?.output).toContain('GOT typed');
+    });
   });
 
   it('redacts a secret passed as an argument, as well', async () => {

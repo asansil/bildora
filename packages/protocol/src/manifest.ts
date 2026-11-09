@@ -1,7 +1,14 @@
 import { z } from 'zod';
+import { findParameterReferences, findUnknownParameterReferences } from './references.js';
 
 /** Manifest format this build reads and writes. */
 export const MANIFEST_SCHEMA_VERSION = 1;
+
+/** Answers a console script can hold. */
+export const STDIN_SCRIPT_MAX_ENTRIES = 100;
+/** How long a console script waits for its text when the entry sets no `timeout`. */
+export const STDIN_TIMEOUT_DEFAULT_SECONDS = 30;
+const STDIN_TIMEOUT_MAX_SECONDS = 86_400;
 
 /**
  * Ids become folder names, so the pattern also keeps out path separators and the device names
@@ -16,8 +23,6 @@ export const NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 const FLAG_PATTERN = /^(?:--?|\/)[a-zA-Z0-9?][a-zA-Z0-9_-]*$/;
 const INTERPRETER_PATTERN = /^[a-zA-Z0-9._+-]+$/;
 const ENVIRONMENT_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
-/** Relative, inside the tool folder: no drive, no leading separator and no `..` segment. */
-const CONTAINED_PATH_PATTERN = /^(?![\\/])(?![a-zA-Z]:)(?!(?:.*[\\/])?\.\.(?:[\\/]|$)).+$/;
 
 /** What a tool can declare it does. Declarations inform the user; they are not enforced. */
 export const PERMISSIONS = [
@@ -52,6 +57,8 @@ const parameterFields = {
   flag: z.string().regex(FLAG_PATTERN).optional(),
   /** Hands the value over in this environment variable rather than as an argument. */
   env: z.string().regex(ENVIRONMENT_NAME_PATTERN).optional(),
+  /** Hands the value over only through the console script, never as an argument. */
+  stdin: z.boolean().default(false),
 };
 
 const parameterSchema = z.discriminatedUnion('type', [
@@ -82,6 +89,7 @@ const parameterSchema = z.discriminatedUnion('type', [
     // A boolean has no value of its own, so it can only appear as a flag.
     flag: z.string().regex(FLAG_PATTERN),
     env: z.never().optional(),
+    stdin: z.literal(false).default(false),
     default: z.boolean().optional(),
   }),
   z.strictObject({
@@ -102,6 +110,15 @@ const outputSchema = z.union([
   z.strictObject({ ...outputFields, path: nonEmpty }),
 ]);
 
+/** One answer of a console script: wait for `expect` in the output, then type `send` and Enter. */
+const scriptEntrySchema = z.strictObject({
+  /** Literal text, never a pattern. Without it, the answer follows the one before at once. */
+  expect: nonEmpty.optional(),
+  send: z.string(),
+  /** Seconds to wait for `expect`. */
+  timeout: z.int().positive().max(STDIN_TIMEOUT_MAX_SECONDS).optional(),
+});
+
 const commonFields = {
   schemaVersion: z.literal(MANIFEST_SCHEMA_VERSION),
   id: z.string().max(IDENTIFIER_MAX_LENGTH).regex(IDENTIFIER_PATTERN),
@@ -119,22 +136,82 @@ const declaredFields = {
   outputs: z.array(outputSchema).default([]),
 };
 
-const manifestShape = z.discriminatedUnion('level', [
-  z.strictObject({ ...commonFields, level: z.literal(0), run: commandSchema }),
-  z.strictObject({ ...commonFields, ...declaredFields, level: z.literal(1), run: commandSchema }),
-  z.strictObject({
-    ...commonFields,
-    ...declaredFields,
-    level: z.literal(2),
-    entryPoint: z.strictObject({
-      panel: z.string().regex(CONTAINED_PATH_PATTERN),
-      backend: commandSchema,
+const manifestShape = z.discriminatedUnion(
+  'level',
+  [
+    z.strictObject({ ...commonFields, level: z.literal(0), run: commandSchema }),
+    z.strictObject({
+      ...commonFields,
+      ...declaredFields,
+      level: z.literal(1),
+      run: commandSchema,
+      stdin: z.array(scriptEntrySchema).min(1).max(STDIN_SCRIPT_MAX_ENTRIES).optional(),
     }),
-  }),
-]);
+  ],
+  {
+    // The only issue the union raises itself is a level it does not know.
+    error: () => 'Level must be 0 or 1: this version of Bildora runs no level 2 tools',
+  },
+);
 
 function findDuplicates(values: readonly string[]): string[] {
   return [...new Set(values.filter((value, index) => values.indexOf(value) !== index))];
+}
+
+type DeclaredManifest = Extract<z.output<typeof manifestShape>, { level: 1 }>;
+
+/** Answers may refer only to declared parameters, and every stdin parameter needs an answer. */
+function checkScript(manifest: DeclaredManifest, context: z.RefinementCtx): void {
+  const script = manifest.stdin ?? [];
+  const declared = new Set(manifest.parameters.map(({ name }) => name));
+  const answered = new Set<string>();
+
+  script.forEach((entry, index) => {
+    const path = ['stdin', index];
+    if (entry.timeout !== undefined && entry.expect === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: [...path, 'timeout'],
+        message: 'A time limit needs an expect text to wait for',
+      });
+    }
+    for (const reference of findUnknownParameterReferences(entry.send)) {
+      context.addIssue({
+        code: 'custom',
+        path: [...path, 'send'],
+        message: `"${reference}" is not a reference an answer can use`,
+      });
+    }
+    for (const name of findParameterReferences(entry.send)) {
+      answered.add(name);
+      if (!declared.has(name)) {
+        context.addIssue({
+          code: 'custom',
+          path: [...path, 'send'],
+          message: `Answer refers to unknown parameter "${name}"`,
+        });
+      }
+    }
+  });
+
+  manifest.parameters.forEach((parameter, index) => {
+    if (!parameter.stdin) {
+      return;
+    }
+    if (manifest.stdin === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['parameters', index, 'stdin'],
+        message: `Parameter "${parameter.name}" is marked stdin, but the manifest has no stdin script`,
+      });
+    } else if (!answered.has(parameter.name)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['parameters', index, 'stdin'],
+        message: `Parameter "${parameter.name}" is marked stdin, but no answer refers to it`,
+      });
+    }
+  });
 }
 
 /** Adds the rules a JSON Schema cannot state, which the published schema therefore leaves out. */
@@ -169,9 +246,18 @@ export const toolManifestSchema = manifestShape.superRefine((manifest, context) 
     });
   }
 
+  checkScript(manifest, context);
+
   let sawOptionalPositional = false;
   parameters.forEach((parameter, index) => {
     const path = ['parameters', index];
+    if (parameter.stdin && (parameter.flag !== undefined || parameter.env !== undefined)) {
+      context.addIssue({
+        code: 'custom',
+        path: [...path, 'stdin'],
+        message: 'A parameter marked stdin reaches the tool only through the script',
+      });
+    }
     if (parameter.env !== undefined && parameter.flag !== undefined) {
       context.addIssue({
         code: 'custom',
@@ -197,7 +283,7 @@ export const toolManifestSchema = manifestShape.superRefine((manifest, context) 
         message: `Default "${parameter.default}" is not one of the choices`,
       });
     }
-    if (parameter.flag === undefined && parameter.env === undefined) {
+    if (parameter.flag === undefined && parameter.env === undefined && !parameter.stdin) {
       if (parameter.required && sawOptionalPositional) {
         context.addIssue({
           code: 'custom',
@@ -235,6 +321,7 @@ export type ToolManifestInput = z.input<typeof toolManifestSchema>;
 export type ToolParameter = z.output<typeof parameterSchema>;
 export type ToolOutput = z.output<typeof outputSchema>;
 export type ToolCommand = z.output<typeof commandSchema>;
+export type ToolScriptEntry = z.output<typeof scriptEntrySchema>;
 
 /** Builds the JSON Schema published for tool authors, from the same source core validates with. */
 export function buildToolManifestJsonSchema(): Record<string, unknown> {

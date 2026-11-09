@@ -25,6 +25,8 @@ export interface ToolStartRequest {
   readonly rows?: number | undefined;
   readonly onOutput?: ((data: string) => void) | undefined;
   readonly onProgress?: ((progress: RunProgress) => void) | undefined;
+  /** Types the tool's console script. Automations and the CLI always do. */
+  readonly answerWithScript?: boolean | undefined;
 }
 
 /**
@@ -56,5 +58,8 @@ export async function startToolRun(
     ...(rows === undefined ? {} : { rows }),
     ...(request.onOutput === undefined ? {} : { onOutput: request.onOutput }),
     ...(request.onProgress === undefined ? {} : { onProgress: request.onProgress }),
+    ...(request.answerWithScript === undefined
+      ? {}
+      : { answerWithScript: request.answerWithScript }),
   });
 }

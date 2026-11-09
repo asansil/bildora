@@ -50,6 +50,13 @@ import type {
 
 type DeclaredParameter = Extract<RegisteredTool['manifest'], { level: 1 }>['parameters'][number];
 
+function deliveryOf(parameter: DeclaredParameter): ParameterView['delivery'] {
+  if (parameter.stdin) {
+    return 'script';
+  }
+  return parameter.env === undefined ? 'argument' : 'environment';
+}
+
 function viewOfParameter(parameter: DeclaredParameter): ParameterView {
   const { name, label, type, required, description } = parameter;
   return {
@@ -57,7 +64,7 @@ function viewOfParameter(parameter: DeclaredParameter): ParameterView {
     label,
     type,
     required,
-    delivery: parameter.env === undefined ? 'argument' : 'environment',
+    delivery: deliveryOf(parameter),
     ...(description === undefined ? {} : { description }),
     ...(parameter.default === undefined ? {} : { default: parameter.default }),
     ...(type === 'choice' ? { choices: parameter.choices } : {}),
@@ -81,12 +88,13 @@ async function viewOfTool(tool: RegisteredTool, pathVariables: PathVariables): P
     ...(category === undefined ? {} : { category }),
     ...(description === undefined ? {} : { description }),
     ...(interpreter === undefined ? {} : { interpreter }),
-    ...(manifest.level === 2 ? {} : { program: manifest.run.program }),
+    program: manifest.run.program,
     ...(manifest.level === 0
       ? {}
       : {
           parameters: manifest.parameters.map(viewOfParameter),
           outputs: manifest.outputs.map((output) => output.name),
+          ...(manifest.stdin === undefined ? {} : { hasScript: true as const }),
         }),
     permissions,
     runtime: await checkRuntime(tool, { pathVariables }),

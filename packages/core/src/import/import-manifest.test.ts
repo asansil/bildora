@@ -97,7 +97,7 @@ entryPoint:
   panel: index.html
   backend:
     program: backend.py`,
-      'later version',
+      'no level 2 tools',
     ],
   ])('refuses %s, with the reason', async (_name, text, reason) => {
     await writeFile(manifest, text);

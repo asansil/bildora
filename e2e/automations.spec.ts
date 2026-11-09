@@ -193,6 +193,44 @@ test('a failed step stops the automation and says why', async () => {
   await expect(window.getByTestId('history-detail')).toContainText('Bad');
 });
 
+test('a block answers the console script of its tool, with nobody there', async () => {
+  const asker = join(folder, 'ask.mjs');
+  await writeFile(
+    asker,
+    `import { createInterface } from 'node:readline/promises';
+const lines = createInterface({ input: process.stdin, output: process.stdout });
+const name = await lines.question('Your name: ');
+lines.close();
+console.log('HELLO ' + name);`,
+  );
+  await writeTool(
+    'asker',
+    'Asker',
+    `run:
+  program: ${asker}
+parameters:
+  - { name: name, type: string, label: Name, required: true, stdin: true }
+stdin:
+  - { expect: 'Your name:', send: '{{params.name}}', timeout: 10 }
+`,
+  );
+  await writeAutomation(
+    'greets',
+    'Greets',
+    `  - { id: ask, type: run, tool: asker, values: { name: Zoe } }
+`,
+  );
+
+  const { window } = await launchShell();
+  await openAutomation(window, 'Greets');
+  await window.getByRole('button', { name: 'Run', exact: true }).click();
+
+  await expect(step(window, 'ask')).toHaveAttribute('data-state', 'completed');
+  await rail(window, 'Run history').click();
+  await window.locator('.history-row').first().click();
+  await expect(window.getByTestId('history-output')).toContainText('HELLO Zoe');
+});
+
 test('a run that went on past a failed step says so', async () => {
   await fakeTool('bad', 'Bad', ['exit', '7']);
   await writeAutomation(

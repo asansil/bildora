@@ -73,6 +73,8 @@ export interface WorkspaceLayout {
   readonly activeTab?: string;
   /** The tool id the History tab is filtered by. */
   readonly historyFilter?: string;
+  /** Ids of the tools whose form answers their console script, absent when there are none. */
+  readonly scriptAnswers?: readonly string[];
 }
 
 export interface Workspace {
@@ -100,6 +102,8 @@ export interface LayoutChanges {
   readonly tabs?: readonly TabChange[] | undefined;
   readonly activeTab?: string | null | undefined;
   readonly historyFilter?: string | null | undefined;
+  /** Replaces the list. An empty one clears it. */
+  readonly scriptAnswers?: readonly string[] | undefined;
 }
 
 export interface WorkspaceChanges {
@@ -129,6 +133,12 @@ function stringsIn(value: unknown): readonly string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
     : [];
+}
+
+/** Tool ids with no repeats, or nothing when there are none. */
+function scriptAnswersOf(ids: readonly string[]): { scriptAnswers?: readonly string[] } {
+  const unique = [...new Set(ids)];
+  return unique.length === 0 ? {} : { scriptAnswers: unique };
 }
 
 function isPanelWidth(value: unknown): value is number {
@@ -200,12 +210,14 @@ function layoutOf(value: unknown): WorkspaceLayout {
   }
   const fields: Record<string, unknown> = { ...value };
   const { categoryOrder, panelWidth, openCategory, tabs, activeTab, historyFilter } = fields;
+  const { scriptAnswers } = fields;
   return withTabs(
     {
       categoryOrder: stringsIn(categoryOrder),
       ...(isPanelWidth(panelWidth) ? { panelWidth } : {}),
       ...(typeof openCategory === 'string' ? { openCategory } : {}),
       ...(typeof historyFilter === 'string' ? { historyFilter } : {}),
+      ...scriptAnswersOf(stringsIn(scriptAnswers)),
     },
     cleanTabs(Array.isArray(tabs) ? tabs : []),
     activeTab,
@@ -371,6 +383,7 @@ function changedLayout(layout: WorkspaceLayout, changes: LayoutChanges): Workspa
       ...(panelWidth === undefined ? {} : { panelWidth }),
       ...(openCategory === undefined ? {} : { openCategory }),
       ...(historyFilter === undefined ? {} : { historyFilter }),
+      ...scriptAnswersOf(changes.scriptAnswers ?? layout.scriptAnswers ?? []),
     },
     changes.tabs === undefined ? layout.tabs : cleanTabs(changes.tabs),
     merged(layout.activeTab, changes.activeTab),

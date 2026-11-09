@@ -28,6 +28,22 @@ const levelOne = {
   permissions: ['filesystem.read', 'network'],
   leftoverProcesses: 'keep',
 };
+// The embedded panel level, which no version of Bildora runs any more.
+const scripted = {
+  ...base,
+  level: 1,
+  run: { program: 'menu.bat' },
+  parameters: [
+    { name: 'option', type: 'choice', label: 'Option', choices: ['1', '2'], stdin: true },
+    { name: 'password', type: 'string', label: 'Password', secret: true, stdin: true },
+    { name: 'out', type: 'path', label: 'Output', flag: '--out' },
+  ],
+  stdin: [
+    { expect: 'Choose an option:', send: '{{params.option}}' },
+    { expect: 'Password:', send: '{{params.password}}', timeout: 60 },
+    { send: 'y' },
+  ],
+};
 const levelTwo = {
   ...base,
   level: 2,
@@ -82,7 +98,7 @@ describe('toolManifestSchema', () => {
   it.each([
     ['level 0', levelZero],
     ['level 1', levelOne],
-    ['level 2', levelTwo],
+    ['scripted level 1', scripted],
   ])('accepts a %s manifest', (_name, manifest) => {
     expect(issues(manifest)).toEqual([]);
   });
@@ -105,11 +121,7 @@ describe('toolManifestSchema', () => {
     ['an unknown leftover policy', { ...levelZero, leftoverProcesses: 'maybe' }],
     ['parameters at level 0', { ...levelZero, parameters: [] }],
     ['level 1 without a command', { ...base, level: 1 }],
-    ['level 2 without an entry point', { ...base, level: 2 }],
-    [
-      'a panel outside the tool folder',
-      { ...levelTwo, entryPoint: { ...levelTwo.entryPoint, panel: '../panel.html' } },
-    ],
+    ['a level 2 manifest', levelTwo],
     [
       'a boolean without a flag',
       {
@@ -123,16 +135,10 @@ describe('toolManifestSchema', () => {
     expect(issues(manifest)).not.toEqual([]);
   });
 
-  it.each([
-    ['nested/panel.html', true],
-    ['a..b/panel.html', true],
-    ['..\\panel.html', false],
-    ['a/../../panel.html', false],
-    ['/panel.html', false],
-    ['C:\\panel.html', false],
-  ])('treats panel path %s as contained: %s', (panel, contained) => {
-    const manifest = { ...levelTwo, entryPoint: { ...levelTwo.entryPoint, panel } };
-    expect(issues(manifest).length === 0).toBe(contained);
+  it('says why a level 2 manifest is refused', () => {
+    expect(issues(levelTwo)).toEqual([
+      'Level must be 0 or 1: this version of Bildora runs no level 2 tools',
+    ]);
   });
 
   describe('rules beyond the published schema', () => {
@@ -188,6 +194,65 @@ describe('toolManifestSchema', () => {
       );
     });
 
+    describe('console scripts', () => {
+      const withScript = (changes: object): unknown => ({ ...scripted, ...changes });
+      const [option, password, out] = scripted.parameters;
+
+      it('accepts a script with stdin parameters, and keeps them out of the positionals', () => {
+        expect(issues(scripted)).toEqual([]);
+        const required = { ...option, required: true };
+        const optional = { ...text, name: 'later' };
+        expect(issues(withScript({ parameters: [optional, required, password, out] }))).toEqual([]);
+      });
+
+      it.each([
+        ['a stdin parameter with a flag', { parameters: [{ ...option, flag: '-o' }, password] }],
+        ['a stdin parameter with a variable', { parameters: [{ ...option, env: 'O' }, password] }],
+        [
+          'a stdin parameter no answer refers to',
+          { parameters: [option, password, { ...text, name: 'extra', stdin: true }] },
+        ],
+        ['a stdin parameter with no script', { stdin: undefined }],
+        ['an answer naming an unknown parameter', { stdin: [{ send: '{{params.nope}}' }] }],
+        [
+          'an answer with another kind of reference',
+          { stdin: [...scripted.stdin, { send: '{{steps.a.outputs.b}}' }] },
+        ],
+        ['a time limit with nothing to wait for', { stdin: [{ send: 'x', timeout: 5 }] }],
+      ])('rejects %s', (_name, changes) => {
+        expect(issues(withScript(changes))).not.toEqual([]);
+      });
+
+      it.each([
+        [
+          'a boolean marked stdin',
+          { name: 'v', type: 'boolean', label: 'V', flag: '-v', stdin: true },
+        ],
+      ])('rejects %s', (_name, parameter) => {
+        expect(issues(withScript({ parameters: [option, password, parameter] }))).not.toEqual([]);
+      });
+
+      it.each([
+        ['an empty script', []],
+        ['a script that is too long', Array.from({ length: 101 }, () => ({ send: 'x' }))],
+        ['an empty expect', [{ expect: '', send: 'x' }]],
+        ['a time limit of zero', [{ expect: 'a', send: 'x', timeout: 0 }]],
+        ['an unknown field', [{ expect: 'a', send: 'x', regex: true }]],
+      ])('rejects %s', (_name, stdin) => {
+        expect(issues({ ...base, level: 1, run: { program: 'a' }, stdin })).not.toEqual([]);
+      });
+
+      it('names the parameter a script misses', () => {
+        expect(issues(withScript({ stdin: [{ send: '{{params.option}}' }] }))).toEqual([
+          'Parameter "password" is marked stdin, but no answer refers to it',
+        ]);
+      });
+
+      it('rejects a script at level 0', () => {
+        expect(issues({ ...levelZero, stdin: [{ send: 'x' }] })).not.toEqual([]);
+      });
+    });
+
     it('rejects an output bound to an unknown parameter', () => {
       expect(issues(withParameters([], [{ name: 'a', param: 'missing' }]))).toContainEqual(
         expect.stringContaining('unknown parameter'),
@@ -239,13 +304,12 @@ describe('published JSON Schema', () => {
   it.each([
     ['level 0', levelZero],
     ['level 1', levelOne],
-    ['level 2', levelTwo],
   ])('accepts a %s manifest', (_name, manifest) => {
     expect(validate(manifest)).toBe(true);
   });
 
   it.each([
-    ['level 2 without an entry point', { ...base, level: 2 }],
+    ['a level 2 manifest', levelTwo],
     ['parameters at level 0', { ...levelZero, parameters: [] }],
     ['an unknown permission', { ...levelZero, permissions: ['everything'] }],
     ['an unknown field', { ...levelZero, permisions: [] }],

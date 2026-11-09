@@ -1,4 +1,7 @@
-import type { ToolParameter } from '@bildora/protocol';
+import { replaceParameterReferences } from '@bildora/protocol';
+import type { ToolParameter, ToolScriptEntry } from '@bildora/protocol';
+import { scriptAnswers } from './stdin-script.js';
+import type { ScriptAnswer } from './stdin-script.js';
 
 export type ParameterValue = string | number | boolean;
 export type ParameterValues = Readonly<Record<string, ParameterValue>>;
@@ -51,7 +54,7 @@ function checkedValue(
 /**
  * Turns parameter values into arguments, in declared order. An unset optional disappears along
  * with its flag, and a boolean is its flag alone. A parameter with `env` is left to
- * `renderEnvironment`.
+ * `renderEnvironment`, and one marked `stdin` to `renderScript`.
  */
 export function renderArguments(
   parameters: readonly ToolParameter[],
@@ -64,6 +67,9 @@ export function renderArguments(
   }
 
   return parameters.flatMap((parameter) => {
+    if (parameter.stdin) {
+      return [];
+    }
     const value = checkedValue(parameter, values);
     if (value === undefined || parameter.env !== undefined) {
       return [];
@@ -83,7 +89,8 @@ export function renderEnvironment(
 ): Record<string, string> {
   const variables: Record<string, string> = {};
   for (const parameter of parameters) {
-    const value = parameter.env === undefined ? undefined : checkedValue(parameter, values);
+    const value =
+      parameter.env === undefined || parameter.stdin ? undefined : checkedValue(parameter, values);
     if (parameter.env !== undefined && value !== undefined) {
       const text = String(value);
       assertPassable(text);
@@ -91,6 +98,26 @@ export function renderEnvironment(
     }
   }
   return variables;
+}
+
+/**
+ * The answers a console script types, with each reference replaced by the text of its value. An
+ * optional parameter with no value answers with an empty line. A parameter marked `stdin` is
+ * checked here, since only the script hands it over.
+ */
+export function renderScript(
+  parameters: readonly ToolParameter[],
+  script: readonly ToolScriptEntry[],
+  values: ParameterValues,
+): readonly ScriptAnswer[] {
+  const texts = new Map<string, string>();
+  for (const parameter of parameters) {
+    const value = checkedValue(parameter, values);
+    texts.set(parameter.name, value === undefined ? '' : String(value));
+  }
+  return scriptAnswers(script, (send) =>
+    replaceParameterReferences(send, (name) => texts.get(name) ?? ''),
+  );
 }
 
 function assertPassable(value: string): void {

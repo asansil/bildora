@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  findParameterReferences,
   findStepOutputReferences,
+  findUnknownParameterReferences,
   findUnknownReferences,
+  replaceParameterReferences,
   replaceRunReferences,
   stepOutputReference,
   usesRunFolder,
@@ -41,5 +44,28 @@ describe('run references', () => {
         '{{paths.a}} {{run.folder}} {{steps.a.outputs.b}} {{run.foldr}} {{steps.a}}',
       ),
     ).toEqual(['{{run.foldr}}', '{{steps.a}}']);
+  });
+});
+
+describe('parameter references', () => {
+  it('finds parameters in order, among other text', () => {
+    expect(findParameterReferences('{{params.a}} and {{params.b_2}} {{params.}}')).toEqual([
+      'a',
+      'b_2',
+    ]);
+  });
+
+  it('reports every other double-brace text', () => {
+    expect(
+      findUnknownParameterReferences('{{params.a}} {{run.folder}} {{params.a.b}} {{ params.a }}'),
+    ).toEqual(['{{run.folder}}', '{{params.a.b}}', '{{ params.a }}']);
+  });
+
+  it('replaces them, and does not read replacements again', () => {
+    expect(
+      replaceParameterReferences('{{params.a}}-{{params.b}}', (name) =>
+        name === 'a' ? '{{params.b}}' : 'B',
+      ),
+    ).toBe('{{params.b}}-B');
   });
 });

@@ -1,8 +1,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import '@bildora/panel-sdk/theme.css';
 import type { ShellApi } from '../preload/api.js';
 import { App } from './App.js';
+import './styles/tokens.css';
 import './styles/shell.css';
 
 declare global {

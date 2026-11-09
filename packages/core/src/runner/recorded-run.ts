@@ -15,7 +15,14 @@ import type { RunFailure, RunOptions, RunResult, ToolRun } from './run-tool.js';
 
 export interface RecordedRunOptions extends Pick<
   RunOptions,
-  'columns' | 'cwd' | 'env' | 'launcherPath' | 'onOutput' | 'onProgress' | 'rows'
+  | 'answerWithScript'
+  | 'columns'
+  | 'cwd'
+  | 'env'
+  | 'launcherPath'
+  | 'onOutput'
+  | 'onProgress'
+  | 'rows'
 > {
   readonly history: RunHistory;
   /** Whose history this run joins, whichever scope the tool came from. */
@@ -66,7 +73,7 @@ function startByLevel(
   recorder: OutputRecorder | undefined,
   redactor: StreamRedactor,
 ): ToolRun {
-  const { cwd, env, launcherPath, columns, rows, onOutput, onProgress } = options;
+  const { cwd, env, launcherPath, columns, rows, onOutput, onProgress, answerWithScript } = options;
   const shared = {
     parameters,
     ...(cwd === undefined ? {} : { cwd }),
@@ -81,6 +88,7 @@ function startByLevel(
     ...(columns === undefined ? {} : { columns }),
     ...(rows === undefined ? {} : { rows }),
     ...(onProgress === undefined ? {} : { onProgress }),
+    ...(answerWithScript === undefined ? {} : { answerWithScript }),
     onOutput: (data) => {
       recorder.write(data);
       const shown = redactor.write(data);
@@ -121,7 +129,7 @@ export async function startRecordedRun(
   options: RecordedRunOptions,
 ): Promise<RecordedToolRun> {
   const { history, workspaceId, store, historyRunLimit, profile, values, pathVariables } = options;
-  const { automationRunId } = options;
+  const { automationRunId, answerWithScript } = options;
   const runId = options.runId ?? randomUUID();
   const startedAt = Date.now();
   const { id: toolId, name: toolName, level } = tool.manifest;
@@ -131,7 +139,13 @@ export async function startRecordedRun(
   let expanded: RegisteredTool;
   try {
     expanded = expandToolCommand(tool, pathVariables ?? new Map<string, string>());
-    resolved = await resolveRunValues(tool, { profile, values, store, pathVariables });
+    resolved = await resolveRunValues(tool, {
+      profile,
+      values,
+      store,
+      pathVariables,
+      answerWithScript,
+    });
   } catch (error) {
     const result: RunResult = {
       status: 'failed',

@@ -157,10 +157,10 @@ async function runAutomation(
       history,
       pathVariables: await readPathVariables(dataDir).catch(() => undefined),
       findTool: (id) => findVisibleTool(registry, workspaceId, id),
-      startStep: (tool, { automationRunId, profileId, values, onProgress }) =>
+      startStep: (tool, { automationRunId, profileId, values, onProgress, answerWithScript }) =>
         startToolRun(
           tool,
-          { workspaceId, automationRunId, profileId, values, onProgress },
+          { workspaceId, automationRunId, profileId, values, onProgress, answerWithScript },
           { dataDir, history, store },
         ),
       askForAction: io.interactive ? ({ message, signal }) => ask(io, message, signal) : undefined,

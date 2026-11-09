@@ -106,11 +106,7 @@ function registeredPrograms(
   tools: readonly RegisteredTool[],
   variables: PathVariables,
 ): Set<string> {
-  return new Set(
-    tools.flatMap(({ manifest }) =>
-      manifest.level === 2 ? [] : [comparablePath(manifest.run.program, variables)],
-    ),
-  );
+  return new Set(tools.map(({ manifest }) => comparablePath(manifest.run.program, variables)));
 }
 
 async function propose(

@@ -1,8 +1,9 @@
-import { copyFile, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { toolManifestSchema } from '@bildora/protocol';
+import { parse } from 'yaml';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { RegisteredTool } from '../registry/tool-registry.js';
 import { GLOBAL_SCOPE } from '../storage/data-directory.js';
@@ -260,25 +261,6 @@ describe.skipIf(process.platform !== 'win32')('startRun', () => {
       expect(JSON.stringify(result)).not.toContain('hunter2');
     });
 
-    it('reports a level 2 tool as unsupported for now', async () => {
-      const tool: RegisteredTool = {
-        ...fakeNodeTool({}),
-        manifest: toolManifestSchema.parse({
-          schemaVersion: 1,
-          id: 'fake.panel',
-          name: 'Panel',
-          version: '1.0.0',
-          level: 2,
-          entryPoint: { panel: 'index.html', backend: { program: 'a' } },
-        }),
-      };
-
-      expect(await startRun(tool).result).toMatchObject({
-        status: 'failed',
-        failure: { kind: 'unsupported' },
-      });
-    });
-
     it('reports a missing launcher', async () => {
       const launcherPath = join(fixtures, 'no-such-launcher.exe');
 
@@ -389,6 +371,88 @@ describe.skipIf(process.platform !== 'win32')('startRun', () => {
         env: env(),
         parameters: { first: 'a\r\necho INJECTED' },
       }).result;
+
+      expect(result).toMatchObject({ status: 'failed', failure: { kind: 'invalid-parameters' } });
+    });
+  });
+
+  describe('console scripts', () => {
+    const sample = fileURLToPath(
+      new URL('../../../../examples/level-1-menu-cli/', import.meta.url),
+    );
+
+    async function menuTool(): Promise<RegisteredTool> {
+      const text = await readFile(join(sample, 'tool.yaml'), 'utf8');
+      return {
+        scope: GLOBAL_SCOPE,
+        directory: sample,
+        manifest: toolManifestSchema.parse(parse(text)),
+      };
+    }
+
+    function batchMenu(stdin: unknown): RegisteredTool {
+      return {
+        scope: GLOBAL_SCOPE,
+        directory: fixtures,
+        manifest: toolManifestSchema.parse({
+          schemaVersion: 1,
+          id: 'fake.menu',
+          name: 'Menu',
+          version: '1.0.0',
+          level: 1,
+          run: { program: 'menu.bat' },
+          parameters: [{ name: 'pick', type: 'integer', label: 'Pick', stdin: true }],
+          stdin,
+        }),
+      };
+    }
+
+    it('answers Python input() prompts with the script', async () => {
+      const observed = observe(await menuTool(), {
+        answerWithScript: true,
+        parameters: { format: 'json', name: 'Ada', upper: true },
+      });
+
+      expect(await observed.run.result).toMatchObject({ status: 'completed' });
+      expect(observed.output()).toContain('"greeting": "HELLO, ADA"');
+    });
+
+    it('leaves the prompts to the person when the script is off', async () => {
+      const observed = observe(await menuTool(), { parameters: {} });
+
+      await observed.waitFor(/Format \[csv\/json\]:/);
+      observed.run.write('csv\r');
+      await observed.waitFor(/Your name:/);
+      observed.run.write('Bob\r');
+      await observed.waitFor(/Continue\? \[y\/n\]/);
+      observed.run.write('y\r');
+
+      expect(await observed.run.result).toMatchObject({ status: 'completed' });
+      expect(observed.output()).toContain('Hello, Bob,Bob');
+    });
+
+    it('answers a batch set /p prompt', async () => {
+      const tool = batchMenu([{ expect: 'Pick a number:', send: '{{params.pick}}' }]);
+      const observed = observe(tool, { answerWithScript: true, parameters: { pick: 42 } });
+
+      expect(await observed.run.result).toMatchObject({ status: 'completed' });
+      expect(observed.output()).toContain('PICKED 42');
+    });
+
+    it('ends the tool and fails the run when a wait runs out', async () => {
+      const tool = batchMenu([{ expect: 'Never shown', send: '{{params.pick}}', timeout: 1 }]);
+      const observed = observe(tool, { answerWithScript: true, parameters: { pick: 1 } });
+
+      const result = await observed.run.result;
+      expect(result).toMatchObject({ status: 'failed', failure: { kind: 'stdin-timeout' } });
+      expect(result.status === 'failed' ? result.failure.message : '').toContain('"Never shown"');
+    });
+
+    it('reports a missing required answer before starting', async () => {
+      const result = await observe(await menuTool(), {
+        answerWithScript: true,
+        parameters: { format: 'csv' },
+      }).run.result;
 
       expect(result).toMatchObject({ status: 'failed', failure: { kind: 'invalid-parameters' } });
     });
