@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname, isAbsolute, normalize, resolve } from 'node:path';
 import {
   DEFAULT_CASE,
+  automationRuleIssues,
   connectionOutput,
   findStepOutputReferences,
   replaceRunReferences,
@@ -241,6 +242,11 @@ function cancelScope(scope: Scope): void {
 export function startAutomationRun(options: AutomationRunOptions): AutomationRun {
   const { workspaceId, trigger, dataDir, history, pathVariables } = options;
   const { automation } = options;
+  // Callers check first; a flow saved half built must never reach the scheduler.
+  const [broken] = automationRuleIssues(automation);
+  if (broken !== undefined) {
+    throw new Error(`The automation cannot run: ${broken.message}`);
+  }
   const variables: PathVariables = pathVariables ?? new Map<string, string>();
   const delay = options.delay ?? waitFor;
   const runId = options.runId ?? randomUUID();

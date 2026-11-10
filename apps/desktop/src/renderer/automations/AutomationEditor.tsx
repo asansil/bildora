@@ -4,13 +4,13 @@ import type { MessageKey } from '../../shared/i18n/translate.js';
 import type {
   AutomationDraft,
   AutomationProblemView,
-  AutomationStep,
   AutomationView,
   ToolView,
 } from '../../shared/ipc-contract.js';
 import { StepEditor } from './StepEditor.js';
-import { moveStep, newStep } from './automation-draft.js';
-import type { StepKind } from './automation-draft.js';
+import { fromLinear } from '@bildora/protocol';
+import { moveStep, newStep, stepsOf } from './automation-draft.js';
+import type { AutomationStep, StepKind } from './automation-draft.js';
 
 const api = window.bildora;
 
@@ -50,7 +50,8 @@ export function AutomationEditor({
   const descriptionId = useId();
   const [name, setName] = useState(automation?.name ?? '');
   const [description, setDescription] = useState(automation?.description ?? '');
-  const [steps, setSteps] = useState<readonly AutomationStep[]>(automation?.steps ?? []);
+  const [saved] = useState(() => (automation === undefined ? [] : (stepsOf(automation) ?? [])));
+  const [steps, setSteps] = useState<readonly AutomationStep[]>(saved);
   const [found, setFound] = useState<readonly AutomationProblemView[]>([]);
 
   const trimmed = name.trim();
@@ -60,7 +61,7 @@ export function AutomationEditor({
   const dirty =
     name !== (automation?.name ?? '') ||
     description !== (automation?.description ?? '') ||
-    JSON.stringify(steps) !== JSON.stringify(automation?.steps ?? []);
+    JSON.stringify(steps) !== JSON.stringify(saved);
 
   useEffect(() => {
     onDirty?.(dirty);
@@ -81,7 +82,7 @@ export function AutomationEditor({
       ...(automation === undefined ? {} : { id: automation.id }),
       name: trimmed,
       ...(trimmedDescription === '' ? {} : { description: trimmedDescription }),
-      steps: [...steps],
+      ...fromLinear(steps),
     };
   }
 
@@ -92,7 +93,7 @@ export function AutomationEditor({
     let current = true;
     const timer = setTimeout(() => {
       void api
-        .checkAutomation({ name: trimmed, steps: [...steps] })
+        .checkAutomation({ name: trimmed, ...fromLinear(steps) })
         .then((list) => {
           if (current) {
             setFound(list);
@@ -117,7 +118,7 @@ export function AutomationEditor({
     }
   }
 
-  const general = problems.filter(({ stepId }) => stepId === '');
+  const general = problems.filter(({ blockId }) => blockId === undefined);
 
   return (
     <section className="history-detail" data-testid="automation-editor">
@@ -161,7 +162,7 @@ export function AutomationEditor({
             index={index}
             steps={steps}
             tools={tools}
-            problems={problems.filter(({ stepId }) => stepId === step.id)}
+            problems={problems.filter(({ blockId }) => blockId === step.id)}
             onChange={(next) => {
               changeStep(index, next);
             }}

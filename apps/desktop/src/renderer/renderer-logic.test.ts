@@ -19,7 +19,8 @@ import {
   shownParameters,
   submittedValues,
 } from './tools/parameter-form.js';
-import type { AutomationStep, ParameterView, ToolView } from '../shared/ipc-contract.js';
+import type { ParameterView, ToolView } from '../shared/ipc-contract.js';
+import type { AutomationStep } from './automations/automation-draft.js';
 import { en } from '../shared/i18n/en.js';
 import { t } from '../shared/i18n/translate.js';
 import type { RunView } from '../shared/ipc-contract.js';

@@ -1,3 +1,10 @@
+import { automationProblem } from './automation-problems.js';
+import type {
+  AutomationProblem,
+  AutomationProblemCode,
+  AutomationProblemParams,
+} from './automation-problems.js';
+
 /** Output a connection leaves from when it names none. */
 export const DEFAULT_OUTPUT = 'next';
 export const ERROR_OUTPUT = 'error';
@@ -24,9 +31,8 @@ export interface GraphShape {
   readonly connections: readonly GraphConnection[];
 }
 
-export interface GraphIssue {
+export interface GraphIssue extends AutomationProblem {
   readonly path: readonly (string | number)[];
-  readonly message: string;
 }
 
 export interface Graph {
@@ -101,24 +107,26 @@ export function topologicalOrder(shape: GraphShape): string[] | undefined {
 /** The rules about connections that one file can break, which a JSON Schema cannot state. */
 export function graphIssues(shape: GraphShape): GraphIssue[] {
   const issues: GraphIssue[] = [];
-  const add = (path: (string | number)[], message: string): void => {
-    issues.push({ path, message });
+  const add = (
+    path: (string | number)[],
+    code: AutomationProblemCode,
+    params: AutomationProblemParams = {},
+    blockId?: string,
+  ): void => {
+    issues.push({ path, ...automationProblem(code, params, blockId) });
   };
   const { blocks, connections } = shape;
   const byId = new Map(blocks.map((block) => [block.id, block]));
 
   blocks.forEach((block, index) => {
     if (blocks.findIndex(({ id }) => id === block.id) !== index) {
-      add(['blocks', index, 'id'], `Block "${block.id}" is declared more than once`);
+      add(['blocks', index, 'id'], 'duplicate-block', { block: block.id }, block.id);
     }
   });
 
   const starts = blocks.filter(({ type }) => type === 'start');
   if (starts.length !== 1) {
-    add(
-      ['blocks'],
-      `An automation needs exactly one Start block, and this one has ${String(starts.length)}`,
-    );
+    add(['blocks'], 'start-count', { count: String(starts.length) });
   }
 
   const used = new Set<string>();
@@ -127,37 +135,36 @@ export function graphIssues(shape: GraphShape): GraphIssue[] {
     const source = byId.get(connection.from);
     const target = byId.get(connection.to);
     if (source === undefined) {
-      add(
-        [...path, 'from'],
-        `Connection ${String(index + 1)} starts at "${connection.from}", which does not exist`,
-      );
+      add([...path, 'from'], 'connection-from-missing', {
+        index: String(index + 1),
+        from: connection.from,
+      });
     }
     if (target === undefined) {
       add(
         [...path, 'to'],
-        `Connection ${String(index + 1)} ends at "${connection.to}", which does not exist`,
+        'connection-to-missing',
+        { index: String(index + 1), to: connection.to },
+        source?.id,
       );
     } else if (target.type === 'start') {
-      add([...path, 'to'], 'Nothing can lead into the Start block');
+      add([...path, 'to'], 'into-start', {}, source?.id);
     }
     if (source === undefined) return;
     const output = connectionOutput(connection);
     if (!outputsOf(source).includes(output)) {
-      add([...path, 'output'], `Block "${source.id}" has no output "${output}"`);
+      add([...path, 'output'], 'unknown-output', { block: source.id, output }, source.id);
       return;
     }
     const key = `${source.id}\u0000${output}`;
     if (source.type !== 'parallel' && used.has(key)) {
-      add(
-        [...path, 'output'],
-        `The "${output}" output of "${source.id}" leads to more than one block, and only Parallel starts several paths`,
-      );
+      add([...path, 'output'], 'output-to-many', { block: source.id, output }, source.id);
     }
     used.add(key);
   });
 
   if (topologicalOrder(shape) === undefined) {
-    add(['connections'], 'The connections go in a circle, and only a loop block may repeat work');
+    add(['connections'], 'cycle');
     return issues;
   }
 
@@ -166,34 +173,43 @@ export function graphIssues(shape: GraphShape): GraphIssue[] {
     if (block.type === 'parallel') {
       const branches = connections.filter(({ from }) => from === block.id).length;
       if (branches < 2) {
-        add(['blocks', index], `Parallel "${block.id}" needs at least two branches`);
+        add(['blocks', index], 'parallel-branches', { block: block.id }, block.id);
       }
       const joins = blocks.filter(({ type, parallel }) => type === 'join' && parallel === block.id);
       if (joins.length !== 1) {
         add(
           ['blocks', index],
-          `Parallel "${block.id}" needs exactly one Join, and has ${String(joins.length)}`,
+          'parallel-joins',
+          { block: block.id, count: String(joins.length) },
+          block.id,
         );
       }
     }
     if (block.type !== 'join') return;
     const parallel = block.parallel === undefined ? undefined : byId.get(block.parallel);
     if (parallel?.type !== 'parallel') {
-      add(['blocks', index, 'parallel'], `Join "${block.id}" must end a Parallel block`);
+      add(['blocks', index, 'parallel'], 'join-without-parallel', { block: block.id }, block.id);
       return;
     }
     const region = reachableFrom(graph, parallel.id, block.id);
     if (
       !(graph.predecessors.get(block.id) ?? []).some((id) => region.has(id) || id === parallel.id)
     ) {
-      add(['blocks', index], `Join "${block.id}" is never reached from Parallel "${parallel.id}"`);
+      add(
+        ['blocks', index],
+        'join-unreached',
+        { block: block.id, parallel: parallel.id },
+        block.id,
+      );
     }
     const inside = new Set([...region, parallel.id]);
     for (const id of [...region, block.id]) {
       if ((graph.predecessors.get(id) ?? []).some((before) => !inside.has(before))) {
         add(
           ['blocks', index],
-          `The branches of Parallel "${parallel.id}" must meet only at Join "${block.id}", and nothing may lead into them from outside`,
+          'branches-leak',
+          { block: block.id, parallel: parallel.id },
+          block.id,
         );
         break;
       }
@@ -267,4 +283,42 @@ export function guarantees(shape: GraphShape): ReadonlyMap<string, Guarantee> {
     known.set(id, { completed, ran });
   }
   return known;
+}
+
+/**
+ * The blocks an output may lead to without breaking a rule, for the canvas to offer. The output's
+ * current connection is left out of the trial, since connecting replaces it except on Parallel.
+ * Rules that only a later block can satisfy, such as a Parallel's second branch, are not held
+ * against a target.
+ */
+export function validTargets(shape: GraphShape, from: string, output: string): string[] {
+  const source = shape.blocks.find(({ id }) => id === from);
+  if (source === undefined || !outputsOf(source).includes(output)) return [];
+  const kept = shape.connections.filter(
+    (connection) =>
+      source.type === 'parallel' ||
+      connection.from !== from ||
+      connectionOutput(connection) !== output,
+  );
+  const before = new Set(graphIssues({ blocks: shape.blocks, connections: kept }).map(issueKey));
+  const graph = buildGraph({ blocks: shape.blocks, connections: kept });
+  return shape.blocks
+    .filter((target) => {
+      if (target.id === from || target.type === 'start') return false;
+      if (reachableFrom(graph, target.id).has(from)) return false;
+      if (
+        kept.some((c) => c.from === from && c.to === target.id && connectionOutput(c) === output)
+      ) {
+        return false;
+      }
+      const trial = [...kept, { from, output, to: target.id }];
+      return graphIssues({ blocks: shape.blocks, connections: trial })
+        .filter(({ code }) => code === 'branches-leak' || code === 'output-to-many')
+        .every((issue) => before.has(issueKey(issue)));
+    })
+    .map(({ id }) => id);
+}
+
+function issueKey({ code, blockId }: GraphIssue): string {
+  return `${code}\u0000${blockId ?? ''}`;
 }

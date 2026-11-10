@@ -32,12 +32,17 @@ export {
 export {
   AUTOMATION_BLOCK_LIMIT,
   AUTOMATION_CONNECTION_LIMIT,
+  AUTOMATION_GROUP_LIMIT,
+  AUTOMATION_NOTE_LIMIT,
   AUTOMATION_SCHEMA_VERSION,
+  NOTE_TEXT_MAX,
   CONDITION_RULES_MAX,
   RETRY_ATTEMPTS_MAX,
   RETRY_DELAY_SECONDS_MAX,
   SWITCH_CASES_MAX,
   WAIT_SECONDS_MAX,
+  automationFileSchema,
+  automationRuleIssues,
   automationSchema,
   buildAutomationJsonSchema,
 } from './automation.js';
@@ -46,9 +51,24 @@ export type {
   AutomationBlock,
   AutomationCondition,
   AutomationConnection,
+  AutomationGroup,
   AutomationInput,
+  AutomationNote,
+  AutomationPosition,
+  AutomationRule,
   RunBlock,
 } from './automation.js';
+export {
+  AUTOMATION_PROBLEM_CODES,
+  automationProblem,
+  describeProblem,
+  problemsOfIssues,
+} from './automation-problems.js';
+export type {
+  AutomationProblem,
+  AutomationProblemCode,
+  AutomationProblemParams,
+} from './automation-problems.js';
 export {
   AUTOMATION_V1_SCHEMA_VERSION,
   AUTOMATION_V1_STEP_LIMIT,
@@ -73,6 +93,7 @@ export {
   outputsOf,
   reachableFrom,
   topologicalOrder,
+  validTargets,
 } from './automation-graph.js';
 export type {
   Graph,

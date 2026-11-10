@@ -1,7 +1,27 @@
-import { RUN_FOLDER_REFERENCE, stepOutputReference } from '@bildora/protocol';
-import type { AutomationBlock } from '@bildora/protocol';
+import {
+  AUTOMATION_SCHEMA_VERSION,
+  RUN_FOLDER_REFERENCE,
+  linearOf,
+  stepOutputReference,
+} from '@bildora/protocol';
+import type { AutomationBlock, LinearStep } from '@bildora/protocol';
 import { t } from '../../shared/i18n/translate.js';
-import type { AutomationStep, ToolView } from '../../shared/ipc-contract.js';
+import type { AutomationView, ToolView } from '../../shared/ipc-contract.js';
+
+/** A step of the list editor, which edits automations that are a straight line. */
+export type AutomationStep = LinearStep;
+
+/** The automation as a list of steps, or undefined when it has branches the list cannot show. */
+export function stepsOf(automation: AutomationView): AutomationStep[] | undefined {
+  const { id, name, blocks, connections } = automation;
+  return linearOf({
+    schemaVersion: AUTOMATION_SCHEMA_VERSION,
+    id,
+    name,
+    blocks: [...blocks],
+    connections: [...connections],
+  });
+}
 
 export type StepKind = AutomationStep['type'];
 export type RunStep = Extract<AutomationStep, { type: 'run' }>;

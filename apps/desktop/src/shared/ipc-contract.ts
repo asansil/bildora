@@ -1,5 +1,19 @@
 import { z } from 'zod';
-import type { AutomationBlock, LinearStep } from '@bildora/protocol';
+import {
+  AUTOMATION_BLOCK_LIMIT,
+  AUTOMATION_CONNECTION_LIMIT,
+  AUTOMATION_GROUP_LIMIT,
+  AUTOMATION_NOTE_LIMIT,
+} from '@bildora/protocol';
+import type {
+  AutomationBlock,
+  AutomationConnection,
+  AutomationGroup,
+  AutomationNote,
+  AutomationPosition,
+  AutomationProblemCode,
+  AutomationProblemParams,
+} from '@bildora/protocol';
 
 /** Longest path Windows accepts. */
 const PATH_MAX_LENGTH = 32_767;
@@ -17,7 +31,6 @@ const WORKSPACE_NAME_MAX_LENGTH = 80;
 const PATH_VARIABLE_NAME_MAX_LENGTH = 64;
 const FAVORITES_MAX = 1000;
 const SCRIPT_ANSWERS_MAX = 1000;
-const AUTOMATION_STEPS_MAX = 200;
 const CATEGORIES_MAX = 1000;
 const WORKSPACE_TABS_MAX = 100;
 export const PANEL_WIDTH_MIN = 180;
@@ -90,12 +103,16 @@ export const automationConfirmSchema = z.strictObject({
   /** The block to answer, when a run waits on several at once. */
   stepId: idSchema.optional(),
 });
-/** The steps are checked in main by `linearStepSchema`, whose messages the editor can show. */
+/** Blocks and the rest are checked in main by `automationSchema`, whose problems the canvas shows. */
 export const automationDraftSchema = z.strictObject({
   id: idSchema.optional(),
   name: textSchema.min(1),
   description: textSchema.min(1).optional(),
-  steps: z.array(z.unknown()).max(AUTOMATION_STEPS_MAX),
+  blocks: z.array(z.unknown()).max(AUTOMATION_BLOCK_LIMIT),
+  connections: z.array(z.unknown()).max(AUTOMATION_CONNECTION_LIMIT),
+  positions: z.record(idSchema, z.unknown()).optional(),
+  notes: z.array(z.unknown()).max(AUTOMATION_NOTE_LIMIT).optional(),
+  groups: z.array(z.unknown()).max(AUTOMATION_GROUP_LIMIT).optional(),
 });
 export const runInputSchema = z.strictObject({
   runId: idSchema,
@@ -164,9 +181,19 @@ export type LayoutUpdate = NonNullable<WorkspaceUpdate['layout']>;
 export type StartRunInput = z.infer<typeof startRunSchema>;
 export type RunRequest = Omit<StartRunInput, 'id'>;
 export type SaveProfileInput = z.infer<typeof saveProfileSchema>;
-export type AutomationDraft = z.infer<typeof automationDraftSchema>;
-/** A step of the list editor. Automations with branches are shown but not edited as a list. */
-export type AutomationStep = LinearStep;
+/** A draft as main receives it, before `automationFileSchema` reads its contents. */
+export type ReceivedAutomationDraft = z.infer<typeof automationDraftSchema>;
+/** What the canvas edits, in the terms of the automation file. */
+export interface AutomationDraft {
+  readonly id?: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly blocks: readonly AutomationBlock[];
+  readonly connections: readonly AutomationConnection[];
+  readonly positions?: Readonly<Record<string, AutomationPosition>>;
+  readonly notes?: readonly AutomationNote[];
+  readonly groups?: readonly AutomationGroup[];
+}
 
 export interface ShellPreferences {
   readonly historyRunLimit: number;
@@ -366,22 +393,19 @@ export interface HistorySummaryView {
   readonly failure?: { readonly kind: string; readonly message: string };
 }
 
+/** Something that keeps an automation from running, worded by the shell from its code. */
 export interface AutomationProblemView {
-  /** Empty when the problem is with the automation as a whole. */
-  readonly stepId: string;
+  readonly code: AutomationProblemCode;
+  readonly params: AutomationProblemParams;
+  /** Left out when the problem is with the automation as a whole. */
+  readonly blockId?: string;
+  /** The problem in English, as the CLI words it. */
   readonly message: string;
 }
 
-export interface AutomationView {
+export interface AutomationView extends Required<Omit<AutomationDraft, 'id' | 'description'>> {
   readonly id: string;
-  readonly name: string;
   readonly description?: string;
-  /** The list of steps, when the automation is a straight line. Empty when it is not. */
-  readonly steps: readonly AutomationStep[];
-  /** False when the automation has branches or parallel work, which the list cannot show. */
-  readonly editable: boolean;
-  /** Every block, for showing an automation that is not a list. */
-  readonly blocks: readonly AutomationBlock[];
   /** What keeps it from running now. Empty means that it can run. */
   readonly problems: readonly AutomationProblemView[];
 }
@@ -396,6 +420,8 @@ export type StepStateView = 'idle' | 'running' | 'completed' | 'failed' | 'cance
 
 export interface StepRunView {
   readonly id: string;
+  /** The kind of block, as in the file. */
+  readonly type?: string;
   readonly state: StepStateView;
   readonly toolRunId?: string;
   readonly attempt?: number;
@@ -416,6 +442,14 @@ export interface AutomationRunStateView {
   readonly automationName: string;
   readonly status: 'running' | 'completed' | 'failed' | 'cancelled';
   readonly steps: readonly StepRunView[];
+  /** Connections the run went along, in order. */
+  readonly paths: readonly TakenPathView[];
+}
+
+export interface TakenPathView {
+  readonly from: string;
+  readonly output: string;
+  readonly to: string;
 }
 
 /** A past run of an automation, from the app or from the CLI. */
@@ -430,7 +464,10 @@ export interface AutomationRunRecordView {
     readonly kind: string;
     readonly message: string;
   };
+  /** Runs recorded before blocks have no paths. */
+  readonly format: 'steps' | 'blocks';
   readonly steps: readonly StepRunView[];
+  readonly paths: readonly TakenPathView[];
 }
 
 export interface HistoryRecordView extends HistorySummaryView {

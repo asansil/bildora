@@ -1,7 +1,12 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { automationV1Schema, automationSchema, toolManifestSchema } from '@bildora/protocol';
+import {
+  automationFileSchema,
+  automationSchema,
+  automationV1Schema,
+  toolManifestSchema,
+} from '@bildora/protocol';
 import type { Automation, AutomationV1Input } from '@bildora/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RunHistory } from '../history/run-history.js';
@@ -61,6 +66,28 @@ describe('automation files', () => {
       'utf8',
     );
     expect(text).toContain('name: Alpha');
+  });
+
+  it('stores a flow being built, which breaks the rules of a runnable one', async () => {
+    const halfBuilt = automationFileSchema.parse({
+      schemaVersion: 2,
+      id: 'half',
+      name: 'Half built',
+      blocks: [
+        { id: 'start', type: 'start' },
+        { id: 'fork', type: 'parallel' },
+      ],
+      connections: [{ from: 'start', to: 'fork' }],
+      notes: [{ id: 'note', text: 'Two branches go here', x: 0, y: 90 }],
+    });
+    await saveAutomation(dataDir, 'work', halfBuilt);
+    expect(await getAutomation(dataDir, 'work', 'half')).toEqual(halfBuilt);
+    const registry = await ToolRegistry.open({ dataDir });
+    const found = await checkAutomation(halfBuilt, registry, 'work');
+    expect(found.map(({ code, blockId }) => [code, blockId])).toEqual([
+      ['parallel-branches', 'fork'],
+      ['parallel-joins', 'fork'],
+    ]);
   });
 
   it('keeps Workspaces apart', async () => {
@@ -230,7 +257,7 @@ describe('checkAutomation', () => {
 
   async function problems(steps: AutomationV1Input['steps']): Promise<readonly string[]> {
     const found = await checkAutomation(automationOf(steps), registry, 'work');
-    return found.map(({ stepId, message }) => `${stepId}: ${message}`);
+    return found.map(({ blockId, message }) => `${blockId ?? ''}: ${message}`);
   }
 
   const run = (
@@ -383,7 +410,7 @@ describe('checkAutomation', () => {
         connections,
       });
       const found = await checkAutomation(automation, registry, 'work');
-      return found.map(({ stepId, message }) => `${stepId}: ${message}`);
+      return found.map(({ blockId, message }) => `${blockId ?? ''}: ${message}`);
     }
     const sourceA = step('a', { out: 'C:\\a.csv' });
     const cannotFinish = (id: string) =>

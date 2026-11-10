@@ -1,7 +1,16 @@
-import { findStepOutputReferences, findUnknownReferences, guarantees } from '@bildora/protocol';
+import {
+  automationProblem,
+  automationRuleIssues,
+  findStepOutputReferences,
+  findUnknownReferences,
+  guarantees,
+} from '@bildora/protocol';
 import type {
   AutomationCondition,
   Automation,
+  AutomationProblem,
+  AutomationProblemCode,
+  AutomationProblemParams,
   Guarantee,
   RunBlock,
   ToolParameter,
@@ -11,11 +20,18 @@ import type { Profile } from '../profiles/profile-store.js';
 import type { RegisteredTool, ToolRegistry } from '../registry/tool-registry.js';
 import { findVisibleTool } from '../workspaces/visible-tools.js';
 
-/** Something that keeps an automation from running. */
-export interface AutomationProblem {
-  readonly stepId: string;
-  readonly message: string;
+export type { AutomationProblem } from '@bildora/protocol';
+
+/** A problem found inside one block, which the caller files under that block. */
+interface Found {
+  readonly code: AutomationProblemCode;
+  readonly params: AutomationProblemParams;
 }
+
+const found = (code: AutomationProblemCode, params: AutomationProblemParams = {}): Found => ({
+  code,
+  params,
+});
 
 type StepValue = NonNullable<RunBlock['values']>[string];
 
@@ -39,25 +55,25 @@ function checkReferences(
   certain: Guarantee,
   text: string,
   tools: ReadonlyMap<string, RegisteredTool>,
-): readonly string[] {
-  const problems = findUnknownReferences(text).map((found) => `Unknown reference ${found}`);
+): readonly Found[] {
+  const problems = findUnknownReferences(text).map((reference) =>
+    found('reference-unknown', { reference }),
+  );
   for (const { step, output } of findStepOutputReferences(text)) {
     const source = automation.blocks.find(({ id }) => id === step);
     if (source?.type !== 'run') {
-      problems.push(`Refers to "${step}", which is not a run block`);
+      problems.push(found('reference-not-run', { source: step }));
       continue;
     }
     const manifest = tools.get(step)?.manifest;
     if (manifest?.level === 1 && !manifest.outputs.some(({ name }) => name === output)) {
-      problems.push(`Step "${step}" declares no output "${output}"`);
+      problems.push(found('reference-output-unknown', { source: step, output }));
     }
     if (manifest?.level === 0) {
-      problems.push(`Step "${step}" runs a registered program, which declares no outputs`);
+      problems.push(found('reference-level-0', { source: step }));
     }
     if (!certain.completed.has(step)) {
-      problems.push(
-        `Step "${step}" does not finish on every path that reaches this block, so its output may not exist`,
-      );
+      problems.push(found('reference-not-certain', { source: step }));
     }
   }
   return problems;
@@ -69,28 +85,30 @@ function checkValues(
   step: RunBlock,
   tool: RegisteredTool,
   tools: ReadonlyMap<string, RegisteredTool>,
-): readonly string[] {
+): readonly Found[] {
   const parameters = tool.manifest.level === 1 ? tool.manifest.parameters : [];
-  const problems: string[] = [];
+  const problems: Found[] = [];
   for (const [name, value] of Object.entries(step.values ?? {})) {
     const parameter = parameters.find((candidate) => candidate.name === name);
     if (parameter === undefined) {
-      problems.push(`The tool has no parameter "${name}"`);
+      problems.push(found('parameter-unknown', { parameter: name }));
     } else if (isSecretParameter(parameter)) {
-      // The message does not repeat the value, which should not be in a shared file at all.
-      problems.push(`"${name}" is secret, so it can only come from a profile`);
+      // The problem does not repeat the value, which should not be in a shared file at all.
+      problems.push(found('parameter-secret', { parameter: name, label: parameter.label }));
     } else if (!hasRightType(parameter, value)) {
-      problems.push(`"${name}" does not fit a ${parameter.type} parameter`);
+      problems.push(
+        found('parameter-type', { parameter: name, label: parameter.label, type: parameter.type }),
+      );
     } else if (parameter.type === 'path' && typeof value === 'string') {
       problems.push(...checkReferences(automation, certain, value, tools));
     } else if (typeof value === 'string' && findStepOutputReferences(value).length > 0) {
-      problems.push(`"${name}" is not a path parameter, so it cannot hold a reference`);
+      problems.push(found('reference-not-path', { parameter: name, label: parameter.label }));
     }
   }
   return problems;
 }
 
-function checkRequired(step: RunBlock, tool: RegisteredTool, profile?: Profile): readonly string[] {
+function checkRequired(step: RunBlock, tool: RegisteredTool, profile?: Profile): readonly Found[] {
   const parameters = tool.manifest.level === 1 ? tool.manifest.parameters : [];
   return parameters
     .filter(
@@ -101,18 +119,18 @@ function checkRequired(step: RunBlock, tool: RegisteredTool, profile?: Profile):
         profile?.values[name] === undefined &&
         profile?.secrets.includes(name) !== true,
     )
-    .map(({ label }) => `Needs a value for "${label}"`);
+    .map(({ name, label }) => found('parameter-required', { parameter: name, label }));
 }
 
 async function findTool(
   registry: ToolRegistry,
   workspaceId: string,
   id: string,
-): Promise<RegisteredTool | string> {
+): Promise<RegisteredTool | undefined> {
   try {
-    return (await findVisibleTool(registry, workspaceId, id)) ?? `Tool "${id}" is not installed`;
+    return await findVisibleTool(registry, workspaceId, id);
   } catch {
-    return `Tool "${id}" cannot be read`;
+    return undefined;
   }
 }
 
@@ -122,19 +140,17 @@ function checkConditions(
   blockId: string,
   condition: AutomationCondition,
   certain: Guarantee,
-): readonly string[] {
-  const problems: string[] = [];
+): readonly Found[] {
+  const problems: Found[] = [];
   for (const rule of condition.rules) {
     if (rule.field !== 'exit-code') {
       continue;
     }
     const source = automation.blocks.find(({ id }) => id === rule.block);
     if (source?.type !== 'run') {
-      problems.push(`Reads the exit code of "${rule.block}", which is not a run block`);
+      problems.push(found('exit-code-not-run', { source: rule.block }));
     } else if (!certain.ran.has(rule.block)) {
-      problems.push(
-        `Reads the exit code of "${rule.block}", which does not run on every path that reaches "${blockId}"`,
-      );
+      problems.push(found('exit-code-not-certain', { source: rule.block, block: blockId }));
     }
   }
   return problems;
@@ -155,17 +171,25 @@ export async function checkAutomation(
   for (const block of automation.blocks) {
     if (block.type === 'run') {
       const tool = await findTool(registry, workspaceId, block.tool);
-      if (typeof tool !== 'string') {
+      if (tool !== undefined) {
         tools.set(block.id, tool);
       }
     }
   }
 
-  const problems: AutomationProblem[] = [];
+  // Rules a half-built flow may break: saved as it is, but not run.
+  const problems: AutomationProblem[] = automationRuleIssues(automation).map(
+    ({ code, params, blockId, message }) => ({
+      code,
+      params,
+      ...(blockId === undefined ? {} : { blockId }),
+      message,
+    }),
+  );
   for (const block of automation.blocks) {
     const certain = known.get(block.id) ?? nobody;
-    const report = (message: string): void => {
-      problems.push({ stepId: block.id, message });
+    const report = ({ code, params }: Found): void => {
+      problems.push(automationProblem(code, params, block.id));
     };
     if (block.type === 'if') {
       checkConditions(automation, block.id, block.condition, certain).forEach(report);
@@ -180,12 +204,12 @@ export async function checkAutomation(
     }
     const tool = tools.get(block.id);
     if (tool === undefined) {
-      report(`Tool "${block.tool}" is not installed, or cannot be read`);
+      report(found('tool-missing', { tool: block.tool }));
       continue;
     }
     const profile = block.profile === undefined ? undefined : await getProfile(tool, block.profile);
     if (block.profile !== undefined && profile === undefined) {
-      report(`Profile "${block.profile}" no longer exists`);
+      report(found('profile-missing', { profile: block.profile }));
     }
     checkValues(automation, certain, block, tool, tools).forEach(report);
     checkRequired(block, tool, profile).forEach(report);

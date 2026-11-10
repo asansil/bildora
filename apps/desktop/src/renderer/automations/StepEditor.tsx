@@ -4,7 +4,6 @@ import { t } from '../../shared/i18n/translate.js';
 import type { MessageKey } from '../../shared/i18n/translate.js';
 import type {
   AutomationProblemView,
-  AutomationStep,
   ParameterView,
   ProfileView,
   ToolView,
@@ -13,7 +12,7 @@ import { ParameterForm } from '../tools/ParameterForm.js';
 import { parameterProblem, submittedValues } from '../tools/parameter-form.js';
 import type { FormValue, FormValues } from '../tools/parameter-form.js';
 import { failureChoice, referenceOptions, without, withFailureChoice } from './automation-draft.js';
-import type { FailureChoice, RunStep } from './automation-draft.js';
+import type { AutomationStep, FailureChoice, RunStep } from './automation-draft.js';
 
 const api = window.bildora;
 

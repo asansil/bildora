@@ -155,6 +155,21 @@ describe('startAutomationRun', () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
+  it('refuses a flow saved half built, before anything runs', () => {
+    const halfBuilt: Automation = {
+      schemaVersion: 2,
+      id: 'half',
+      name: 'Half',
+      blocks: [
+        { id: 'start', type: 'start' },
+        { id: 'fork', type: 'parallel' },
+      ],
+      connections: [{ from: 'start', to: 'fork' }],
+    };
+    expect(() => start(halfBuilt)).toThrow('Parallel "fork" needs at least two branches');
+    expect(started).toEqual([]);
+  });
+
   it('runs steps in order and records the run', async () => {
     script = [COMPLETED, COMPLETED];
     const automation = automationOf([

@@ -297,6 +297,96 @@ export const en = {
   'settings.pathVariableAdd': 'Set variable',
   'settings.pathVariableRemove': 'Remove {name}',
 
+  'problem.invalid': 'Part of this automation cannot be read: {detail}',
+  'problem.invalid.fix':
+    'Open the file in a text editor and correct that part, or remove the block.',
+  'problem.duplicate-block': 'Two blocks have the same id, "{block}".',
+  'problem.duplicate-block.fix': 'Rename one of them in the file.',
+  'problem.duplicate-id': 'A note or group shares the id "{id}" with something else.',
+  'problem.duplicate-id.fix': 'Rename it in the file.',
+  'problem.start-count': 'An automation needs exactly one Start block, and this one has {count}.',
+  'problem.start-count.fix': 'Keep a single Start block, where the automation begins.',
+  'problem.connection-from-missing': 'A connection starts at a block that no longer exists.',
+  'problem.connection-from-missing.fix': 'Delete that connection.',
+  'problem.connection-to-missing':
+    'A connection from {block} leads to a block that no longer exists.',
+  'problem.connection-to-missing.fix':
+    'Delete that connection, or connect the output to another block.',
+  'problem.into-start': 'A connection from {block} leads back into Start.',
+  'problem.into-start.fix': 'Connect it to another block. Start is where the automation begins.',
+  'problem.unknown-output': '{block} has no output called "{output}".',
+  'problem.unknown-output.fix':
+    'Delete that connection, and connect one of the outputs the block shows.',
+  'problem.output-to-many': 'The {output} output of {block} leads to more than one block.',
+  'problem.output-to-many.fix':
+    'Keep one connection. To do several things at once, add a Parallel block.',
+  'problem.cycle': 'The connections go round in a circle, so the automation would never end.',
+  'problem.cycle.fix': 'Remove the connection that leads back to an earlier block.',
+  'problem.parallel-branches': '{block} starts fewer than two branches.',
+  'problem.parallel-branches.fix':
+    'Connect its output to at least two blocks, which then run at the same time.',
+  'problem.parallel-joins': '{block} needs one Join block where its branches end, and has {count}.',
+  'problem.parallel-joins.fix': 'Keep a single Join for it, and lead every branch into that Join.',
+  'problem.join-without-parallel': '{block} does not end a Parallel block.',
+  'problem.join-without-parallel.fix':
+    'Delete it, or add it with a Parallel block from the library.',
+  'problem.join-unreached': 'No branch of {parallel} reaches {block}.',
+  'problem.join-unreached.fix': 'Connect the end of each branch to {block}.',
+  'problem.branches-leak':
+    'The branches of {parallel} are joined to something outside them before {block}.',
+  'problem.branches-leak.fix':
+    'Each branch should lead only to blocks of its own, and end at {block}.',
+  'problem.rule-block-missing': 'A rule reads a block that no longer exists.',
+  'problem.rule-block-missing.fix': 'Choose another block in that rule, or remove the rule.',
+  'problem.case-reserved': 'A case is called "{case}", which is the name of another output.',
+  'problem.case-reserved.fix': 'Give the case another name.',
+  'problem.case-duplicate': 'Two cases are called "{case}".',
+  'problem.case-duplicate.fix': 'Give each case its own name.',
+  'problem.exit-code-not-run': 'A rule reads the exit code of {source}, which does not run a tool.',
+  'problem.exit-code-not-run.fix': 'Choose a block that runs a tool, or read its result instead.',
+  'problem.exit-code-not-certain':
+    'A rule reads the exit code of {source}, which does not run on every way into {block}.',
+  'problem.exit-code-not-certain.fix':
+    'Read a block that always runs before this one, or move the decision after it.',
+  'problem.position-unknown': 'The file places a block, "{block}", that does not exist.',
+  'problem.position-unknown.fix': 'Save the automation again, which removes it.',
+  'problem.group-block-missing': 'Group {group} holds a block that no longer exists.',
+  'problem.group-block-missing.fix': 'Save the automation again, which removes it from the group.',
+  'problem.group-block-twice': '{block} is in more than one group.',
+  'problem.group-block-twice.fix': 'Take it out of one of the groups.',
+  'problem.tool-missing': 'The tool {tool} is not installed in this Workspace.',
+  'problem.tool-missing.fix': 'Install the tool again, or choose another one for this block.',
+  'problem.profile-missing': 'The configuration "{profile}" no longer exists.',
+  'problem.profile-missing.fix': 'Choose another configuration, or none.',
+  'problem.parameter-unknown': 'The tool no longer has a setting called "{parameter}".',
+  'problem.parameter-unknown.fix': 'Remove the value, or check that the right tool is chosen.',
+  'problem.parameter-secret': '"{label}" is secret, so it cannot be stored in the automation.',
+  'problem.parameter-secret.fix':
+    'Save it in a configuration of the tool, and choose that configuration here.',
+  'problem.parameter-type': 'The value of "{label}" is not a valid {type}.',
+  'problem.parameter-type.fix': 'Enter a value of the right kind.',
+  'problem.parameter-required': '"{label}" needs a value.',
+  'problem.parameter-required.fix': 'Enter a value, or choose a configuration that has one.',
+  'problem.reference-unknown': 'A value uses {reference}, which Bildora does not know.',
+  'problem.reference-unknown.fix': 'Choose the value again from the list of earlier results.',
+  'problem.reference-not-run': 'A value uses a result of {source}, which does not run a tool.',
+  'problem.reference-not-run.fix': 'Choose a result of a block that runs a tool.',
+  'problem.reference-output-unknown':
+    'A value uses "{output}" from {source}, and that tool gives no such result.',
+  'problem.reference-output-unknown.fix':
+    'Choose the value again from the list of earlier results.',
+  'problem.reference-level-0':
+    'A value uses a result of {source}, but that program gives no results.',
+  'problem.reference-level-0.fix':
+    'Enter the value yourself, or use a file in the folder of the run.',
+  'problem.reference-not-certain':
+    'A value uses a result of {source}, which does not finish on every way into this block.',
+  'problem.reference-not-certain.fix':
+    'Use a block that always finishes before this one, or move this block after it.',
+  'problem.reference-not-path':
+    '"{label}" is not a path, so it cannot use a result of another block.',
+  'problem.reference-not-path.fix': 'Enter the value yourself.',
+
   'automation.title': 'Automations',
   'automation.new': 'New automation',
   'automation.newTitle': 'New automation',

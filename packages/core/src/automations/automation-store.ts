@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import {
   AUTOMATION_SCHEMA_VERSION,
   AUTOMATION_V1_SCHEMA_VERSION,
-  automationSchema,
+  automationFileSchema,
   automationV1Schema,
   isValidIdentifier,
 } from '@bildora/protocol';
@@ -103,7 +103,7 @@ export function parseAutomation(text: string): Automation {
   if ((content as { schemaVersion?: unknown }).schemaVersion === AUTOMATION_V1_SCHEMA_VERSION) {
     return convertSteps(content);
   }
-  const result = automationSchema.safeParse(migrateDefinition({ ...content }, format));
+  const result = automationFileSchema.safeParse(migrateDefinition({ ...content }, format));
   if (!result.success) {
     throw new DefinitionError('The automation is not valid', issuesOf(result.error));
   }
@@ -171,7 +171,7 @@ export async function saveAutomation(
   workspaceId: string,
   automation: Automation,
 ): Promise<Automation> {
-  const checked = automationSchema.parse(automation);
+  const checked = automationFileSchema.parse(automation);
   try {
     await getAutomation(dataDir, workspaceId, checked.id);
   } catch (error) {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Info, Pencil, Play, Square, Trash2, TriangleAlert } from 'lucide-react';
 import type { AutomationBlock } from '@bildora/protocol';
 import { t } from '../../shared/i18n/translate.js';
@@ -6,7 +6,6 @@ import type {
   AutomationDraft,
   AutomationRunRecordView,
   AutomationRunStateView,
-  AutomationStep,
   AutomationView,
   StepRunView,
   ToolView,
@@ -15,7 +14,8 @@ import { formatDuration, formatTime, historyState } from '../history/history-for
 import { Dialog } from '../shell/Dialog.js';
 import { RunStateBadge, RunStateIcon } from '../shell/RunStateBadge.js';
 import { AutomationEditor } from './AutomationEditor.js';
-import { blockLabel, commandFor } from './automation-draft.js';
+import { blockLabel, commandFor, stepsOf } from './automation-draft.js';
+import type { AutomationStep } from './automation-draft.js';
 
 const api = window.bildora;
 
@@ -164,6 +164,8 @@ function AutomationDetail({
   const [past, setPast] = useState<readonly AutomationRunRecordView[]>([]);
   const running = run?.status === 'running';
   const status = run?.status;
+  const steps = useMemo(() => stepsOf(automation), [automation]);
+  const editable = steps !== undefined;
 
   useEffect(() => {
     let current = true;
@@ -198,7 +200,7 @@ function AutomationDetail({
           <p>{t('automation.broken')}</p>
         </div>
       )}
-      {automation.editable ? null : (
+      {editable ? null : (
         <div className="notice" role="status" data-testid="automation-branched">
           <Info className="icon" aria-hidden="true" />
           <p>{t('automation.branched')}</p>
@@ -226,7 +228,7 @@ function AutomationDetail({
             {t('automation.run')}
           </button>
         )}
-        <button type="button" disabled={!automation.editable} onClick={onEdit}>
+        <button type="button" disabled={!editable} onClick={onEdit}>
           <Pencil className="icon" aria-hidden="true" />
           {t('automation.edit')}
         </button>
@@ -237,8 +239,8 @@ function AutomationDetail({
       </div>
       <h2>{t('automation.steps')}</h2>
       <ol className="automation-steps">
-        {(automation.editable
-          ? automation.steps
+        {(steps !== undefined
+          ? steps
           : automation.blocks.filter(({ type }) => type !== 'start')
         ).map((step) => (
           <StepRow
@@ -247,7 +249,7 @@ function AutomationDetail({
             state={run?.steps.find(({ id }) => id === step.id)}
             tools={tools}
             problems={automation.problems
-              .filter(({ stepId }) => stepId === step.id)
+              .filter(({ blockId }) => blockId === step.id)
               .map(({ message }) => message)}
             onContinue={() => {
               if (run !== undefined) {

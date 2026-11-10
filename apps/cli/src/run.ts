@@ -138,8 +138,8 @@ async function runAutomation(
   const problems = await checkAutomation(automation, registry, workspaceId);
   if (problems.length > 0) {
     io.error(`"${automation.name}" cannot run:`);
-    for (const { stepId, message } of problems) {
-      io.error(`  ${stepId}: ${message}`);
+    for (const { blockId, message } of problems) {
+      io.error(blockId === undefined ? `  ${message}` : `  ${blockId}: ${message}`);
     }
     return EXIT_CODES.cannotStart;
   }
