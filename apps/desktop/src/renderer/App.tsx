@@ -244,6 +244,16 @@ export function App() {
   }, [runs, workspaces.activeId, report]);
 
   const allTools = useMemo(() => catalog.groups.flatMap((group) => group.tools), [catalog]);
+  /** Category logos by tool, which Run tool blocks show. */
+  const toolLogos = useMemo(
+    () =>
+      new Map(
+        catalog.groups.flatMap(({ logo, tools: grouped }) =>
+          logo === undefined ? [] : grouped.map((tool): [string, string] => [tool.id, logo]),
+        ),
+      ),
+    [catalog],
+  );
   const panelGroup = catalog.groups.find((candidate) => groupKey(candidate) === openCategory);
   const automationsPanelOpen = openCategory === AUTOMATIONS_PANEL;
   const runningAutomations = automationRuns.filter(({ status }) => status === 'running').length;
@@ -915,15 +925,13 @@ export function App() {
           automation={automation}
           run={automationRunOf(tab.id)}
           tools={allTools}
+          logos={toolLogos}
+          active={tab.key === tabs.activeKey}
           revision={catalog}
           onSave={saveAutomation}
           onSaved={(id) => {
             markUnsaved(tab.key, false);
             changeTabs((state) => rename(state, tab.key, { kind: 'automation', id }));
-          }}
-          onDiscard={() => {
-            markUnsaved(tab.key, false);
-            changeTabs((state) => close(state, tab.key));
           }}
           onRun={() => {
             if (automation !== undefined) {

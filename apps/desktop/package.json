@@ -20,11 +20,13 @@
   },
   "devDependencies": {
     "@bildora/typescript-config": "workspace:*",
+    "@msagl/core": "1.1.24",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "@xyflow/react": "12.12.1",
     "electron": "catalog:",
     "electron-builder": "26.18.0",
     "electron-vite": "catalog:",

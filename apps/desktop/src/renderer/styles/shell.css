@@ -542,7 +542,8 @@ input[type='radio'] {
   color: var(--bildora-status-failed);
 }
 
-.state-cancelled {
+.state-cancelled,
+.state-skipped {
   color: var(--bildora-status-cancelled);
 }
 
@@ -1214,8 +1215,6 @@ input[type='radio'] {
   gap: var(--bildora-space-2);
 }
 
-.step-cards,
-.automation-steps,
 .automation-runs {
   display: flex;
   flex-direction: column;
@@ -1223,36 +1222,6 @@ input[type='radio'] {
   margin: 0;
   padding: 0;
   list-style: none;
-}
-
-.step-card {
-  border: 1px solid var(--bildora-border);
-  border-radius: var(--bildora-radius-sm);
-}
-
-.step-card-head {
-  display: flex;
-  align-items: center;
-  gap: var(--bildora-space-2);
-  padding: var(--bildora-space-1) var(--bildora-space-2);
-  border-bottom: 1px solid var(--bildora-border);
-}
-
-.step-card-head strong {
-  flex: none;
-  font-weight: var(--bildora-weight-semibold);
-}
-
-.step-card-head .muted {
-  flex: 1;
-  min-width: 0;
-}
-
-.step-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--bildora-space-2);
-  padding: var(--bildora-space-3);
 }
 
 .reference-select {
@@ -1264,30 +1233,6 @@ input[type='radio'] {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--bildora-space-2);
-}
-
-.automation-step {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--bildora-space-2);
-  padding: var(--bildora-space-1) 0;
-  border-bottom: 1px solid var(--bildora-border);
-}
-
-.automation-step > .icon {
-  margin-top: 2px;
-}
-
-.automation-step-text {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.automation-step progress {
-  width: 100%;
 }
 
 .automation-command {

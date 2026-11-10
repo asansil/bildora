@@ -80,8 +80,6 @@ export type {
   AutomationV1Step,
   RunStepV1,
 } from './automation-v1.js';
-export { fromLinear, linearOf, linearStepSchema } from './automation-linear.js';
-export type { LinearRunStep, LinearStep } from './automation-linear.js';
 export {
   DEFAULT_CASE,
   DEFAULT_OUTPUT,
