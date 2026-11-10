@@ -239,15 +239,55 @@ input[type='radio'] {
   box-shadow: var(--bildora-shadow-overlay);
 }
 
+/* A menu item: a lead column for a check mark or an icon, the label, the shortcut, and an arrow
+   for a submenu. */
 .menu-item {
-  justify-content: space-between;
-  gap: var(--bildora-space-6);
+  display: grid;
+  grid-template-columns: 16px 1fr auto 16px;
+  gap: var(--bildora-space-2);
   width: 100%;
+  text-align: left;
   border-color: transparent;
+}
+
+.menu-item:focus,
+.menu-item.is-open {
+  background: var(--bildora-surface-hover);
 }
 
 .menu-item:focus-visible {
   outline-offset: -2px;
+}
+
+.menu-item[aria-disabled='true'] {
+  color: var(--bildora-text-muted);
+  background: transparent;
+  opacity: 0.55;
+}
+
+.menu-lead,
+.menu-arrow {
+  display: grid;
+  place-items: center;
+}
+
+.menu-arrow {
+  color: var(--bildora-text-muted);
+}
+
+.menu-shortcut {
+  margin-left: var(--bildora-space-6);
+}
+
+/* A submenu sits beside its item; MenuList places it and keeps it inside the window. */
+.menu-popup.submenu {
+  position: fixed;
+  top: auto;
+  margin-top: 0;
+}
+
+.context-menu-root {
+  display: contents;
 }
 
 /* Body. */
@@ -478,6 +518,38 @@ input[type='radio'] {
 
 .tab:hover .tab-close,
 .tab[aria-selected='true'] .tab-close {
+  visibility: visible;
+}
+
+/* A tab with unsaved changes shows a dot where its close button sits, until the pointer or the
+   keyboard reaches it. */
+.tab-unsaved {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
+
+.tab-unsaved::before {
+  width: 8px;
+  height: 8px;
+  content: '';
+  background: currentcolor;
+  border-radius: 50%;
+}
+
+.tab[data-unsaved='true'] .tab-close {
+  display: none;
+}
+
+.tab[data-unsaved='true']:is(:hover, :focus-visible) .tab-unsaved {
+  display: none;
+}
+
+.tab[data-unsaved='true']:is(:hover, :focus-visible) .tab-close {
+  display: inline-flex;
   visibility: visible;
 }
 
@@ -1155,6 +1227,12 @@ input[type='radio'] {
   max-width: 320px;
   max-height: 70vh;
   overflow-y: auto;
+}
+
+/* The workspace list keeps its own layout: a name, then a check mark for the active one. */
+.workspace-popup .menu-item {
+  display: flex;
+  justify-content: space-between;
 }
 
 .menu-heading {

@@ -108,7 +108,7 @@ describe('IPC schemas', () => {
     [
       'an unknown canvas option',
       updateWorkspaceSchema,
-      { layout: { automationCanvas: { showGrid: true } } },
+      { layout: { automationCanvas: { showMinimap: true } } },
     ],
     [
       'a canvas option that is not on or off',

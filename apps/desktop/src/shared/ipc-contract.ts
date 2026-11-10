@@ -181,7 +181,12 @@ export const updateWorkspaceSchema = z.strictObject({
         .nullable()
         .optional(),
       automationCanvas: z
-        .strictObject({ snapToGrid: z.boolean().optional(), rightAngles: z.boolean().optional() })
+        .strictObject({
+          snapToGrid: z.boolean().optional(),
+          rightAngles: z.boolean().optional(),
+          hideGrid: z.boolean().optional(),
+          hideNavigator: z.boolean().optional(),
+        })
         .nullable()
         .optional(),
     })
@@ -248,6 +253,10 @@ export interface AutomationCanvasView {
   readonly snapToGrid?: boolean;
   /** Connections are drawn with straight lines and right angles instead of curves. */
   readonly rightAngles?: boolean;
+  /** The background's dots are not drawn. */
+  readonly hideGrid?: boolean;
+  /** The overview of the whole flow, in the corner, is not drawn. */
+  readonly hideNavigator?: boolean;
 }
 
 export interface AutomationPanelsView {

@@ -77,10 +77,15 @@ export interface AutomationPanels {
   readonly lowerCollapsed?: boolean;
 }
 
-/** Options of the automation canvas, each on only when `true`. Every automation tab shares them. */
+/**
+ * Options of the automation canvas, each on only when `true`. Every automation tab shares them. The
+ * grid and the navigator are shown by default, so what is stored is that they are hidden.
+ */
 export interface AutomationCanvas {
   readonly snapToGrid?: true;
   readonly rightAngles?: true;
+  readonly hideGrid?: true;
+  readonly hideNavigator?: true;
 }
 
 export interface WorkspaceLayout {
@@ -215,6 +220,8 @@ function automationCanvasOf(value: unknown): { automationCanvas?: AutomationCanv
   const options = {
     ...(fields['snapToGrid'] === true ? { snapToGrid: true as const } : {}),
     ...(fields['rightAngles'] === true ? { rightAngles: true as const } : {}),
+    ...(fields['hideGrid'] === true ? { hideGrid: true as const } : {}),
+    ...(fields['hideNavigator'] === true ? { hideNavigator: true as const } : {}),
   };
   return Object.keys(options).length === 0 ? {} : { automationCanvas: options };
 }

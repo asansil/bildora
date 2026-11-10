@@ -4,7 +4,8 @@ import type { Node, NodeProps } from '@xyflow/react';
 import { TriangleAlert } from 'lucide-react';
 import { ERROR_OUTPUT, NOTE_TEXT_MAX } from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
-import type { StepStateView } from '../../../shared/ipc-contract.js';
+import type { StepStateView, ToolView } from '../../../shared/ipc-contract.js';
+import { ProgramIcon } from '../../shell/ProgramIcon.js';
 import { RunStateIcon } from '../../shell/RunStateBadge.js';
 import { CanvasActionsContext } from './canvas-actions.js';
 import type { BlockKind } from './flow-document.js';
@@ -23,8 +24,8 @@ export interface BlockNodeData extends Record<string, unknown> {
   readonly domId: string;
   /** What a screen reader says: the block, then where its outputs lead. */
   readonly description: string;
-  /** The category logo of a Run tool block's tool, as a data URL. */
-  readonly logo?: string;
+  /** A Run tool block's tool, whose program icon the block shows. */
+  readonly tool?: ToolView;
   readonly problems: number;
   /** Set in the run view. */
   readonly state?: StepStateView;
@@ -90,8 +91,8 @@ export const BlockNodeView = memo(function BlockNodeView({ data, selected }: Nod
       ) : (
         <span className="block-text">
           <span className="block-name">
-            {data.logo === undefined ? null : (
-              <img className="block-logo" src={data.logo} alt="" draggable={false} />
+            {data.tool === undefined ? null : (
+              <ProgramIcon tool={data.tool} className="block-logo" />
             )}
             <span className="truncate" title={data.name}>
               {data.name}

@@ -1,17 +1,10 @@
 import { useId, useState } from 'react';
-import {
-  ChevronLeft,
-  Clock,
-  GitBranch,
-  GitFork,
-  Hand,
-  ListTree,
-  StickyNote,
-  Wrench,
-} from 'lucide-react';
+import { ChevronLeft, Clock, GitBranch, GitFork, Hand, ListTree, StickyNote } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { t } from '../../../shared/i18n/translate.js';
 import type { ToolView } from '../../../shared/ipc-contract.js';
+import { ProgramIcon } from '../../shell/ProgramIcon.js';
 import { kindLabel } from './block-text.js';
 import { LIBRARY_DRAG_TYPE } from './Canvas.js';
 import { matches } from './KeyboardDialogs.js';
@@ -25,9 +18,13 @@ const CONTROLS: readonly { readonly choice: AddChoice; readonly icon: LucideIcon
   { choice: { kind: 'parallel' }, icon: GitFork },
 ];
 
+/** The icon the library draws for a block that steers the flow. */
+export function controlIcon(kind: AddChoice['kind']): LucideIcon | undefined {
+  return CONTROLS.find(({ choice }) => choice.kind === kind)?.icon;
+}
+
 export interface BlockLibraryProps {
   readonly tools: readonly ToolView[];
-  readonly logos: ReadonlyMap<string, string>;
   /** Adds a block after the selected one, or a note beside it. */
   readonly onAdd: (choice: AddChoice) => void;
   /** Folds the panel down to a strip. */
@@ -37,14 +34,12 @@ export interface BlockLibraryProps {
 function Item({
   choice,
   label,
-  icon: Icon,
-  logo,
+  icon,
   onAdd,
 }: {
   readonly choice: AddChoice;
   readonly label: string;
-  readonly icon: LucideIcon;
-  readonly logo?: string | undefined;
+  readonly icon: ReactNode;
   readonly onAdd: (choice: AddChoice) => void;
 }) {
   return (
@@ -62,11 +57,7 @@ function Item({
           onAdd(choice);
         }}
       >
-        {logo === undefined ? (
-          <Icon className="icon" aria-hidden="true" />
-        ) : (
-          <img src={logo} alt="" draggable={false} />
-        )}
+        {icon}
         <span className="truncate">{label}</span>
       </button>
     </li>
@@ -74,7 +65,7 @@ function Item({
 }
 
 /** What can be added: the Workspace's tools, then the blocks that steer the flow, then notes. */
-export function BlockLibrary({ tools, logos, onAdd, onCollapse }: BlockLibraryProps) {
+export function BlockLibrary({ tools, onAdd, onCollapse }: BlockLibraryProps) {
   const searchId = useId();
   const [filter, setFilter] = useState('');
   const shownTools = tools.filter(({ name }) => matches(name, filter));
@@ -128,8 +119,7 @@ export function BlockLibrary({ tools, logos, onAdd, onCollapse }: BlockLibraryPr
               key={tool.key}
               choice={{ kind: 'run', tool: tool.id }}
               label={tool.name}
-              icon={Wrench}
-              logo={logos.get(tool.id)}
+              icon={<ProgramIcon tool={tool} />}
               onAdd={onAdd}
             />
           ))}
@@ -139,14 +129,14 @@ export function BlockLibrary({ tools, logos, onAdd, onCollapse }: BlockLibraryPr
         <>
           <h2>{t('canvas.libraryControl')}</h2>
           <ul className="library-list">
-            {shownControls.map(({ choice, icon }) => (
+            {shownControls.map(({ choice, icon: Icon }) => (
               <Item
                 key={choice.kind}
                 choice={choice}
                 label={
                   choice.kind === 'run' || choice.kind === 'note' ? '' : kindLabel(choice.kind)
                 }
-                icon={icon}
+                icon={<Icon className="icon" aria-hidden="true" />}
                 onAdd={onAdd}
               />
             ))}
@@ -160,7 +150,7 @@ export function BlockLibrary({ tools, logos, onAdd, onCollapse }: BlockLibraryPr
             <Item
               choice={{ kind: 'note' }}
               label={t('canvas.kindNote')}
-              icon={StickyNote}
+              icon={<StickyNote className="icon" aria-hidden="true" />}
               onAdd={onAdd}
             />
           </ul>

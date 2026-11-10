@@ -1,15 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-
-export interface MenuItem {
-  readonly label: string;
-  readonly shortcut?: string;
-  readonly run: () => void;
-}
+import { MenuList } from './MenuList.js';
+import type { MenuCommand, MenuEntry } from './menu-model.js';
 
 export interface Menu {
   readonly label: string;
-  readonly items: readonly MenuItem[];
+  readonly items: readonly MenuEntry[];
 }
 
 interface MenuBarProps {
@@ -23,7 +19,7 @@ function wrap(index: number, length: number): number {
 /** The app's main menus, following the WAI-ARIA menu bar keyboard pattern, with Alt to enter. */
 export function MenuBar({ menus }: MenuBarProps) {
   const [open, setOpen] = useState<number | undefined>(undefined);
-  const [activeItem, setActiveItem] = useState(0);
+  const [focusLast, setFocusLast] = useState(false);
   const bar = useRef<HTMLDivElement>(null);
   const lastFocus = useRef<Element | null>(null);
 
@@ -38,9 +34,9 @@ export function MenuBar({ menus }: MenuBarProps) {
     }
   }
 
-  function openMenu(index: number): void {
+  function openMenu(index: number, last = false): void {
     setOpen(index);
-    setActiveItem(0);
+    setFocusLast(last);
   }
 
   useEffect(() => {
@@ -77,12 +73,6 @@ export function MenuBar({ menus }: MenuBarProps) {
     };
   }, []);
 
-  useEffect(() => {
-    if (open !== undefined) {
-      bar.current?.querySelector<HTMLElement>(`[data-item="${String(activeItem)}"]`)?.focus();
-    }
-  }, [open, activeItem]);
-
   function onTriggerKey(event: KeyboardEvent, index: number): void {
     switch (event.key) {
       case 'ArrowRight':
@@ -99,6 +89,10 @@ export function MenuBar({ menus }: MenuBarProps) {
         event.preventDefault();
         openMenu(index);
         break;
+      case 'ArrowUp':
+        event.preventDefault();
+        openMenu(index, true);
+        break;
       case 'Escape':
         close();
         break;
@@ -107,47 +101,12 @@ export function MenuBar({ menus }: MenuBarProps) {
 
   function moveToMenu(index: number): void {
     setOpen(wrap(index, menus.length));
-    setActiveItem(0);
+    setFocusLast(false);
   }
 
-  function runItem(item: MenuItem): void {
+  function runItem(item: MenuCommand): void {
     close();
-    item.run();
-  }
-
-  function onItemKey(event: KeyboardEvent, menuIndex: number, item: MenuItem): void {
-    const count = menus[menuIndex]?.items.length ?? 1;
-    switch (event.key) {
-      case 'ArrowDown':
-        event.preventDefault();
-        setActiveItem((current) => wrap(current + 1, count));
-        break;
-      case 'ArrowUp':
-        event.preventDefault();
-        setActiveItem((current) => wrap(current - 1, count));
-        break;
-      case 'ArrowRight':
-        event.preventDefault();
-        moveToMenu(menuIndex + 1);
-        break;
-      case 'ArrowLeft':
-        event.preventDefault();
-        moveToMenu(menuIndex - 1);
-        break;
-      case 'Enter':
-      case ' ':
-        event.preventDefault();
-        runItem(item);
-        break;
-      case 'Escape':
-        event.preventDefault();
-        setOpen(undefined);
-        focusTrigger(menuIndex);
-        break;
-      case 'Tab':
-        setOpen(undefined);
-        break;
-    }
+    item.run?.();
   }
 
   return (
@@ -184,27 +143,21 @@ export function MenuBar({ menus }: MenuBarProps) {
             {menu.label}
           </button>
           {open === menuIndex ? (
-            <div className="menu-popup" role="menu" aria-label={menu.label}>
-              {menu.items.map((item, itemIndex) => (
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="menu-item"
-                  key={item.label}
-                  data-item={itemIndex}
-                  tabIndex={-1}
-                  onClick={() => {
-                    runItem(item);
-                  }}
-                  onKeyDown={(event) => {
-                    onItemKey(event, menuIndex, item);
-                  }}
-                >
-                  <span>{item.label}</span>
-                  {item.shortcut === undefined ? null : <kbd>{item.shortcut}</kbd>}
-                </button>
-              ))}
-            </div>
+            <MenuList
+              entries={menu.items}
+              label={menu.label}
+              className="menu-popup"
+              autoFocus={focusLast ? 'last' : 'first'}
+              onChoose={runItem}
+              onBack={() => {
+                setOpen(undefined);
+                focusTrigger(menuIndex);
+              }}
+              onLeave={(direction) => {
+                moveToMenu(menuIndex + direction);
+              }}
+              onDismiss={close}
+            />
           ) : null}
         </div>
       ))}

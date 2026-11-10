@@ -146,8 +146,13 @@ describe('Workspaces', () => {
         layout: { automationCanvas: { snapToGrid: false } },
       });
       expect(off.layout).not.toHaveProperty('automationCanvas');
-      await updateWorkspace(dataDir, 'work', {
-        layout: { automationCanvas: { rightAngles: true } },
+      const hidden = await updateWorkspace(dataDir, 'work', {
+        layout: { automationCanvas: { rightAngles: true, hideGrid: true, hideNavigator: true } },
+      });
+      expect(hidden.layout.automationCanvas).toEqual({
+        rightAngles: true,
+        hideGrid: true,
+        hideNavigator: true,
       });
       const cleared = await updateWorkspace(dataDir, 'work', {
         layout: { automationCanvas: null },
@@ -161,7 +166,7 @@ describe('Workspaces', () => {
       await writeFile(
         file,
         'formatVersion: 2\nname: Work\nlayout:\n  automationCanvas:\n' +
-          '    snapToGrid: "yes"\n    rightAngles: 1\n',
+          '    snapToGrid: "yes"\n    rightAngles: 1\n    hideGrid: false\n',
       );
       expect((await getWorkspace(dataDir, 'work'))?.layout).toEqual({
         categoryOrder: [],

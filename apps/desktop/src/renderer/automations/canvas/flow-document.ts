@@ -707,3 +707,69 @@ export function pasteItems(
     ids: [...blocks.map(({ id }) => id), ...notes.map(({ id }) => id)],
   };
 }
+
+/**
+ * The blocks reached from these by following connections, forwards for `downstream` and backwards
+ * for `upstream`, the blocks themselves included.
+ */
+function reach(
+  document: FlowDocument,
+  ids: Iterable<string>,
+  direction: 'upstream' | 'downstream',
+): Set<string> {
+  const found = new Set([...ids].filter((id) => blockOf(document, id) !== undefined));
+  const waiting = [...found];
+  for (let id = waiting.pop(); id !== undefined; id = waiting.pop()) {
+    for (const { from, to } of document.connections) {
+      const [here, there] = direction === 'downstream' ? [from, to] : [to, from];
+      if (here === id && !found.has(there)) {
+        found.add(there);
+        waiting.push(there);
+      }
+    }
+  }
+  return found;
+}
+
+/** These blocks and every block that leads to them. */
+export function upstreamOf(document: FlowDocument, ids: Iterable<string>): Set<string> {
+  return reach(document, ids, 'upstream');
+}
+
+/** These blocks and every block they lead to. */
+export function downstreamOf(document: FlowDocument, ids: Iterable<string>): Set<string> {
+  return reach(document, ids, 'downstream');
+}
+
+/**
+ * Copies blocks and notes and pastes the copy `step` to the right of and below the original, as
+ * Ctrl+C and Ctrl+V would. Gives nothing when there is nothing to copy or no room in the file.
+ */
+export function duplicateItems(
+  document: FlowDocument,
+  ids: ReadonlySet<string>,
+  step: number,
+): { readonly document: FlowDocument; readonly ids: readonly string[] } | undefined {
+  const clip = copyItems(document, ids);
+  if (clip === undefined) return undefined;
+  const corner = clipCorner(clip);
+  return pasteItems(document, clip, { x: corner.x + step, y: corner.y + step });
+}
+
+/** Moves blocks and notes to the nearest point of the grid. */
+export function alignToGrid(
+  document: FlowDocument,
+  ids: ReadonlySet<string>,
+  grid: number,
+): FlowDocument {
+  const round = (value: number): number => Math.round(value / grid) * grid;
+  const moved: Record<string, AutomationPosition> = {};
+  for (const id of ids) {
+    const at = document.positions[id];
+    if (at !== undefined) moved[id] = { x: round(at.x), y: round(at.y) };
+  }
+  const notes = document.notes.map((note) =>
+    ids.has(note.id) ? { ...note, x: round(note.x), y: round(note.y) } : note,
+  );
+  return { ...moveItems(document, moved), notes };
+}

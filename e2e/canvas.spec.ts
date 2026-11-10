@@ -137,7 +137,8 @@ test('a file with no positions opens laid out, and saving keeps the positions', 
 
   // Laying out is not an edit, so there is nothing to save until a block moves.
   await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
-  await window.getByRole('button', { name: 'Tidy up' }).click();
+  await window.getByRole('menuitem', { name: 'Selection' }).click();
+  await window.getByRole('menuitem', { name: 'Tidy up all' }).click();
   await drag(window, block(window, 'extract'), { x: 0, y: 120 });
   await window.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
@@ -595,7 +596,7 @@ test('a note is written in place, and the writing undoes as one', async () => {
   await expect(note).toHaveText('Double-click to write a note');
 });
 
-test('a right-click adds a block where it was asked, and a block has a menu', async () => {
+test('a right-click on the canvas opens its menu, which adds where it was asked', async () => {
   await fakeTool('acme.report', 'Report', ['exit', '0']);
   const { window } = await launchShell();
   await rail(window, 'Automations').click();
@@ -607,26 +608,48 @@ test('a right-click adds a block where it was asked, and a block has a menu', as
   await block(window, 'start').click({ button: 'right' });
   const menu = window.getByRole('menu', { name: 'Actions for Start' });
   await expect(menu.getByRole('menuitem')).toHaveText([
-    'Add a block after this one…',
-    'Connect an output…',
+    /^Add a block after this one…/,
+    /^Connect an output…/,
   ]);
   await window.keyboard.press('Escape');
   await expect(menu).toBeHidden();
 
+  const pane = await window.locator('.react-flow__pane').boundingBox();
+  if (pane === null) throw new Error('The canvas is not drawn');
+  // Above Start, and far enough from the right edge that the new block shows whole.
+  const at = { x: pane.x + 200, y: pane.y + 120 };
+  await window.mouse.click(at.x, at.y, { button: 'right' });
+  const canvasMenu = window.getByRole('menu', { name: 'Canvas actions' });
+  await expect(canvasMenu.getByRole('menuitem', { name: 'Add block' })).toBeFocused();
+  await canvasMenu.getByRole('menuitem', { name: 'Add block' }).click();
   await window
-    .locator('.react-flow__pane')
-    .click({ button: 'right', position: { x: 500, y: 300 } });
-  const dialog = window.getByRole('dialog', { name: 'Add here' });
-  await expect(dialog.getByRole('button', { name: 'Note' })).toBeVisible();
-  await window.keyboard.type('Rep');
-  await expect(dialog.getByRole('button')).toHaveText(['Report', 'Cancel']);
-  await dialog.getByRole('button', { name: 'Report' }).click();
+    .getByRole('menu', { name: 'Add block' })
+    .getByRole('menuitem', { name: 'Tools' })
+    .click();
+  const tools = window.getByRole('menu', { name: 'Tools' });
+  await expect(tools.getByRole('menuitem', { name: 'Report' }).locator('img, svg')).toHaveCount(1);
+  await tools.getByRole('menuitem', { name: 'Report' }).click();
+  await expect(canvasMenu).toBeHidden();
   await expect(window.getByTestId('canvas-block')).toHaveCount(2);
+  // The new block's corner is where the menu was asked for.
+  const added = await block(window, 'report').boundingBox();
+  expect(Math.abs((added?.x ?? 0) - at.x)).toBeLessThan(4);
+  expect(Math.abs((added?.y ?? 0) - at.y)).toBeLessThan(4);
   await expect(window.locator('.react-flow__edge')).toHaveCount(0);
 
+  // Search… opens the add dialog at that point.
+  await window.mouse.click(at.x, at.y + 360, { button: 'right' });
+  await canvasMenu.getByRole('menuitem', { name: 'Add block' }).click();
+  await window.getByRole('menuitem', { name: /^Search…/ }).click();
+  const dialog = window.getByRole('dialog', { name: 'Add here' });
+  await window.keyboard.type('Rep');
+  await dialog.getByRole('button', { name: 'Report' }).click();
+  await expect(window.getByTestId('canvas-block')).toHaveCount(3);
+  await shot(window, 'canvas-menu');
+
   await block(window, 'report').click({ button: 'right' });
-  await window.getByRole('menuitem', { name: 'Delete' }).click();
-  await expect(window.getByTestId('canvas-block')).toHaveCount(1);
+  await window.getByRole('menuitem', { name: /^Delete/ }).click();
+  await expect(window.getByTestId('canvas-block')).toHaveCount(2);
 });
 
 test('a tool dragged from the side panel becomes a block, and the library finds by name', async () => {
@@ -1207,7 +1230,29 @@ async function placeOf(window: Page, id: string): Promise<{ x: number; y: number
   return { x: Number(match[1]), y: Number(match[2]) };
 }
 
-test('blocks snap to the grid and connections turn at right angles, after a relaunch too', async () => {
+/** A canvas option in View > Options, which the menu bar opens. */
+async function canvasOption(window: Page, name: string): Promise<Locator> {
+  await window.getByRole('menuitem', { name: 'View' }).click();
+  await window
+    .getByRole('menu', { name: 'View' })
+    .getByRole('menuitem', { name: 'Options' })
+    .click();
+  return window.getByRole('menu', { name: 'Options' }).getByRole('menuitemcheckbox', { name });
+}
+
+async function toggleOption(window: Page, name: string): Promise<void> {
+  await (await canvasOption(window, name)).click();
+  await expect(window.getByRole('menu', { name: 'View' })).toHaveCount(0);
+}
+
+async function optionIs(window: Page, name: string, on: boolean): Promise<void> {
+  await expect(await canvasOption(window, name)).toHaveAttribute('aria-checked', String(on));
+  await window.keyboard.press('Escape');
+  await window.keyboard.press('Escape');
+  await expect(window.getByRole('menu', { name: 'View' })).toHaveCount(0);
+}
+
+test('the canvas options snap, turn connections and hide the grid and navigator, after a relaunch too', async () => {
   test.setTimeout(60_000);
   await fakeTool('acme.extract', 'Extract', ['exit', '0']);
   await fakeTool('acme.report', 'Report', ['exit', '0']);
@@ -1221,16 +1266,26 @@ test('blocks snap to the grid and connections turn at right angles, after a rela
         '.react-flow__edge[aria-label="From Start, Next, to Extract"] .react-flow__edge-path',
       )
       .getAttribute('d');
-  const snap = (window: Page) => window.getByRole('button', { name: 'Snap to grid' });
-  const angles = (window: Page) => window.getByRole('button', { name: 'Right-angle connections' });
+  const grid = (window: Page) => window.locator('.react-flow__background');
+  const navigator = (window: Page) => window.locator('.react-flow__minimap');
   await connectionMiddle(first.window, 'Start', 'Next', 'Extract');
   expect(await path(first.window)).toContain('C');
+  // The option buttons have left the canvas: zoom in, zoom out and fit stay.
+  await expect(first.window.locator('.react-flow__controls-button')).toHaveCount(3);
+  await optionIs(first.window, 'Show grid', true);
+  await optionIs(first.window, 'Show navigator', true);
+  await expect(grid(first.window)).toHaveCount(1);
+  await expect(navigator(first.window)).toHaveCount(1);
 
-  await snap(first.window).click();
-  await angles(first.window).click();
-  await expect(snap(first.window)).toHaveAttribute('aria-pressed', 'true');
-  await expect(angles(first.window)).toHaveAttribute('aria-pressed', 'true');
+  await toggleOption(first.window, 'Snap to grid');
+  await toggleOption(first.window, 'Right-angle connections');
+  await toggleOption(first.window, 'Show grid');
+  await toggleOption(first.window, 'Show navigator');
+  await optionIs(first.window, 'Snap to grid', true);
+  await optionIs(first.window, 'Right-angle connections', true);
   await expect.poll(() => path(first.window)).not.toContain('C');
+  await expect(grid(first.window)).toHaveCount(0);
+  await expect(navigator(first.window)).toHaveCount(0);
 
   await drag(first.window, block(first.window, 'report'), { x: 37, y: 23 });
   await expect
@@ -1241,19 +1296,27 @@ test('blocks snap to the grid and connections turn at right angles, after a rela
     .toBe(true);
   await shot(first.window, 'canvas-grid-right-angles');
   const layout = join(dataDir, 'workspaces', 'default', 'workspace.yaml');
-  await expect.poll(() => readFile(layout, 'utf8')).toContain('rightAngles: true');
+  await expect.poll(() => readFile(layout, 'utf8')).toContain('hideNavigator: true');
+  expect(await readFile(layout, 'utf8')).toContain('hideGrid: true');
   await first.app.close();
 
   const { window } = await launchShell();
   await openAutomation(window, 'Chain');
   await expect(block(window, 'send')).toBeVisible();
-  await expect(snap(window)).toHaveAttribute('aria-pressed', 'true');
-  await expect(angles(window)).toHaveAttribute('aria-pressed', 'true');
+  await optionIs(window, 'Snap to grid', true);
+  await optionIs(window, 'Show grid', false);
+  await optionIs(window, 'Show navigator', false);
+  await expect(grid(window)).toHaveCount(0);
+  await expect(navigator(window)).toHaveCount(0);
   await expect.poll(() => path(window)).not.toContain('C');
 
-  await angles(window).click();
-  await expect(angles(window)).toHaveAttribute('aria-pressed', 'false');
+  await toggleOption(window, 'Right-angle connections');
+  await toggleOption(window, 'Show grid');
+  await toggleOption(window, 'Show navigator');
   await expect.poll(() => path(window)).toContain('C');
+  await expect(grid(window)).toHaveCount(1);
+  await expect(navigator(window)).toHaveCount(1);
+  await expect.poll(() => readFile(layout, 'utf8')).not.toContain('hideGrid');
 });
 
 test('Delete removes every block a selection box took', async () => {
@@ -1304,4 +1367,320 @@ test('the wheel moves the view, Shift+wheel moves it sideways, and Ctrl+wheel zo
   await window.mouse.wheel(0, -100);
   await window.keyboard.up('Control');
   await expect.poll(async () => (await viewOf(window)).zoom).toBeGreaterThan(before.zoom);
+});
+
+/** Opens the empty canvas's menu below Start, where Chain has nothing. */
+async function canvasMenuBelowStart(window: Page): Promise<Locator> {
+  const start = await middleOf(block(window, 'start'));
+  await window.mouse.click(start.x, start.y + 160, { button: 'right' });
+  const menu = window.getByRole('menu', { name: 'Canvas actions' });
+  await expect(menu).toBeVisible();
+  return menu;
+}
+
+test('the canvas menu scales the view and tidies up, and its submenus work from the keyboard', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Chain');
+  await expect(block(window, 'send')).toBeVisible();
+  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+
+  const menu = await canvasMenuBelowStart(window);
+  const addBlock = menu.getByRole('menuitem', { name: 'Add block' });
+  await expect(addBlock).toBeFocused();
+  await window.keyboard.press('ArrowRight');
+  await expect(window.getByRole('menuitem', { name: /^Search…/ })).toBeFocused();
+  await window.keyboard.press('Escape');
+  await expect(window.getByRole('menu', { name: 'Add block' })).toHaveCount(0);
+  await expect(addBlock).toBeFocused();
+  await window.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+
+  await (await canvasMenuBelowStart(window)).getByRole('menuitem', { name: 'Scale' }).click();
+  await window.getByRole('menuitemcheckbox', { name: '200%', exact: true }).click();
+  await expect.poll(async () => (await viewOf(window)).zoom).toBe(2);
+  await shot(window, 'canvas-scale-200');
+  await (await canvasMenuBelowStart(window)).getByRole('menuitem', { name: 'Scale' }).click();
+  await expect(window.getByRole('menuitemcheckbox', { name: '200%', exact: true })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
+  await expect(window.getByRole('menuitemcheckbox', { name: '100%', exact: true })).toHaveAttribute(
+    'aria-checked',
+    'false',
+  );
+  await window.getByRole('menuitem', { name: 'Default scale' }).click();
+  await expect.poll(async () => (await viewOf(window)).zoom).toBe(1);
+
+  // Chain draws Report above Start; tidied up, it follows Extract to the right.
+  expect((await placeOf(window, 'report')).x).toBeLessThan((await placeOf(window, 'extract')).x);
+  await (await canvasMenuBelowStart(window)).getByRole('menuitem', { name: 'Arrange' }).click();
+  await window.getByRole('menuitem', { name: 'Tidy up all' }).click();
+  await expect
+    .poll(async () => (await placeOf(window, 'report')).x > (await placeOf(window, 'extract')).x)
+    .toBe(true);
+});
+
+test('Scale to rectangle zooms to a box drawn on the canvas, and Escape cancels it', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Chain');
+  await expect(block(window, 'send')).toBeVisible();
+  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+
+  await (await canvasMenuBelowStart(window)).getByRole('menuitem', { name: 'Scale' }).click();
+  await window.getByRole('menuitem', { name: 'Scale to rectangle' }).click();
+  await expect(window.getByTestId('scale-rectangle')).toBeVisible();
+  await window.keyboard.press('Escape');
+  await expect(window.getByTestId('scale-rectangle')).toHaveCount(0);
+  expect((await viewOf(window)).zoom).toBe(1);
+
+  await (await canvasMenuBelowStart(window)).getByRole('menuitem', { name: 'Scale' }).click();
+  await window.getByRole('menuitem', { name: 'Scale to rectangle' }).click();
+  const start = await block(window, 'start').boundingBox();
+  if (start === null) throw new Error('Start is not drawn');
+  await pull(
+    window,
+    { x: start.x - 10, y: start.y - 10 },
+    { x: start.x + start.width + 10, y: start.y + start.height + 10 },
+  );
+  await expect(window.getByTestId('scale-rectangle')).toHaveCount(0);
+  await expect.poll(async () => (await viewOf(window)).zoom).toBeGreaterThan(1.5);
+  // Start now fills the canvas's width or height.
+  await expect
+    .poll(async () => (await block(window, 'start').boundingBox())?.width ?? 0)
+    .toBeGreaterThan(start.width * 1.5);
+});
+
+test('a block menu duplicates and takes out, and Selection selects downstream', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Chain');
+  await expect(block(window, 'send')).toBeVisible();
+  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+
+  await block(window, 'extract').click({ button: 'right' });
+  const menu = window.getByRole('menu', { name: 'Actions for Extract' });
+  await expect(menu.getByRole('menuitem')).toHaveText([
+    /^Add a block after this one…/,
+    /^Connect an output…/,
+    /^Copy/,
+    /^Duplicate/,
+    /^Take out of the flow/,
+    /^Group/,
+    /^Delete/,
+  ]);
+  await menu.getByRole('menuitem', { name: /^Duplicate/ }).click();
+  await expect(block(window, 'extract-2')).toBeVisible();
+  await expect(window.locator('.react-flow__node-block.selected[data-id="extract-2"]')).toHaveCount(
+    1,
+  );
+
+  await block(window, 'report').click({ button: 'right' });
+  await window.getByRole('menuitem', { name: /^Take out of the flow/ }).click();
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['extract next send', 'start next extract']);
+  await block(window, 'report').click({ button: 'right' });
+  await expect(window.getByRole('menuitem', { name: /^Take out of the flow/ })).toHaveAttribute(
+    'aria-disabled',
+    'true',
+  );
+  await window.keyboard.press('Escape');
+  // Its copy sits a grid step down and right, over its middle.
+  await block(window, 'extract').click({ position: { x: 8, y: 8 } });
+  await window.getByRole('menuitem', { name: 'Selection' }).click();
+  await window.getByRole('menuitem', { name: 'Select downstream' }).click();
+  await expect(window.locator('.react-flow__node-block.selected')).toHaveCount(2);
+  await expect(window.locator('.react-flow__node-block.selected[data-id="send"]')).toHaveCount(1);
+
+  // Ctrl+D duplicates the selection one grid step away.
+  await window.keyboard.press('Control+d');
+  await expect(block(window, 'extract-3')).toBeVisible();
+  await expect(block(window, 'send-2')).toBeVisible();
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['extract next send', 'extract-3 next send-2', 'start next extract']);
+  const original = await placeOf(window, 'extract');
+  expect(await placeOf(window, 'extract-3')).toEqual({ x: original.x + 16, y: original.y + 16 });
+
+  // Ctrl+S saves the flow, wherever the focus is in the tab.
+  await window.getByLabel('Name', { exact: true }).click();
+  await window.keyboard.press('Control+s');
+  await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+  await expect.poll(() => readFile(automationFile('chain'), 'utf8')).toContain('send-2');
+});
+
+test('the menus act on the automation on view, and are disabled for other tabs', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Chain');
+  await expect(block(window, 'send')).toBeVisible();
+
+  const selection = window.getByRole('menuitem', { name: 'Selection' });
+  await selection.click();
+  await window.getByRole('menuitem', { name: /^Select all blocks/ }).click();
+  await expect(window.locator('.react-flow__node-block.selected')).toHaveCount(4);
+  await window.getByRole('menuitem', { name: 'Edit' }).click();
+  await expect(window.getByRole('menuitem', { name: /^Delete/ })).not.toHaveAttribute(
+    'aria-disabled',
+  );
+  await window.keyboard.press('Escape');
+
+  await rail(window, 'Run history').click();
+  await selection.click();
+  const items = window.getByRole('menu', { name: 'Selection' }).getByRole('menuitem');
+  await expect(items).toHaveCount(10);
+  for (const item of await items.all()) {
+    await expect(item).toHaveAttribute('aria-disabled', 'true');
+  }
+  await window.keyboard.press('Escape');
+  await window.getByRole('menuitem', { name: 'View' }).click();
+  await expect(window.getByRole('menuitem', { name: 'Scale' })).toHaveAttribute(
+    'aria-disabled',
+    'true',
+  );
+  await window.keyboard.press('Escape');
+
+  await window.getByRole('tab', { name: 'Chain' }).click();
+  await selection.click();
+  await expect(window.getByRole('menuitem', { name: 'Deselect all' })).not.toHaveAttribute(
+    'aria-disabled',
+  );
+});
+
+test('the header has icon buttons with tooltips, and F5 saves and runs', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Chain');
+  await expect(block(window, 'send')).toBeVisible();
+  const header = window.locator('.flow-header');
+  await expect(header.getByRole('button')).toHaveCount(4);
+  await expect(header.getByRole('button', { name: 'Undo' })).toHaveAttribute(
+    'title',
+    'Undo (Ctrl+Z)',
+  );
+  await expect(header.getByRole('button', { name: 'Redo' })).toHaveAttribute(
+    'title',
+    'Redo (Ctrl+Y)',
+  );
+  await expect(header.getByRole('button', { name: 'Save', exact: true })).toHaveAttribute(
+    'title',
+    'Save (Ctrl+S)',
+  );
+  await expect(header.getByRole('button', { name: 'Run', exact: true })).toHaveAttribute(
+    'title',
+    'Run (F5)',
+  );
+  await shot(window, 'header');
+
+  await drag(window, block(window, 'report'), { x: 0, y: 40 });
+  const saveAndRun = header.getByRole('button', { name: 'Save and run', exact: true });
+  await expect(saveAndRun).toHaveAttribute('title', 'Save and run (F5)');
+  await window.getByTestId('canvas').focus();
+  await window.keyboard.press('F5');
+  await expect(header.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+  const state = block(window, 'send').getByTestId('canvas-block');
+  await expect(state).toHaveAttribute('data-state', 'completed', { timeout: 30_000 });
+});
+
+test('the sidebar menu opens, renames, duplicates and deletes an automation', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const { window } = await launchShell();
+  await rail(window, 'Automations').click();
+  const row = (name: string) => automationsPanel(window).getByRole('button', { name, exact: true });
+
+  await row('Chain').click({ button: 'right' });
+  const menu = window.getByRole('menu', { name: 'Actions for Chain' });
+  await expect(menu.getByRole('menuitem')).toHaveText(['Open', /^Rename…/, 'Duplicate', 'Delete']);
+  await menu.getByRole('menuitem', { name: /^Rename…/ }).click();
+  await expect(window.getByRole('tab', { name: 'Chain', selected: true })).toBeVisible();
+  await expect(window.getByLabel('Name', { exact: true })).toBeFocused();
+
+  // F2 on a row does the same.
+  await row('Chain').focus();
+  await window.keyboard.press('F2');
+  await expect(window.getByLabel('Name', { exact: true })).toBeFocused();
+
+  await row('Chain').click({ button: 'right' });
+  await window.getByRole('menuitem', { name: 'Duplicate' }).click();
+  await expect(row('Chain copy')).toBeVisible();
+  await expect(window.getByRole('tab', { name: 'Chain copy', selected: true })).toBeVisible();
+
+  // The menu opens from the keyboard too, and Delete asks first.
+  await row('Chain copy').focus();
+  await window.keyboard.press('Shift+F10');
+  await expect(window.getByRole('menu', { name: 'Actions for Chain copy' })).toBeVisible();
+  await window.keyboard.press('End');
+  await window.keyboard.press('Enter');
+  const dialog = window.getByRole('dialog', { name: 'Delete Chain copy?' });
+  await dialog.getByRole('button', { name: 'Delete' }).click();
+  await expect(row('Chain copy')).toHaveCount(0);
+  await expect(window.getByRole('tab', { name: 'Chain copy' })).toHaveCount(0);
+  await expect(row('Chain')).toBeVisible();
+});
+
+test('a tool shows its program icon in the library, on its block, in the menu and in search', async () => {
+  const program = join(folder, 'report.bat');
+  await writeFile(program, '@echo off\r\n');
+  const directory = join(dataDir, 'tools', 'acme.report');
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, 'tool.yaml'),
+    `schemaVersion: 1\nid: acme.report\nname: Report\nversion: 1.0.0\nlevel: 1\nrun:\n  program: '${program}'\n`,
+  );
+  await writeAutomation(
+    'single',
+    `name: Single
+blocks:
+  - { id: start, type: start }
+  - { id: report, type: run, tool: acme.report }
+connections:
+  - { from: start, to: report }
+positions:
+  start: { x: 0, y: 0 }
+  report: { x: 280, y: 0 }
+`,
+  );
+  const { window } = await launchShell();
+  await openAutomation(window, 'Single');
+  await expect(block(window, 'report')).toBeVisible();
+
+  const png = /^data:image\/png;base64,/;
+  await expect(block(window, 'report').locator('img.program-icon')).toHaveAttribute('src', png);
+  const row = window.getByTestId('library-item').filter({ hasText: 'Report' });
+  await expect(row.locator('img.program-icon')).toHaveAttribute('src', png);
+
+  const menu = await canvasMenuBelowStart(window);
+  await menu.getByRole('menuitem', { name: 'Add block' }).click();
+  await window
+    .getByRole('menu', { name: 'Add block' })
+    .getByRole('menuitem', { name: 'Tools' })
+    .click();
+  const item = window
+    .getByRole('menu', { name: 'Tools' })
+    .getByRole('menuitem', { name: 'Report' });
+  await expect(item.locator('img.program-icon')).toHaveAttribute('src', png);
+  await window.keyboard.press('Escape');
+  await window.keyboard.press('Escape');
+  await window.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+
+  await (await canvasMenuBelowStart(window)).getByRole('menuitem', { name: 'Add block' }).click();
+  await window.getByRole('menuitem', { name: /^Search…/ }).click();
+  const choice = window.getByTestId('add-choices').getByRole('button', { name: 'Report' });
+  await expect(choice.locator('img.program-icon')).toHaveAttribute('src', png);
+  await shot(window, 'canvas-program-icons');
 });

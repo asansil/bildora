@@ -17,6 +17,8 @@ export interface TabView {
   readonly icon: ReactNode;
   readonly state: ToolState;
   readonly preview: boolean;
+  /** Has changes that are not saved, which a dot in place of the close button shows. */
+  readonly unsaved: boolean;
 }
 
 /** The id of the region a tab shows, so the tab can say what it controls. */
@@ -124,10 +126,12 @@ export function TabBar({ tabs, activeKey, onActivate, onPin, onMove, onAction }:
             className="tab"
             data-key={tab.key}
             data-preview={tab.preview ? 'true' : undefined}
+            data-unsaved={tab.unsaved ? 'true' : undefined}
             aria-selected={active}
             aria-controls={tabPanelId(tab.key)}
             // Named by its label alone, so the close button and the state stay out of the name.
-            aria-labelledby={`${tabId(tab.key)}-label`}
+            aria-labelledby={tab.unsaved ? undefined : `${tabId(tab.key)}-label`}
+            aria-label={tab.unsaved ? t('tabs.unsavedName', { name: tab.label }) : undefined}
             aria-describedby={tab.state === 'idle' ? undefined : `${tabId(tab.key)}-state`}
             tabIndex={active ? 0 : -1}
             title={tab.label}
@@ -188,6 +192,9 @@ export function TabBar({ tabs, activeKey, onActivate, onPin, onMove, onAction }:
                 </span>
               </span>
             )}
+            {tab.unsaved ? (
+              <span className="tab-unsaved" title={t('tabs.unsaved')} aria-hidden="true" />
+            ) : null}
             <button
               type="button"
               className="icon-button tab-close"

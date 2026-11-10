@@ -1,25 +1,26 @@
-import { useEffect, useRef } from 'react';
-import type { KeyboardEvent } from 'react';
+import { useRef } from 'react';
+import { MenuList } from './MenuList.js';
+import type { MenuCommand, MenuEntry } from './menu-model.js';
 
-export interface ContextMenuItem<Action extends string> {
+/** An item that hands its action to the menu's `onAction`, as the tab and block menus use. */
+export type ContextMenuItem<Action extends string> = MenuCommand<Action> & {
   readonly action: Action;
-  readonly label: string;
-  /** Drawn as a dangerous action, such as a delete. */
-  readonly danger?: boolean;
-}
+};
 
 interface ContextMenuProps<Action extends string> {
   readonly x: number;
   readonly y: number;
   readonly label: string;
-  readonly items: readonly ContextMenuItem<Action>[];
-  readonly onAction: (action: Action) => void;
+  readonly items: readonly MenuEntry<Action>[];
+  /** Called for a chosen item that has an `action` and no `run`. The caller closes the menu. */
+  readonly onAction?: (action: Action) => void;
   readonly onClose: () => void;
 }
 
 /**
- * A menu drawn in the page at the pointer, so it needs no IPC channel. Arrow keys move through it,
- * and Escape, Tab or a click elsewhere closes it.
+ * A menu drawn in the page at the pointer, so it needs no IPC channel. Arrow keys move through it
+ * and its submenus, and Escape on the first level, Tab or a click elsewhere closes it. An item with
+ * `run` closes the menu before running.
  */
 export function ContextMenu<Action extends string>({
   x,
@@ -29,58 +30,37 @@ export function ContextMenu<Action extends string>({
   onAction,
   onClose,
 }: ContextMenuProps<Action>) {
-  const menu = useRef<HTMLDivElement>(null);
+  const root = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    menu.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-  }, []);
-
-  function onKeyDown(event: KeyboardEvent): void {
-    const entries = [...(menu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
-    const index = entries.indexOf(document.activeElement as HTMLElement);
-    if (event.key === 'Escape' || event.key === 'Tab') {
-      event.preventDefault();
+  function choose(entry: MenuCommand<Action>): void {
+    if (entry.run !== undefined) {
       onClose();
-    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      const step = event.key === 'ArrowDown' ? 1 : -1;
-      entries[(index + step + entries.length) % entries.length]?.focus();
-    } else if (event.key === 'Home' || event.key === 'End') {
-      event.preventDefault();
-      (event.key === 'Home' ? entries[0] : entries.at(-1))?.focus();
+      entry.run();
+    } else if (entry.action !== undefined) {
+      onAction?.(entry.action);
     }
-    // Keys used here never reach the canvas or the tab behind the menu.
-    event.stopPropagation();
   }
 
   return (
     <div
-      ref={menu}
-      className="menu-popup context-menu"
-      role="menu"
-      aria-label={label}
-      style={{ left: x, top: y }}
-      onKeyDown={onKeyDown}
+      ref={root}
+      className="context-menu-root"
       onBlur={(event) => {
-        if (!menu.current?.contains(event.relatedTarget)) {
+        if (!root.current?.contains(event.relatedTarget)) {
           onClose();
         }
       }}
     >
-      {items.map((item) => (
-        <button
-          key={item.action}
-          type="button"
-          role="menuitem"
-          className={item.danger === true ? 'menu-item danger' : 'menu-item'}
-          tabIndex={-1}
-          onClick={() => {
-            onAction(item.action);
-          }}
-        >
-          {item.label}
-        </button>
-      ))}
+      <MenuList
+        entries={items}
+        label={label}
+        className="menu-popup context-menu"
+        at={{ x, y }}
+        autoFocus="first"
+        onChoose={choose}
+        onBack={onClose}
+        onDismiss={onClose}
+      />
     </div>
   );
 }

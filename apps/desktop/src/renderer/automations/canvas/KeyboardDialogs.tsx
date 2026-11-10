@@ -1,4 +1,5 @@
 import { useId, useState } from 'react';
+import type { ReactNode } from 'react';
 import { t } from '../../../shared/i18n/translate.js';
 import { Dialog } from '../../shell/Dialog.js';
 import type { NewBlock } from './flow-document.js';
@@ -9,6 +10,10 @@ export type AddChoice = NewBlock | { readonly kind: 'note' };
 export interface LibraryChoice {
   readonly choice: AddChoice;
   readonly label: string;
+  /** Drawn beside the label in menus. */
+  readonly icon?: ReactNode;
+  /** The tool's category, which the canvas menu lists tools under. */
+  readonly group?: string;
 }
 
 function Search({
@@ -64,7 +69,7 @@ export function AddDialog({
         {t('canvas.choiceCount', { count: shown.length })}
       </p>
       <ul className="choice-list" data-testid="add-choices">
-        {shown.map(({ choice, label }) => (
+        {shown.map(({ choice, label, icon }) => (
           <li key={choice.kind === 'run' ? `run:${choice.tool}` : choice.kind}>
             <button
               type="button"
@@ -72,7 +77,8 @@ export function AddDialog({
                 onPick(choice);
               }}
             >
-              {label}
+              {icon}
+              <span className="truncate">{label}</span>
             </button>
           </li>
         ))}

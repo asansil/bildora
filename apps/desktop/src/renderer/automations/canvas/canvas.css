@@ -147,15 +147,25 @@
   margin-bottom: var(--bildora-space-3);
 }
 
-.library-item img {
-  width: 16px;
-  height: 16px;
-}
-
 .flow-canvas {
   position: relative;
   min-width: 0;
   min-height: 0;
+}
+
+/* Scale to rectangle: the canvas waits for a box, drawn in accent dashes, and zooms to it. */
+.scale-rectangle {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  cursor: crosshair;
+}
+
+.scale-rectangle-box {
+  position: absolute;
+  border: 1px dashed var(--bildora-accent);
+  background: color-mix(in oklch, var(--bildora-accent) 8%, transparent);
+  pointer-events: none;
 }
 
 .flow-canvas:focus-visible {
@@ -308,18 +318,6 @@
   border: 1px solid var(--bildora-border);
   border-radius: var(--bildora-radius-md);
   overflow: hidden;
-}
-
-/* The controls fill their own icons; lucide's are drawn with lines. */
-.react-flow__controls-button svg.lucide {
-  fill: none;
-  max-width: 14px;
-  max-height: 14px;
-}
-
-.react-flow__controls-button.is-on {
-  background: color-mix(in oklch, var(--bildora-accent) 18%, transparent);
-  color: var(--bildora-accent);
 }
 
 .react-flow__minimap svg {
@@ -722,6 +720,7 @@
 }
 
 .choice-list button {
+  justify-content: flex-start;
   width: 100%;
   text-align: left;
 }

@@ -105,3 +105,22 @@ export function submittedValues(
   }
   return { plain, secrets };
 }
+
+/**
+ * Whether the form holds something its profile's Save would change: values that differ from what
+ * the chosen profile fills in, or from the defaults when none is chosen, a typed secret, or a
+ * forgotten one.
+ */
+export function formDiffers(
+  parameters: readonly ParameterView[],
+  values: FormValues,
+  profile: ProfileView | undefined,
+  forgotten: readonly string[],
+): boolean {
+  const { plain, secrets } = submittedValues(parameters, values);
+  if (forgotten.length > 0 || Object.keys(secrets).length > 0) {
+    return true;
+  }
+  const base = submittedValues(parameters, initialValues(parameters, profile)).plain;
+  return parameters.some(({ name }) => plain[name] !== base[name]);
+}

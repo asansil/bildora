@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { commandFor, without } from './automations/automation-draft.js';
 import { formatDuration, historyState } from './history/history-format.js';
 import {
+  formDiffers,
   formProblems,
   initialValues,
   parameterProblem,
@@ -266,6 +267,24 @@ describe('parameter form', () => {
 
     expect(plain).toEqual({ input: 'a.txt', count: 4, verbose: false, mode: 'b' });
     expect(secrets).toEqual({ token: 'typed' });
+  });
+
+  it('tells when the form differs from its profile or from the defaults', () => {
+    const defaults = initialValues(parameters);
+    expect(formDiffers(parameters, defaults, undefined, [])).toBe(false);
+    expect(formDiffers(parameters, { ...defaults, count: '3.0' }, undefined, [])).toBe(false);
+    expect(formDiffers(parameters, { ...defaults, count: '4' }, undefined, [])).toBe(true);
+    expect(formDiffers(parameters, { ...defaults, mode: '' }, undefined, [])).toBe(true);
+    expect(formDiffers(parameters, { ...defaults, token: 'typed' }, undefined, [])).toBe(true);
+    expect(formDiffers(parameters, defaults, undefined, ['token'])).toBe(true);
+
+    const profile = { id: 'p', name: 'P', values: { input: 'a.txt', count: 9 }, secrets: [] };
+    const filled = initialValues(parameters, profile);
+    expect(formDiffers(parameters, filled, profile, [])).toBe(false);
+    expect(formDiffers(parameters, { ...filled, verbose: false }, profile, [])).toBe(true);
+    expect(formDiffers(parameters, { ...filled, count: '' }, profile, [])).toBe(true);
+    // A field the profile leaves out shows its default, which is no change.
+    expect(filled['mode']).toBe('a');
   });
 });
 

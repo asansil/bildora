@@ -7,12 +7,10 @@ import {
   ChevronRight,
   ChevronUp,
   Hand,
-  LayoutGrid,
   Play,
   Redo2,
   Save,
   Square,
-  Trash2,
   TriangleAlert,
   Undo2,
   X,
@@ -33,16 +31,17 @@ import type {
 } from '../../shared/ipc-contract.js';
 import { AUTOMATION_PANEL_SIZES } from '../../shared/ipc-contract.js';
 import { formatDuration, formatTime, historyState } from '../history/history-format.js';
-import { Dialog } from '../shell/Dialog.js';
 import { PanelResizer } from '../shell/PanelResizer.js';
 import { RunStateBadge } from '../shell/RunStateBadge.js';
 import { ConsolePane } from '../tools/ConsolePane.js';
 import { commandFor } from './automation-draft.js';
-import { BlockLibrary } from './canvas/BlockLibrary.js';
+import { ProgramIcon } from '../shell/ProgramIcon.js';
+import { BlockLibrary, controlIcon } from './canvas/BlockLibrary.js';
 import { BlockSettings } from './canvas/BlockSettings.js';
 import { blockNames, kindLabel } from './canvas/block-text.js';
 import { Canvas } from './canvas/Canvas.js';
 import type { CanvasRun } from './canvas/Canvas.js';
+import type { CanvasCommands, EditorCommands } from './canvas/canvas-commands.js';
 import {
   GAP_X,
   addAfter,
@@ -64,7 +63,7 @@ import { GroupSettings, NoteSettings, SelectionSettings } from './canvas/ItemSet
 import type { LibraryChoice } from './canvas/KeyboardDialogs.js';
 import { Outline } from './canvas/Outline.js';
 import { record, redo, replace, startHistory, undo } from './canvas/undo.js';
-import { layoutBlocks, placeMissing } from './canvas/layout.js';
+import { placeMissing } from './canvas/layout.js';
 import type { ConnectionRef, FlowDocument, NewBlock } from './canvas/flow-document.js';
 import { referenceOptionsFor } from './canvas/references.js';
 import { problemText } from './problem-text.js';
@@ -325,8 +324,6 @@ interface AutomationTabProps {
   readonly automation: AutomationView | undefined;
   readonly run: AutomationRunStateView | undefined;
   readonly tools: readonly ToolView[];
-  /** Category logos by tool id. */
-  readonly logos: ReadonlyMap<string, string>;
   /** False while another tab is shown. */
   readonly active: boolean;
   /** Changes when a past run may have appeared, such as one from the CLI. */
@@ -343,11 +340,14 @@ interface AutomationTabProps {
   readonly onSaved: (id: string) => void;
   /** Starts the saved automation with this id. Rejects when it cannot start. */
   readonly onRun: (id: string) => Promise<unknown>;
-  readonly onRemove: () => void;
   readonly onShowTool: (id: string) => void;
   readonly onDirty: (dirty: boolean) => void;
   readonly onUsed: () => void;
   readonly onError: (error: unknown) => void;
+  /** Changes each time the sidebar asks to rename the automation: its name field is selected. */
+  readonly renameRequest?: number | undefined;
+  /** Given while this tab is on view, so the app's menus act on its canvas. */
+  readonly onCommands?: ((commands: CanvasCommands | undefined) => void) | undefined;
 }
 
 /** One automation in its tab: built and watched on a canvas. */
@@ -363,7 +363,6 @@ function FlowEditor({
   automation,
   run,
   tools,
-  logos,
   active,
   revision,
   panels,
@@ -373,11 +372,12 @@ function FlowEditor({
   onSave,
   onSaved,
   onRun,
-  onRemove,
   onShowTool,
   onDirty,
   onUsed,
   onError,
+  onCommands,
+  renameRequest,
 }: AutomationTabProps) {
   const [saved, setSaved] = useState(() => documentOf(automation));
   const [history, setHistory] = useState(() => startHistory(saved));
@@ -420,9 +420,20 @@ function FlowEditor({
   const [reveal, setReveal] = useState<{ id: string; count: number; center?: boolean } | undefined>(
     undefined,
   );
-  const [removing, setRemoving] = useState(false);
   const [saving, setSaving] = useState(false);
   const [lastAdded, setLastAdded] = useState<string | undefined>(undefined);
+
+  // Rename from the sidebar selects the name, once the tab is drawn.
+  useEffect(() => {
+    if (renameRequest === undefined) return undefined;
+    const frame = requestAnimationFrame(() => {
+      nameField.current?.focus();
+      nameField.current?.select();
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+    };
+  }, [renameRequest]);
 
   const savedText = useMemo(() => JSON.stringify(draftOf(saved)), [saved]);
   const draft = useMemo(() => draftOf(document, automation?.id), [document, automation?.id]);
@@ -556,6 +567,7 @@ function FlowEditor({
   const selectedNote = document.notes.find(({ id }) => id === only);
   const selectedGroup = document.groups.find(({ id }) => id === only);
   const selectedBlocks = document.blocks.filter(({ id }) => selected.has(id));
+  const selectedGroups = document.groups.filter(({ id }) => selected.has(id));
 
   /** Frames the selected blocks under a new name. */
   function group(): void {
@@ -568,6 +580,13 @@ function FlowEditor({
     );
     change(() => result.document);
     if (result.id !== undefined) setSelected(new Set([result.id]));
+  }
+
+  /** Removes the frames of the selected groups, and selects the blocks they held. */
+  function ungroupSelected(): void {
+    if (selectedGroups.length === 0) return;
+    change((current) => selectedGroups.reduce((flow, { id }) => ungroup(flow, id), current));
+    setSelected(new Set(selectedGroups.flatMap(({ blocks }) => blocks)));
   }
 
   /** A note goes where it was dropped, else under the selected block, or under Start. */
@@ -633,9 +652,18 @@ function FlowEditor({
       ...tools.map((tool) => ({
         choice: { kind: 'run' as const, tool: tool.id },
         label: tool.name,
+        icon: <ProgramIcon tool={tool} />,
+        ...(tool.category === undefined ? {} : { group: tool.category }),
       })),
       ...(['wait-for-time', 'wait-for-manual-action', 'if', 'switch', 'parallel'] as const).map(
-        (kind) => ({ choice: { kind }, label: kindLabel(kind) }),
+        (kind) => {
+          const Icon = controlIcon(kind);
+          return {
+            choice: { kind },
+            label: kindLabel(kind),
+            ...(Icon === undefined ? {} : { icon: <Icon className="icon" aria-hidden="true" /> }),
+          };
+        },
       ),
     ],
     [tools],
@@ -752,6 +780,34 @@ function FlowEditor({
   // The Output tab belongs to a run, and editing has none.
   if (lower === 'output' && runOnView === undefined) setLower('problems');
 
+  const editing = view.kind === 'edit';
+  const editor: EditorCommands = {
+    undo: {
+      enabled: editing && history.past.length > 0,
+      run: () => {
+        step('undo');
+      },
+    },
+    redo: {
+      enabled: editing && history.future.length > 0,
+      run: () => {
+        step('redo');
+      },
+    },
+    group: { enabled: runOnView === undefined && selectedBlocks.length > 0, run: group },
+    ungroup: {
+      enabled: runOnView === undefined && selectedGroups.length > 0,
+      run: ungroupSelected,
+    },
+    save: { enabled: dirty && named && !saving, run: save },
+    saveAndRun: {
+      enabled: !saving && !running,
+      run: () => {
+        saveAndRun().catch(onError);
+      },
+    },
+  };
+
   return (
     <section
       className="automation-tab flow-tab"
@@ -772,6 +828,17 @@ function FlowEditor({
             step('redo');
             return;
           }
+        }
+        // Ctrl+S saves from anywhere in the tab, text fields included; F5 saves and runs.
+        if (event.ctrlKey && !event.shiftKey && !event.altKey && key === 's') {
+          event.preventDefault();
+          if (editor.save.enabled) editor.save.run();
+          return;
+        }
+        if (event.key === 'F5' && !event.ctrlKey && !event.shiftKey && !event.altKey && !typing) {
+          event.preventDefault();
+          if (editor.saveAndRun.enabled) editor.saveAndRun.run();
+          return;
         }
         // Ctrl+G frames the selected blocks, wherever focus is in the tab.
         if (event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'g') {
@@ -855,65 +922,46 @@ function FlowEditor({
               </button>
             </>
           ) : null}
-          {view.kind === 'edit' ? (
-            <button
-              type="button"
-              title={t('canvas.tidyHint')}
-              onClick={() => {
-                void layoutBlocks(document.blocks, document.connections)
-                  .then((positions) => {
-                    change((current) => ({ ...current, positions }));
-                  })
-                  .catch(onError);
-              }}
-            >
-              <LayoutGrid className="icon" aria-hidden="true" />
-              {t('canvas.tidy')}
-            </button>
-          ) : null}
           <button
             type="button"
+            className="icon-button"
+            aria-label={t('canvas.save')}
+            title={named ? t('canvas.saveShortcut') : t('canvas.nameFirst')}
             disabled={!dirty || !named || saving}
-            title={named ? undefined : t('canvas.nameFirst')}
             onClick={save}
           >
             <Save className="icon" aria-hidden="true" />
-            {t('canvas.save')}
           </button>
           {running ? (
             <button
               type="button"
+              className="icon-button"
+              aria-label={t('automation.stop')}
+              title={t('automation.stop')}
               onClick={() => {
                 void api.cancelAutomation(run.runId).catch(onError);
               }}
             >
               <Square className="icon" aria-hidden="true" />
-              {t('automation.stop')}
             </button>
           ) : (
             <button
               type="button"
-              className="primary"
+              className="icon-button primary"
+              aria-label={
+                dirty || automation === undefined ? t('canvas.saveAndRun') : t('automation.run')
+              }
+              title={
+                dirty || automation === undefined
+                  ? t('canvas.saveAndRunShortcut')
+                  : t('canvas.runShortcut')
+              }
               disabled={saving}
               onClick={() => {
                 saveAndRun().catch(onError);
               }}
             >
               <Play className="icon" aria-hidden="true" />
-              {dirty || automation === undefined ? t('canvas.saveAndRun') : t('automation.run')}
-            </button>
-          )}
-          {automation === undefined ? null : (
-            <button
-              type="button"
-              className="danger"
-              disabled={running}
-              onClick={() => {
-                setRemoving(true);
-              }}
-            >
-              <Trash2 className="icon" aria-hidden="true" />
-              {t('automation.remove')}
             </button>
           )}
         </div>
@@ -980,7 +1028,6 @@ function FlowEditor({
           <>
             <BlockLibrary
               tools={tools}
-              logos={logos}
               onAdd={(choice) => {
                 if (choice.kind === 'note') note();
                 else add(choice);
@@ -1006,7 +1053,7 @@ function FlowEditor({
         <Canvas
           document={document}
           names={names}
-          logos={logos}
+          tools={tools}
           problemCounts={problemCounts}
           selected={selected}
           active={active}
@@ -1026,6 +1073,9 @@ function FlowEditor({
           {...(focusRequest === undefined ? {} : { focusRequest })}
           options={canvasOptions}
           onOptions={onCanvasOptions}
+          editor={editor}
+          onCommands={onCommands}
+          onError={onError}
         />
         {settingsCollapsed ? (
           <div className="flow-strip flow-strip-settings">
@@ -1260,37 +1310,6 @@ function FlowEditor({
           )}
         </div>
       </div>
-      {removing && automation !== undefined ? (
-        <Dialog
-          title={t('automation.removeTitle', { name: automation.name })}
-          onClose={() => {
-            setRemoving(false);
-          }}
-        >
-          <p>{t('automation.removeBody')}</p>
-          <div className="dialog-actions">
-            <button
-              type="button"
-              autoFocus
-              onClick={() => {
-                setRemoving(false);
-              }}
-            >
-              {t('form.cancel')}
-            </button>
-            <button
-              type="button"
-              className="danger filled"
-              onClick={() => {
-                setRemoving(false);
-                onRemove();
-              }}
-            >
-              {t('automation.removeConfirm')}
-            </button>
-          </div>
-        </Dialog>
-      ) : null}
     </section>
   );
 }

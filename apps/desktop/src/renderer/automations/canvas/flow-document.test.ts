@@ -3,7 +3,11 @@ import type { ToolView } from '../../../shared/ipc-contract.js';
 import { blockNames } from './block-text.js';
 import {
   addNote,
+  alignToGrid,
+  downstreamOf,
+  duplicateItems,
   groupBlocks,
+  upstreamOf,
   ungroup,
   updateGroup,
   addAfter,
@@ -370,5 +374,30 @@ describe('copy and paste', () => {
     // A second paste takes the next free ids.
     const again = document === undefined ? undefined : pasteItems(document, clip, { x: 0, y: 0 });
     expect(again?.ids[0]).toBe('extract-3');
+  });
+  it('duplicates one grid step away, under new ids', () => {
+    const copy = duplicateItems(flow, new Set(['extract', 'report']), 16);
+    expect(copy?.ids).toEqual(['extract-2', 'report-2']);
+    expect(copy?.document.positions['extract-2']).toEqual({ x: 216, y: 56 });
+    expect(copy?.document.connections.at(-1)).toEqual({ from: 'extract-2', to: 'report-2' });
+    expect(duplicateItems(flow, new Set(['start']), 16)).toBeUndefined();
+  });
+
+  it('walks the connections up and down from the chosen blocks', () => {
+    expect([...downstreamOf(flow, ['extract'])].sort()).toEqual(['decide', 'extract', 'report']);
+    expect([...upstreamOf(flow, ['report'])].sort()).toEqual(['extract', 'report', 'start']);
+    expect([...upstreamOf(flow, ['join', 'note'])].sort()).toEqual(['join', 'parallel']);
+  });
+
+  it('aligns blocks and notes to the grid, and leaves the rest', () => {
+    const moved: FlowDocument = {
+      ...flow,
+      positions: { ...flow.positions, extract: { x: 203, y: 41 } },
+      notes: [{ id: 'note', text: 'Hi', x: 150, y: 10 }],
+    };
+    const aligned = alignToGrid(moved, new Set(['extract', 'note']), 16);
+    expect(aligned.positions['extract']).toEqual({ x: 208, y: 48 });
+    expect(aligned.positions['report']).toEqual({ x: 500, y: 40 });
+    expect(aligned.notes[0]).toMatchObject({ x: 144, y: 16 });
   });
 });

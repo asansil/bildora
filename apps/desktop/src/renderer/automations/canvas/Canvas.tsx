@@ -2,7 +2,6 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { DragEvent, KeyboardEvent, ReactNode } from 'react';
 import {
   Background,
-  ControlButton,
   Controls,
   MarkerType,
   MiniMap,
@@ -12,6 +11,7 @@ import {
   applyEdgeChanges,
   applyNodeChanges,
   useReactFlow,
+  useStore,
 } from '@xyflow/react';
 import type {
   Connection,
@@ -25,8 +25,8 @@ import type {
   OnConnectStart,
   OnNodeDrag,
 } from '@xyflow/react';
+import { StickyNote } from 'lucide-react';
 import '@xyflow/react/dist/style.css';
-import { CornerDownRight, Grid3x3 } from 'lucide-react';
 import './canvas.css';
 import { ERROR_OUTPUT, connectionOutput, outputsOf, validTargets } from '@bildora/protocol';
 import type { AutomationConnection, AutomationGroup, AutomationPosition } from '@bildora/protocol';
@@ -35,16 +35,21 @@ import type {
   AutomationCanvasView,
   StepRunView,
   TakenPathView,
+  ToolView,
 } from '../../../shared/ipc-contract.js';
 import { kindLabel, outputLabel } from './block-text.js';
 import {
   NOTE_SIZE,
   blockOf,
   clipCorner,
+  alignToGrid,
   connect,
   copyItems,
   disconnect,
+  downstreamOf,
+  duplicateItems,
   extractBlock,
+  isInFlow,
   moveItems,
   pasteItems,
   removeItems,
@@ -52,10 +57,19 @@ import {
   spliceEnds,
   spliceInto,
   updateNote,
+  upstreamOf,
 } from './flow-document.js';
 import type { ConnectionRef, FlowClip } from './flow-document.js';
 import { ContextMenu } from '../../shell/ContextMenu.js';
-import type { ContextMenuItem } from '../../shell/ContextMenu.js';
+import type { MenuEntry } from '../../shell/menu-model.js';
+import { arrangeEntries, commandItem, optionsEntries, scaleEntries } from './canvas-commands.js';
+import type {
+  CanvasCommand,
+  CanvasCommands,
+  CanvasToggle,
+  EditorCommands,
+} from './canvas-commands.js';
+import { layoutBlocks } from './layout.js';
 import { CanvasActionsContext, RightAnglesContext } from './canvas-actions.js';
 import type { CanvasActions } from './canvas-actions.js';
 import { edgeTypes } from './edges.js';
@@ -78,9 +92,18 @@ const GRID = 16;
 /** How far an arrow key moves a selected block. */
 const NUDGE = GRID;
 const NO_OPTIONS: AutomationCanvasView = {};
+/** The zoom range, as wide as Scale's presets go. */
+const MIN_ZOOM = 0.05;
+const MAX_ZOOM = 4;
+/** A box drawn for Scale to rectangle smaller than this, in pixels, zooms nowhere. */
+const RECTANGLE_MIN = 8;
 export const LIBRARY_DRAG_TYPE = 'application/x-bildora-block';
 /** What Ctrl+C copied, kept outside any one canvas so it pastes into another automation too. */
 let clipboard: FlowClip | undefined;
+
+function keepCopy(clip: FlowClip): void {
+  clipboard = clip;
+}
 
 /** An arrowhead in a color of the theme, so a connection reads in the direction it runs. */
 function arrow(color: string): EdgeMarker {
@@ -97,7 +120,94 @@ const ARROW_TAKEN = arrow('var(--bildora-text)');
 const ARROW_ERROR = arrow('var(--bildora-status-failed)');
 const ARROW_SELECTED = arrow('var(--bildora-accent)');
 
-type MenuAction = 'add' | 'connect' | 'write' | 'delete';
+function nothing(): void {
+  // A command that cannot run now.
+}
+const UNAVAILABLE: CanvasCommand = { enabled: false, run: nothing };
+const NO_EDITOR: EditorCommands = {
+  undo: UNAVAILABLE,
+  redo: UNAVAILABLE,
+  group: UNAVAILABLE,
+  ungroup: UNAVAILABLE,
+  save: UNAVAILABLE,
+  saveAndRun: UNAVAILABLE,
+};
+
+type CommandName = {
+  [K in keyof CanvasCommands]: CanvasCommands[K] extends CanvasCommand ? K : never;
+}[keyof CanvasCommands];
+
+/**
+ * The commands handed to the app's menus: their states as they were, and runs that reach the
+ * canvas as it is when chosen.
+ */
+function relayed(
+  commands: CanvasCommands,
+  latest: { readonly current: CanvasCommands },
+): CanvasCommands {
+  const command = (name: CommandName): CanvasCommand => ({
+    enabled: commands[name].enabled,
+    run: () => {
+      latest.current[name].run();
+    },
+  });
+  const toggle = (
+    name: 'showGrid' | 'snapToGrid' | 'rightAngles' | 'showNavigator',
+  ): CanvasToggle => ({
+    on: commands[name].on,
+    toggle: () => {
+      latest.current[name].toggle();
+    },
+  });
+  return {
+    undo: command('undo'),
+    redo: command('redo'),
+    group: command('group'),
+    ungroup: command('ungroup'),
+    save: command('save'),
+    saveAndRun: command('saveAndRun'),
+    copy: command('copy'),
+    paste: command('paste'),
+    duplicate: command('duplicate'),
+    delete: command('delete'),
+    selectAll: command('selectAll'),
+    deselectAll: command('deselectAll'),
+    invertSelection: command('invertSelection'),
+    selectUpstream: command('selectUpstream'),
+    selectDownstream: command('selectDownstream'),
+    takeOut: command('takeOut'),
+    tidyAll: command('tidyAll'),
+    tidySelected: command('tidySelected'),
+    alignToGrid: command('alignToGrid'),
+    zoom: commands.zoom,
+    scaleTo: (zoom) => {
+      latest.current.scaleTo(zoom);
+    },
+    scaleToFit: command('scaleToFit'),
+    scaleToRectangle: command('scaleToRectangle'),
+    zoomIn: command('zoomIn'),
+    zoomOut: command('zoomOut'),
+    showGrid: toggle('showGrid'),
+    snapToGrid: toggle('snapToGrid'),
+    rightAngles: toggle('rightAngles'),
+    showNavigator: toggle('showNavigator'),
+  };
+}
+
+/** What the app's menus need to know has changed: which commands can run, and the zoom. */
+function stateOf(commands: CanvasCommands): string {
+  return Object.values(commands)
+    .map((value: unknown) =>
+      typeof value === 'number'
+        ? String(value)
+        : typeof value === 'object' && value !== null && 'enabled' in value
+          ? String(value.enabled)
+          : typeof value === 'object' && value !== null && 'on' in value
+            ? String(value.on)
+            : '',
+    )
+    .join(',');
+}
 
 export interface CanvasRun {
   readonly steps: readonly StepRunView[];
@@ -107,8 +217,8 @@ export interface CanvasRun {
 export interface CanvasProps {
   readonly document: FlowDocument;
   readonly names: ReadonlyMap<string, string>;
-  /** Category logos by tool id. */
-  readonly logos: ReadonlyMap<string, string>;
+  /** The Workspace's tools, whose program icons Run tool blocks show. */
+  readonly tools: readonly ToolView[];
   readonly problemCounts: ReadonlyMap<string, number>;
   readonly selected: ReadonlySet<string>;
   /** False while the tab is hidden, when the canvas has no size to measure. */
@@ -138,6 +248,11 @@ export interface CanvasProps {
   /** Snap to grid and right-angle connections, shared by every automation tab. */
   readonly options?: AutomationCanvasView;
   readonly onOptions?: (options: AutomationCanvasView) => void;
+  /** What the tab around the canvas does, which the menus offer beside the canvas's own commands. */
+  readonly editor?: EditorCommands;
+  /** Given the commands while the canvas is the one on view, and nothing once it is not. */
+  readonly onCommands?: ((commands: CanvasCommands | undefined) => void) | undefined;
+  readonly onError?: (error: unknown) => void;
   readonly children?: ReactNode;
 }
 
@@ -296,7 +411,7 @@ function framed(nodes: readonly CanvasNode[], groups: readonly AutomationGroup[]
 export function Canvas({
   document,
   names,
-  logos,
+  tools,
   problemCounts,
   selected,
   active,
@@ -311,6 +426,9 @@ export function Canvas({
   focusRequest,
   options = NO_OPTIONS,
   onOptions,
+  editor = NO_EDITOR,
+  onCommands,
+  onError,
   children,
 }: CanvasProps) {
   const prefix = useId();
@@ -325,12 +443,23 @@ export function Canvas({
   const [editingNote, setEditingNote] = useState<string | undefined>(undefined);
   /** A block's or a note's menu, open at the pointer. */
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | undefined>(undefined);
+  /** The empty canvas's menu, open at the pointer, and the point of the flow it was asked at. */
+  const [paneMenu, setPaneMenu] = useState<
+    { x: number; y: number; at: AutomationPosition } | undefined
+  >(undefined);
   /** Where a right-click on the empty canvas asked to add something. */
   const [addAt, setAddAt] = useState<AutomationPosition | undefined>(undefined);
+  /** Scale to rectangle: waiting for a box, then the box being drawn, from the canvas's corner. */
+  const [rectangle, setRectangle] = useState<
+    { from?: { x: number; y: number }; to?: { x: number; y: number } } | undefined
+  >(undefined);
   const flow = useReactFlow<CanvasNode>();
+  const zoom = useStore((state) => state.transform[2]);
   const readOnly = run !== undefined;
   const snapToGrid = options.snapToGrid === true && !readOnly;
   const rightAngles = options.rightAngles === true;
+  const showGrid = options.hideGrid !== true;
+  const showNavigator = options.hideNavigator !== true;
   /** A point on the canvas, on the grid when blocks snap to it. */
   const placed = (at: AutomationPosition): AutomationPosition =>
     snapToGrid ? { x: Math.round(at.x / GRID) * GRID, y: Math.round(at.y / GRID) * GRID } : at;
@@ -354,12 +483,13 @@ export function Canvas({
   const opened = useRef(false);
   const container = useRef<HTMLDivElement>(null);
 
+  const toolsById = useMemo(() => new Map(tools.map((tool) => [tool.id, tool])), [tools]);
   const data = useMemo(() => {
     const states = new Map(run?.steps.map((step) => [step.id, step]));
     return new Map(
       document.blocks.map((block): [string, BlockNodeData] => {
         const step = states.get(block.id);
-        const logo = block.type === 'run' ? logos.get(block.tool) : undefined;
+        const tool = block.type === 'run' ? toolsById.get(block.tool) : undefined;
         const detail = stepDetail(step);
         return [
           block.id,
@@ -372,7 +502,7 @@ export function Canvas({
             domId: domId(prefix, block.id),
             description: describeBlock(document, block.id, (id) => names.get(id) ?? id),
             problems: readOnly ? 0 : (problemCounts.get(block.id) ?? 0),
-            ...(logo === undefined ? {} : { logo }),
+            ...(tool === undefined ? {} : { tool }),
             ...(run === undefined ? {} : { state: step?.state ?? 'idle' }),
             ...(detail === undefined ? {} : { detail }),
           },
@@ -381,7 +511,16 @@ export function Canvas({
     );
     // `document` stands for its blocks and connections here; positions are left out on purpose.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [document.blocks, document.connections, names, logos, problemCounts, run, readOnly, prefix]);
+  }, [
+    document.blocks,
+    document.connections,
+    names,
+    toolsById,
+    problemCounts,
+    run,
+    readOnly,
+    prefix,
+  ]);
 
   const built = useMemo(() => {
     // Frames first, so they sit behind the blocks they hold.
@@ -793,47 +932,6 @@ export function Canvas({
     setMenu({ id, x, y });
   }
 
-  function menuItems(id: string): ContextMenuItem<MenuAction>[] {
-    const block = blockOf(document, id);
-    if (block === undefined) {
-      const note = document.notes.some((item) => item.id === id);
-      return [
-        ...(note ? [{ action: 'write' as const, label: t('canvas.menuWrite') }] : []),
-        { action: 'delete', label: t('canvas.menuDelete'), danger: true },
-      ];
-    }
-    return [
-      { action: 'add', label: t('canvas.menuAdd') },
-      ...(outputsOf(block).length > 0
-        ? [{ action: 'connect' as const, label: t('canvas.menuConnect') }]
-        : []),
-      ...(block.type === 'start'
-        ? []
-        : [{ action: 'delete' as const, label: t('canvas.menuDelete'), danger: true }]),
-    ];
-  }
-
-  function onMenu(action: MenuAction): void {
-    if (menu === undefined) return;
-    const { id } = menu;
-    setMenu(undefined);
-    container.current?.focus();
-    switch (action) {
-      case 'add':
-        setDialog({ kind: 'add', id });
-        return;
-      case 'connect':
-        setDialog({ kind: 'connect', id });
-        return;
-      case 'write':
-        setEditingNote(id);
-        return;
-      case 'delete':
-        deleteItems(new Set([id]), new Set());
-        return;
-    }
-  }
-
   /** The flow as it is, or without the connection whose end is being dragged elsewhere. */
   const withoutMoving = useCallback((): FlowDocument => {
     const moving = reconnecting.current?.edge;
@@ -998,21 +1096,18 @@ export function Canvas({
     const ids = selected.size > 0 ? selected : new Set(focused === undefined ? [] : [focused]);
     const clip = copyItems(document, ids);
     if (clip === undefined) return;
-    clipboard = clip;
+    keepCopy(clip);
     announce(t('canvas.copied', { count: clip.blocks.length + clip.notes.length }));
   }
 
   /**
-   * Pastes what was copied where the pointer is, or a grid step past the original when the pointer
-   * is off the canvas, and selects the copy.
+   * Pastes what was copied at a point of the flow, such as where the pointer is, or else a grid
+   * step past the original, and selects the copy.
    */
-  function pasteClip(): void {
+  function pasteClip(where?: AutomationPosition): void {
     if (clipboard === undefined) return;
     const corner = clipCorner(clipboard);
-    const at =
-      pointer.current === undefined
-        ? { x: corner.x + NUDGE, y: corner.y + NUDGE }
-        : flow.screenToFlowPosition(pointer.current);
+    const at = where ?? { x: corner.x + NUDGE, y: corner.y + NUDGE };
     const pasted = pasteItems(document, clipboard, placed(at));
     if (pasted === undefined) {
       announce(t('canvas.pasteTooMany'));
@@ -1023,16 +1118,324 @@ export function Canvas({
     announce(t('canvas.pasted', { count: pasted.ids.length }));
   }
 
+  /** What is chosen: the selection, or else the focused block. */
+  const chosen: ReadonlySet<string> =
+    selected.size > 0 ? selected : new Set(focused === undefined ? [] : [focused]);
+  const chosenBlocks = document.blocks.filter(({ id }) => chosen.has(id));
+  const copyable =
+    chosenBlocks.some(({ type }) => type !== 'start') ||
+    document.notes.some(({ id }) => chosen.has(id));
+  const items = [...document.blocks.map(({ id }) => id), ...document.notes.map(({ id }) => id)];
+  const cutEdges = edges.some((edge) => edge.selected === true);
+  const [single] = chosenBlocks.length === 1 ? chosenBlocks : [];
+  const editable = !readOnly;
+  const can = (enabled: boolean, run: () => void): CanvasCommand => ({ enabled, run });
+
+  function duplicateChosen(): void {
+    const copy = duplicateItems(document, chosen, GRID);
+    if (copy === undefined) {
+      if (copyable) announce(t('canvas.pasteTooMany'));
+      return;
+    }
+    onChange(() => copy.document);
+    onSelect(new Set(copy.ids));
+    announce(t('command.duplicated', { count: copy.ids.length }));
+  }
+
+  /** Lays out the chosen blocks among themselves, keeping their top-left corner where it was. */
+  function tidySelected(): void {
+    const ids = new Set(chosenBlocks.map(({ id }) => id));
+    const corner = (positions: Iterable<AutomationPosition>): AutomationPosition => {
+      const list = [...positions];
+      return { x: Math.min(...list.map(({ x }) => x)), y: Math.min(...list.map(({ y }) => y)) };
+    };
+    const before = corner(
+      chosenBlocks.flatMap(({ id }) => {
+        const at = document.positions[id];
+        return at === undefined ? [] : [at];
+      }),
+    );
+    const between = document.connections.filter(({ from, to }) => ids.has(from) && ids.has(to));
+    void layoutBlocks(chosenBlocks, between)
+      .then((positions) => {
+        const after = corner(Object.values(positions));
+        const moved = Object.fromEntries(
+          Object.entries(positions).map(([id, { x, y }]) => [
+            id,
+            placed({ x: x - after.x + before.x, y: y - after.y + before.y }),
+          ]),
+        );
+        onChange((current) => moveItems(current, moved));
+      })
+      .catch((error: unknown) => onError?.(error));
+  }
+
+  const commands: CanvasCommands = {
+    ...editor,
+    copy: can(copyable, copyChosen),
+    paste: can(editable && clipboard !== undefined, () => {
+      pasteClip();
+    }),
+    duplicate: can(editable && copyable, duplicateChosen),
+    delete: can(editable && (chosen.size > 0 || cutEdges), deleteChosen),
+    selectAll: can(items.length > 0, () => {
+      onSelect(new Set(items));
+    }),
+    deselectAll: can(selected.size > 0, () => {
+      onSelect(new Set());
+    }),
+    invertSelection: can(items.length > 0, () => {
+      onSelect(new Set(items.filter((id) => !selected.has(id))));
+    }),
+    selectUpstream: can(chosenBlocks.length > 0, () => {
+      onSelect(new Set([...selected, ...upstreamOf(document, chosen)]));
+    }),
+    selectDownstream: can(chosenBlocks.length > 0, () => {
+      onSelect(new Set([...selected, ...downstreamOf(document, chosen)]));
+    }),
+    takeOut: can(editable && single !== undefined && isInFlow(document, single.id), () => {
+      if (single === undefined) return;
+      onChange((current) => extractBlock(current, single.id));
+      announce(t('command.tookOut', { name: nameOf(single.id) }));
+    }),
+    tidyAll: can(editable, () => {
+      void layoutBlocks(document.blocks, document.connections)
+        .then((positions) => {
+          onChange((current) => ({ ...current, positions }));
+        })
+        .catch((error: unknown) => onError?.(error));
+    }),
+    tidySelected: can(editable && chosenBlocks.length > 1, tidySelected),
+    alignToGrid: can(editable && chosen.size > 0, () => {
+      onChange((current) => alignToGrid(current, chosen, GRID));
+    }),
+    zoom,
+    scaleTo: (value) => {
+      void flow.zoomTo(value);
+    },
+    scaleToFit: can(document.blocks.length > 0, () => {
+      void flow.fitView({ padding: 0.1, maxZoom: MAX_ZOOM });
+    }),
+    scaleToRectangle: can(true, () => {
+      setRectangle({});
+      announce(t('command.scaleToRectangleHint'));
+    }),
+    zoomIn: can(zoom < MAX_ZOOM, () => {
+      void flow.zoomIn();
+    }),
+    zoomOut: can(zoom > MIN_ZOOM, () => {
+      void flow.zoomOut();
+    }),
+    showGrid: {
+      on: showGrid,
+      toggle: () => onOptions?.({ ...options, hideGrid: showGrid }),
+    },
+    snapToGrid: {
+      on: snapToGrid,
+      toggle: () => onOptions?.({ ...options, snapToGrid: !snapToGrid }),
+    },
+    rightAngles: {
+      on: rightAngles,
+      toggle: () => onOptions?.({ ...options, rightAngles: !rightAngles }),
+    },
+    showNavigator: {
+      on: showNavigator,
+      toggle: () => onOptions?.({ ...options, hideNavigator: showNavigator }),
+    },
+  };
+
+  // The app's menus get commands again only when what they can do changes, so the shell draws
+  // again only then; what they run is always the latest.
+  const latest = useRef(commands);
+  useEffect(() => {
+    latest.current = commands;
+  });
+  const state = stateOf(commands);
+  useEffect(() => {
+    onCommands?.(relayed(latest.current, latest));
+  }, [onCommands, state]);
+  useEffect(
+    () => () => {
+      onCommands?.(undefined);
+    },
+    [onCommands],
+  );
+
+  /** A block's or a note's menu. */
+  function itemMenu(id: string): MenuEntry[] {
+    const block = blockOf(document, id);
+    const copying: MenuEntry[] = [
+      commandItem(t('command.copy'), commands.copy, 'Ctrl+C'),
+      commandItem(t('command.duplicate'), commands.duplicate, 'Ctrl+D'),
+    ];
+    const removing: MenuEntry[] =
+      block?.type === 'start'
+        ? []
+        : [
+            'separator',
+            commandItem(t('canvas.menuDelete'), commands.delete, 'Del', { danger: true }),
+          ];
+    if (block === undefined) {
+      const note = document.notes.some((item) => item.id === id);
+      return [
+        ...(note
+          ? [
+              {
+                label: t('canvas.menuWrite'),
+                run: () => {
+                  setEditingNote(id);
+                },
+              },
+              'separator' as const,
+              ...copying,
+            ]
+          : []),
+        ...removing,
+      ];
+    }
+    return [
+      {
+        label: t('canvas.menuAdd'),
+        shortcut: 'A',
+        run: () => {
+          setDialog({ kind: 'add', id });
+        },
+      },
+      ...(outputsOf(block).length > 0
+        ? [
+            {
+              label: t('canvas.menuConnect'),
+              shortcut: 'C',
+              run: () => {
+                setDialog({ kind: 'connect', id });
+              },
+            },
+          ]
+        : []),
+      ...(block.type === 'start'
+        ? []
+        : [
+            'separator' as const,
+            ...copying,
+            'separator' as const,
+            commandItem(t('command.takeOut'), commands.takeOut, 'Shift+drag'),
+            commandItem(t('command.group'), commands.group, 'Ctrl+G'),
+          ]),
+      ...removing,
+    ];
+  }
+
+  /** The empty canvas's menu, whose additions land where it was opened. */
+  function canvasMenu(at: AutomationPosition): MenuEntry[] {
+    const add =
+      (choice: AddChoice): (() => void) =>
+      () => {
+        onAddAt(choice, at);
+      };
+    const tools = library.filter(({ choice }) => choice.kind === 'run');
+    const controls = library.filter(
+      ({ choice }) => choice.kind !== 'run' && choice.kind !== 'note',
+    );
+    const entry = ({ choice, label, icon }: LibraryChoice): MenuEntry => ({
+      label,
+      ...(icon === undefined ? {} : { icon }),
+      run: add(choice),
+    });
+    const categories = new Map<string, LibraryChoice[]>();
+    for (const tool of tools) {
+      const name = tool.group ?? t('nav.uncategorized');
+      categories.set(name, [...(categories.get(name) ?? []), tool]);
+    }
+    const toolEntries: MenuEntry[] =
+      tools.length === 0
+        ? [{ label: t('canvas.noTools'), disabled: true }]
+        : categories.size === 1
+          ? tools.map(entry)
+          : [...categories].map(([name, list]) => ({ label: name, items: list.map(entry) }));
+    return [
+      {
+        label: t('command.addBlock'),
+        items: [
+          {
+            label: t('command.search'),
+            shortcut: 'Shift+Space',
+            run: () => {
+              setAddAt(at);
+            },
+          },
+          'separator',
+          { label: t('command.tools'), items: toolEntries },
+          { label: t('command.control'), items: controls.map(entry) },
+        ],
+      },
+      { label: t('command.addNote'), run: add({ kind: 'note' }) },
+      'separator',
+      commandItem(
+        t('command.paste'),
+        can(commands.paste.enabled, () => {
+          pasteClip(at);
+        }),
+        'Ctrl+V',
+      ),
+      commandItem(t('command.selectAll'), commands.selectAll, 'Ctrl+A'),
+      commandItem(t('command.deselectAll'), commands.deselectAll, 'Esc'),
+      'separator',
+      { label: t('command.arrange'), items: arrangeEntries(commands) },
+      { label: t('menu.scale'), items: scaleEntries(commands) },
+      { label: t('menu.options'), items: optionsEntries(commands) },
+    ];
+  }
+
+  /** Zooms to the box drawn for Scale to rectangle. */
+  function finishRectangle(): void {
+    const box = rectangle;
+    setRectangle(undefined);
+    const area = container.current?.getBoundingClientRect();
+    if (box?.from === undefined || box.to === undefined || area === undefined) return;
+    const width = Math.abs(box.to.x - box.from.x);
+    const height = Math.abs(box.to.y - box.from.y);
+    if (width < RECTANGLE_MIN || height < RECTANGLE_MIN) return;
+    const corner = flow.screenToFlowPosition({
+      x: area.left + Math.min(box.from.x, box.to.x),
+      y: area.top + Math.min(box.from.y, box.to.y),
+    });
+    const far = flow.screenToFlowPosition({
+      x: area.left + Math.max(box.from.x, box.to.x),
+      y: area.top + Math.max(box.from.y, box.to.y),
+    });
+    void flow.fitBounds(
+      { x: corner.x, y: corner.y, width: far.x - corner.x, height: far.y - corner.y },
+      { padding: 0 },
+    );
+  }
+
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
     if (event.altKey || event.metaKey || isTyping(event.target)) return;
     // These also come from the frame around selected blocks, which takes focus after a selection
     // box, so they are not limited to the canvas itself.
     if (event.ctrlKey) {
+      const shortcuts: Readonly<Record<string, CanvasCommand>> = {
+        c: commands.copy,
+        v: commands.paste,
+        d: commands.duplicate,
+        a: commands.selectAll,
+      };
       const letter = event.key.toLowerCase();
-      if (event.shiftKey || (letter !== 'c' && letter !== 'v')) return;
+      const command = event.shiftKey ? undefined : shortcuts[letter];
+      if (command === undefined) return;
       event.preventDefault();
-      if (letter === 'c') copyChosen();
-      else if (!readOnly) pasteClip();
+      if (!command.enabled) return;
+      // Ctrl+V pastes where the pointer is, when it is over the canvas.
+      if (letter === 'v' && pointer.current !== undefined) {
+        pasteClip(flow.screenToFlowPosition(pointer.current));
+      } else {
+        command.run();
+      }
+      return;
+    }
+    if (event.key === 'Escape' && rectangle !== undefined) {
+      event.preventDefault();
+      setRectangle(undefined);
       return;
     }
     if ((event.key === 'Delete' || event.key === 'Backspace') && !readOnly) {
@@ -1103,6 +1506,11 @@ export function Canvas({
       event.preventDefault();
       setMoving(false);
       announce(t('canvas.moveDone', { name: current === undefined ? '' : nameOf(current) }));
+      return;
+    }
+    if (key === 'Escape' && selected.size > 0) {
+      event.preventDefault();
+      onSelect(new Set());
       return;
     }
     if (readOnly) return;
@@ -1249,7 +1657,12 @@ export function Canvas({
             onPaneContextMenu={(event) => {
               event.preventDefault();
               if (readOnly) return;
-              setAddAt(placed(flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })));
+              setMenu(undefined);
+              setPaneMenu({
+                x: event.clientX,
+                y: event.clientY,
+                at: placed(flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })),
+              });
             }}
             onNodeContextMenu={(event, node) => {
               event.preventDefault();
@@ -1267,49 +1680,73 @@ export function Canvas({
             edgesFocusable={false}
             deleteKeyCode={null}
             onlyRenderVisibleElements={document.blocks.length >= CULL_FROM}
-            minZoom={0.05}
-            maxZoom={2}
+            minZoom={MIN_ZOOM}
+            maxZoom={MAX_ZOOM}
             proOptions={{ hideAttribution: true }}
             snapToGrid={snapToGrid}
             snapGrid={[GRID, GRID]}
           >
-            <Background gap={GRID} />
-            <MiniMap pannable zoomable ariaLabel={t('canvas.overview')} />
-            <Controls showInteractive={false}>
-              {readOnly ? null : (
-                <ControlButton
-                  title={t('canvas.snapToGrid')}
-                  aria-label={t('canvas.snapToGrid')}
-                  aria-pressed={snapToGrid}
-                  className={snapToGrid ? 'is-on' : undefined}
-                  onClick={() => onOptions?.({ ...options, snapToGrid: !snapToGrid })}
-                >
-                  <Grid3x3 aria-hidden="true" />
-                </ControlButton>
-              )}
-              <ControlButton
-                title={t('canvas.rightAngles')}
-                aria-label={t('canvas.rightAngles')}
-                aria-pressed={rightAngles}
-                className={rightAngles ? 'is-on' : undefined}
-                onClick={() => onOptions?.({ ...options, rightAngles: !rightAngles })}
-              >
-                <CornerDownRight aria-hidden="true" />
-              </ControlButton>
-            </Controls>
+            {showGrid ? <Background gap={GRID} /> : null}
+            {showNavigator ? <MiniMap pannable zoomable ariaLabel={t('canvas.overview')} /> : null}
+            <Controls showInteractive={false} />
             {children}
           </ReactFlow>
         </CanvasActionsContext>
       </RightAnglesContext>
+      {rectangle === undefined ? null : (
+        <div
+          className="scale-rectangle"
+          data-testid="scale-rectangle"
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            const area = event.currentTarget.getBoundingClientRect();
+            const point = { x: event.clientX - area.left, y: event.clientY - area.top };
+            setRectangle({ from: point, to: point });
+          }}
+          onPointerMove={(event) => {
+            if (rectangle.from === undefined) return;
+            const area = event.currentTarget.getBoundingClientRect();
+            setRectangle({
+              from: rectangle.from,
+              to: { x: event.clientX - area.left, y: event.clientY - area.top },
+            });
+          }}
+          onPointerUp={finishRectangle}
+        >
+          {rectangle.from === undefined || rectangle.to === undefined ? null : (
+            <div
+              className="scale-rectangle-box"
+              style={{
+                left: Math.min(rectangle.from.x, rectangle.to.x),
+                top: Math.min(rectangle.from.y, rectangle.to.y),
+                width: Math.abs(rectangle.to.x - rectangle.from.x),
+                height: Math.abs(rectangle.to.y - rectangle.from.y),
+              }}
+            />
+          )}
+        </div>
+      )}
       {menu === undefined ? null : (
         <ContextMenu
           x={menu.x}
           y={menu.y}
           label={t('canvas.menu', { name: nameOf(menu.id) })}
-          items={menuItems(menu.id)}
-          onAction={onMenu}
+          items={itemMenu(menu.id)}
           onClose={() => {
             setMenu(undefined);
+            container.current?.focus();
+          }}
+        />
+      )}
+      {paneMenu === undefined ? null : (
+        <ContextMenu
+          x={paneMenu.x}
+          y={paneMenu.y}
+          label={t('command.canvasMenu')}
+          items={canvasMenu(paneMenu.at)}
+          onClose={() => {
+            setPaneMenu(undefined);
             container.current?.focus();
           }}
         />
@@ -1317,7 +1754,14 @@ export function Canvas({
       {addAt === undefined ? null : (
         <AddDialog
           title={t('canvas.addHereTitle')}
-          choices={[...library, { choice: { kind: 'note' }, label: t('canvas.kindNote') }]}
+          choices={[
+            ...library,
+            {
+              choice: { kind: 'note' },
+              label: t('canvas.kindNote'),
+              icon: <StickyNote className="icon" aria-hidden="true" />,
+            },
+          ]}
           onPick={(choice) => {
             setAddAt(undefined);
             onAddAt(choice, addAt);
