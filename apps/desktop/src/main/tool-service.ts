@@ -36,6 +36,7 @@ import type {
 } from '@bildora/core';
 import type {
   DetectionView,
+  OutputView,
   ParameterView,
   ProfileView,
   RegisterTools,
@@ -48,7 +49,32 @@ import type {
   ToolView,
 } from '../shared/ipc-contract.js';
 
-type DeclaredParameter = Extract<RegisteredTool['manifest'], { level: 1 }>['parameters'][number];
+type DeclaredManifest = Extract<RegisteredTool['manifest'], { level: 1 }>;
+type DeclaredParameter = DeclaredManifest['parameters'][number];
+
+/** An output with what it holds, so that the canvas can check what reads it. */
+function viewOfOutput(
+  output: DeclaredManifest['outputs'][number],
+  parameters: readonly DeclaredParameter[],
+): OutputView {
+  const { name, description } = output;
+  const base = { name, ...(description === undefined ? {} : { description }) };
+  if ('json' in output) {
+    return {
+      ...base,
+      type: 'path',
+      fields: output.fields.map((field) => ({
+        name: field.name,
+        type: field.type,
+        ...(field.description === undefined ? {} : { description: field.description }),
+        ...(field.secret ? { secret: true as const } : {}),
+      })),
+    };
+  }
+  if ('path' in output) return { ...base, type: 'path' };
+  const parameter = parameters.find(({ name: candidate }) => candidate === output.param);
+  return { ...base, type: parameter?.type === 'path' ? 'path' : 'text' };
+}
 
 function deliveryOf(parameter: DeclaredParameter): ParameterView['delivery'] {
   if (parameter.stdin) {
@@ -94,6 +120,9 @@ async function viewOfTool(tool: RegisteredTool, pathVariables: PathVariables): P
       : {
           parameters: manifest.parameters.map(viewOfParameter),
           outputs: manifest.outputs.map((output) => output.name),
+          outputDetails: manifest.outputs.map((output) =>
+            viewOfOutput(output, manifest.parameters),
+          ),
           ...(manifest.stdin === undefined ? {} : { hasScript: true as const }),
         }),
     permissions,

@@ -6,7 +6,9 @@ import {
   ERROR_OUTPUT,
   connectionOutput,
   findStepOutputReferences,
+  isReservedBlockId,
   outputsOf,
+  renameInBlockExpressions,
   stepOutputReference,
   validTargets,
 } from '@bildora/protocol';
@@ -121,10 +123,51 @@ export function takenIds(document: FlowDocument): Set<string> {
 export function freeId(text: string, taken: ReadonlySet<string>): string {
   const base = idBase(text);
   let candidate = base;
-  for (let suffix = 2; taken.has(candidate); suffix += 1) {
+  // Names that expressions keep for other values, such as `run`, never name a block.
+  for (let suffix = 2; taken.has(candidate) || isReservedBlockId(candidate); suffix += 1) {
     candidate = `${base}-${String(suffix)}`;
   }
   return candidate;
+}
+
+/** What a block id may look like: what a link can name, as in `convert.file`. */
+const BLOCK_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+
+export type BlockIdProblem = 'pattern' | 'reserved' | 'taken';
+
+/** Why `next` cannot name the block now called `current`, or undefined when it can. */
+export function blockIdProblem(
+  document: FlowDocument,
+  current: string,
+  next: string,
+): BlockIdProblem | undefined {
+  if (!BLOCK_ID.test(next)) return 'pattern';
+  if (isReservedBlockId(next)) return 'reserved';
+  if (next !== current && takenIds(document).has(next)) return 'taken';
+  return undefined;
+}
+
+/**
+ * Gives a block another id. Everything that names it follows: connections, its place and group,
+ * rules, the Join of a Parallel, references in text, and links and expressions.
+ */
+export function renameBlock(document: FlowDocument, from: string, to: string): FlowDocument {
+  if (from === to) return document;
+  const ids = new Map([[from, to]]);
+  const renamed = (id: string): string => (id === from ? to : id);
+  return {
+    ...document,
+    blocks: document.blocks.map((block) => renamedBlock(block, ids)),
+    connections: document.connections.map((connection) => ({
+      ...connection,
+      from: renamed(connection.from),
+      to: renamed(connection.to),
+    })),
+    positions: Object.fromEntries(
+      Object.entries(document.positions).map(([id, position]) => [renamed(id), position]),
+    ),
+    groups: document.groups.map((group) => ({ ...group, blocks: group.blocks.map(renamed) })),
+  };
 }
 
 /** What a new block can be: a kind, and for Run tool, which tool. */
@@ -606,7 +649,7 @@ function renamedReferences(text: string, ids: ReadonlyMap<string, string>): stri
     if (step !== undefined) {
       result = result.replaceAll(
         stepOutputReference(reference),
-        stepOutputReference({ step, output: reference.output }),
+        stepOutputReference({ ...reference, step }),
       );
     }
   }
@@ -619,12 +662,19 @@ function renamedCondition(
 ): AutomationCondition {
   return {
     ...condition,
-    rules: condition.rules.map((rule) => ({ ...rule, block: ids.get(rule.block) ?? rule.block })),
+    rules: condition.rules.map((rule) =>
+      rule.field === 'value' ? rule : { ...rule, block: ids.get(rule.block) ?? rule.block },
+    ),
   };
 }
 
 /** A copied block under its new id, with what names other copied blocks renamed too. */
 function renamedBlock(block: AutomationBlock, ids: ReadonlyMap<string, string>): AutomationBlock {
+  // Links and expressions name blocks too; they follow the same new ids.
+  return renameInBlockExpressions(renamedFields(block, ids), (id) => ids.get(id));
+}
+
+function renamedFields(block: AutomationBlock, ids: ReadonlyMap<string, string>): AutomationBlock {
   const id = ids.get(block.id) ?? block.id;
   switch (block.type) {
     case 'run': {

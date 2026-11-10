@@ -1,5 +1,18 @@
-import { DEFAULT_CASE, DEFAULT_OUTPUT, ERROR_OUTPUT } from '@bildora/protocol';
-import type { AutomationBlock, AutomationCondition, AutomationRule } from '@bildora/protocol';
+import {
+  DEFAULT_CASE,
+  DEFAULT_OUTPUT,
+  ERROR_OUTPUT,
+  ExpressionError,
+  isExpressionValue,
+  parseCached,
+  targetOf,
+} from '@bildora/protocol';
+import type {
+  AutomationBlock,
+  AutomationCondition,
+  AutomationRule,
+  BlockValue,
+} from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
 import type { MessageKey } from '../../../shared/i18n/translate.js';
 import type { ToolView } from '../../../shared/ipc-contract.js';
@@ -38,7 +51,57 @@ export function outputLabel(output: string): string {
   }
 }
 
-function ruleSentence(rule: AutomationRule, nameOf: (id: string) => string): string {
+/** A value as a rule shows it: text in quotes, and a worked-out value after `=`. */
+export function ruleValueText(value: BlockValue | undefined): string {
+  if (value === undefined) return '';
+  if (isExpressionValue(value)) return `= ${value.expression}`;
+  return typeof value === 'string' ? `"${value}"` : String(value);
+}
+
+/**
+ * A value as a sentence names it: a link as "Convert › file", an output as "Extract › result ›
+ * count", an input as "Input › size". Anything more is shown as written, after `=`.
+ */
+export function readableValue(expression: string, nameOf: (id: string) => string): string {
+  const tree = parseCached(expression);
+  if (tree instanceof ExpressionError || tree.kind !== 'name') return `= ${expression}`;
+  try {
+    const target = targetOf(tree);
+    switch (target.kind) {
+      case 'link':
+        return `${nameOf(target.block)} › ${target.parameter}`;
+      case 'input':
+        return t('canvas.choiceInput', { label: target.name });
+      case 'output':
+        return [
+          nameOf(target.block),
+          target.output,
+          ...(target.field === undefined ? [] : [target.field]),
+        ].join(' › ');
+      case 'run-folder':
+        return t('automation.runFolder');
+      case 'path-variable':
+        return target.name;
+    }
+  } catch {
+    return `= ${expression}`;
+  }
+}
+
+/** Names a value a rule reads, such as "Extract › result › count". */
+type ValueName = (expression: string) => string;
+
+function ruleSentence(
+  rule: AutomationRule,
+  nameOf: (id: string) => string,
+  valueName: ValueName,
+): string {
+  if (rule.field === 'value') {
+    return t(`canvas.valueRule.${rule.operator}`, {
+      read: valueName(rule.read.expression),
+      value: ruleValueText(rule.value),
+    });
+  }
   const block = nameOf(rule.block);
   if (rule.field === 'result') {
     return t(`canvas.rule.${rule.operator}`, { block, value: t(`canvas.result.${rule.value}`) });
@@ -50,9 +113,10 @@ function ruleSentence(rule: AutomationRule, nameOf: (id: string) => string): str
 export function conditionSentence(
   condition: AutomationCondition,
   nameOf: (id: string) => string,
+  valueName: ValueName = (expression) => readableValue(expression, nameOf),
 ): string {
   const joiner = t(condition.match === 'all' ? 'canvas.and' : 'canvas.or');
-  return condition.rules.map((rule) => ruleSentence(rule, nameOf)).join(` ${joiner} `);
+  return condition.rules.map((rule) => ruleSentence(rule, nameOf, valueName)).join(` ${joiner} `);
 }
 
 /** What a block is called on the canvas and in problems, by what it does. */

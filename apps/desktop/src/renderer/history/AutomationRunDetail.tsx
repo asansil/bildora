@@ -18,9 +18,11 @@ import type {
   HistoryAutomationRunView,
   HistoryEntryView,
   HistoryRecordView,
+  StepRunView,
   ToolView,
 } from '../../shared/ipc-contract.js';
 import { kindLabel, outputLabel } from '../automations/canvas/block-text.js';
+import { DataView } from '../automations/DataView.js';
 import { ProgramIcon } from '../shell/ProgramIcon.js';
 import { RunStateBadge, RunStateIcon } from '../shell/RunStateBadge.js';
 import type { BlockState } from '../shell/RunStateBadge.js';
@@ -138,11 +140,13 @@ interface BlockDetailProps {
   readonly row: TimelineRow;
   readonly tools: readonly ToolView[];
   readonly branches: number;
+  /** The block as the run recorded it, with what it received and produced. */
+  readonly step: StepRunView | undefined;
   readonly revision: unknown;
   readonly onError: (error: unknown) => void;
 }
 
-function BlockDetail({ row, tools, branches, revision, onError }: BlockDetailProps) {
+function BlockDetail({ row, tools, branches, step, revision, onError }: BlockDetailProps) {
   const [chosenTry, setChosenTry] = useState<string | undefined>(undefined);
   const [record, setRecord] = useState<HistoryRecordView | undefined>(undefined);
   const tryId = chosenTry ?? row.tries.at(-1)?.runId;
@@ -226,6 +230,12 @@ function BlockDetail({ row, tools, branches, revision, onError }: BlockDetailPro
           )}
         </dl>
       )}
+      {isTool && step !== undefined && row.state !== 'idle' && row.state !== 'skipped' ? (
+        <section className="history-data" aria-label={t('canvas.data')}>
+          <h3>{t('canvas.data')}</h3>
+          <DataView step={step} />
+        </section>
+      ) : null}
     </section>
   );
 }
@@ -397,6 +407,7 @@ export function AutomationRunDetail({
               row={shown}
               tools={tools}
               branches={data?.run.paths.filter(({ from }) => from === shown.id).length ?? 0}
+              step={data?.run.steps.find(({ id }) => id === shown.id)}
               revision={revision}
               onError={onError}
             />

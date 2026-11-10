@@ -25,7 +25,7 @@ import type {
   OnConnectStart,
   OnNodeDrag,
 } from '@xyflow/react';
-import { StickyNote } from 'lucide-react';
+import { ChevronDown, ChevronUp, StickyNote, X } from 'lucide-react';
 import '@xyflow/react/dist/style.css';
 import './canvas.css';
 import { ERROR_OUTPUT, connectionOutput, outputsOf, validTargets } from '@bildora/protocol';
@@ -79,6 +79,8 @@ import { describeBlock, domId, isDirection, nearestInDirection, neighbourOf } fr
 import type { FlowDocument, NewBlock } from './flow-document.js';
 import { nodeTypes } from './nodes.js';
 import type { BlockNodeData, CanvasNode } from './nodes.js';
+import { usedByCounts } from './values.js';
+import { matchingBlocks } from './find.js';
 
 /** From this many blocks on, only what is on screen is drawn, which keeps panning smooth. */
 const CULL_FROM = 150;
@@ -241,6 +243,8 @@ export interface CanvasProps {
   readonly library: readonly LibraryChoice[];
   /** In the run view, a double-click on a block goes back to editing it. */
   readonly onOpenBlock?: (id: string) => void;
+  /** Asks for a block's name in links to be changed, as F2 and the block's menu do. */
+  readonly onRenameBlock?: (id: string) => void;
   /** Adds a block after another, and gives the new block's id. */
   readonly onAddAfter: (anchor: string, choice: NewBlock) => string | undefined;
   /** Moves keyboard focus to a block, as the blocks list asks. Changes each time it is asked. */
@@ -346,6 +350,7 @@ function marked(
   selected: ReadonlySet<string>,
   targets: ReadonlySet<string> | undefined,
   focused: string | undefined,
+  matches: ReadonlySet<string> | undefined,
 ): CanvasNode[] {
   return nodes.map((node): CanvasNode => {
     const isSelected = selected.has(node.id);
@@ -355,6 +360,11 @@ function marked(
       node.type === 'block' ? 'nokey' : '',
       targets?.has(node.id) === true ? 'is-target' : '',
       focused === node.id ? 'is-focused' : '',
+      matches === undefined || node.type !== 'block'
+        ? ''
+        : matches.has(node.id)
+          ? 'is-match'
+          : 'is-dimmed',
     ]
       .join(' ')
       .trim();
@@ -422,6 +432,7 @@ export function Canvas({
   onAddAt,
   library,
   onOpenBlock,
+  onRenameBlock,
   onAddAfter,
   focusRequest,
   options = NO_OPTIONS,
@@ -433,6 +444,13 @@ export function Canvas({
 }: CanvasProps) {
   const prefix = useId();
   const [focused, setFocused] = useState<string | undefined>(undefined);
+  /** The canvas find: what it looks for, and which match is on view. */
+  const [find, setFind] = useState<
+    { readonly query: string; readonly index: number } | undefined
+  >();
+  /** Changes each time the find field should take the caret. */
+  const [findFocus, setFindFocus] = useState(0);
+  const findField = useRef<HTMLInputElement>(null);
   /** After Enter, arrow keys move the focused block instead of moving between blocks. */
   const [moving, setMoving] = useState(false);
   const [dialog, setDialog] = useState<{ kind: 'add' | 'connect'; id: string } | undefined>(
@@ -484,6 +502,15 @@ export function Canvas({
   const container = useRef<HTMLDivElement>(null);
 
   const toolsById = useMemo(() => new Map(tools.map((tool) => [tool.id, tool])), [tools]);
+  const usedBy = useMemo(() => usedByCounts(document.blocks), [document.blocks]);
+  const matches = useMemo(
+    () => (find === undefined ? [] : matchingBlocks(document.blocks, find.query, names, toolsById)),
+    [find, document.blocks, names, toolsById],
+  );
+  const matched = useMemo(
+    () => (find === undefined || find.query.trim() === '' ? undefined : new Set(matches)),
+    [find, matches],
+  );
   const data = useMemo(() => {
     const states = new Map(run?.steps.map((step) => [step.id, step]));
     return new Map(
@@ -500,8 +527,10 @@ export function Canvas({
             kindLabel: block.type === 'start' ? t('canvas.startKind') : kindLabel(block.type),
             outputs: outputsOf(block).map((id) => ({ id, label: outputLabel(id) })),
             domId: domId(prefix, block.id),
+            blockId: block.id,
             description: describeBlock(document, block.id, (id) => names.get(id) ?? id),
             problems: readOnly ? 0 : (problemCounts.get(block.id) ?? 0),
+            usedBy: usedBy.get(block.id) ?? 0,
             ...(tool === undefined ? {} : { tool }),
             ...(run === undefined ? {} : { state: step?.state ?? 'idle' }),
             ...(detail === undefined ? {} : { detail }),
@@ -517,6 +546,7 @@ export function Canvas({
     names,
     toolsById,
     problemCounts,
+    usedBy,
     run,
     readOnly,
     prefix,
@@ -562,17 +592,26 @@ export function Canvas({
   // Blocks move here while dragged, and start again from the document whenever it changes, but
   // for a block still being dragged, which a check finishing meanwhile must not snap back.
   // Selection and the targets of a connection being drawn only mark the blocks as they are.
-  const [nodes, setNodes] = useState<CanvasNode[]>(() => marked(built, selected, targets, focused));
-  const [from, setFrom] = useState({ built, selected, targets, focused });
+  const [nodes, setNodes] = useState<CanvasNode[]>(() =>
+    marked(built, selected, targets, focused, matched),
+  );
+  const [from, setFrom] = useState({ built, selected, targets, focused, matched });
   if (
     from.built !== built ||
     from.selected !== selected ||
     from.targets !== targets ||
-    from.focused !== focused
+    from.focused !== focused ||
+    from.matched !== matched
   ) {
-    setFrom({ built, selected, targets, focused });
+    setFrom({ built, selected, targets, focused, matched });
     setNodes(
-      marked(from.built === built ? nodes : stillDragged(built, nodes), selected, targets, focused),
+      marked(
+        from.built === built ? nodes : stillDragged(built, nodes),
+        selected,
+        targets,
+        focused,
+        matched,
+      ),
     );
   }
 
@@ -920,9 +959,40 @@ export function Canvas({
   );
 
   const actions = useMemo(
-    (): CanvasActions | undefined => (readOnly ? undefined : { editingNote, finishNote }),
+    (): CanvasActions | undefined =>
+      readOnly
+        ? undefined
+        : {
+            editingNote,
+            finishNote,
+            showUses: (id) => {
+              setFind({ query: `${id}.`, index: 0 });
+              setFindFocus((count) => count + 1);
+            },
+          },
     [readOnly, editingNote, finishNote],
   );
+
+  /** Moves to the next match of the find, or the one before, and brings it into view. */
+  function stepFind(step: 1 | -1): void {
+    if (find === undefined || matches.length === 0) return;
+    const index =
+      (Math.min(find.index, matches.length - 1) + step + matches.length) % matches.length;
+    setFind({ ...find, index });
+    const id = matches[index];
+    if (id !== undefined) reveal_(id, true);
+  }
+
+  function closeFind(): void {
+    setFind(undefined);
+    container.current?.focus();
+  }
+
+  useEffect(() => {
+    if (findFocus === 0) return;
+    findField.current?.focus();
+    findField.current?.select();
+  }, [findFocus]);
 
   /** Opens a block's or a note's menu, chosen first so the menu acts on what it shows. */
   function openMenu(id: string, x: number, y: number): void {
@@ -1312,6 +1382,13 @@ export function Canvas({
             },
           ]
         : []),
+      {
+        label: t('canvas.rename'),
+        shortcut: 'F2',
+        run: () => {
+          onRenameBlock?.(id);
+        },
+      },
       ...(block.type === 'start'
         ? []
         : [
@@ -1421,6 +1498,12 @@ export function Canvas({
         a: commands.selectAll,
       };
       const letter = event.key.toLowerCase();
+      if (letter === 'f' && !event.shiftKey) {
+        event.preventDefault();
+        setFind((current) => current ?? { query: '', index: 0 });
+        setFindFocus((count) => count + 1);
+        return;
+      }
       const command = event.shiftKey ? undefined : shortcuts[letter];
       if (command === undefined) return;
       event.preventDefault();
@@ -1436,6 +1519,15 @@ export function Canvas({
     if (event.key === 'Escape' && rectangle !== undefined) {
       event.preventDefault();
       setRectangle(undefined);
+      return;
+    }
+    if (event.key === 'F2' && !readOnly) {
+      const [only] = selected.size === 1 ? [...selected] : [];
+      const id = focused ?? only;
+      if (id !== undefined && blockOf(document, id) !== undefined) {
+        event.preventDefault();
+        onRenameBlock?.(id);
+      }
       return;
     }
     if ((event.key === 'Delete' || event.key === 'Backspace') && !readOnly) {
@@ -1601,6 +1693,73 @@ export function Canvas({
       <div className="visually-hidden" role="status" aria-live="polite" data-testid="announcer">
         {announcement}
       </div>
+      {find === undefined ? null : (
+        <div className="canvas-find" role="search" data-testid="canvas-find">
+          <input
+            ref={findField}
+            value={find.query}
+            spellCheck={false}
+            aria-label={t('canvas.find')}
+            placeholder={t('canvas.findPlaceholder')}
+            onChange={(event) => {
+              setFind({ query: event.target.value, index: 0 });
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                closeFind();
+              } else if (event.key === 'Enter') {
+                event.preventDefault();
+                stepFind(event.shiftKey ? -1 : 1);
+              }
+            }}
+          />
+          <span className="canvas-find-count" data-testid="canvas-find-count" aria-live="polite">
+            {find.query.trim() === ''
+              ? ''
+              : matches.length === 0
+                ? t('canvas.findNone')
+                : t('canvas.findCount', {
+                    number: Math.min(find.index, matches.length - 1) + 1,
+                    count: matches.length,
+                  })}
+          </span>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={t('canvas.findPrevious')}
+            title={t('canvas.findPrevious')}
+            disabled={matches.length === 0}
+            onClick={() => {
+              stepFind(-1);
+            }}
+          >
+            <ChevronUp className="icon" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={t('canvas.findNext')}
+            title={t('canvas.findNext')}
+            disabled={matches.length === 0}
+            onClick={() => {
+              stepFind(1);
+            }}
+          >
+            <ChevronDown className="icon" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={t('canvas.findClose')}
+            title={t('canvas.findClose')}
+            onClick={closeFind}
+          >
+            <X className="icon" aria-hidden="true" />
+          </button>
+        </div>
+      )}
       <RightAnglesContext value={rightAngles}>
         <CanvasActionsContext value={actions}>
           <ReactFlow

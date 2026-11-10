@@ -176,7 +176,11 @@ export class AutomationService {
   }
 
   /** Starts an automation of the active Workspace, whatever the user switches to afterwards. */
-  async start(id: string): Promise<AutomationRunView> {
+  /** Starts an automation. Inputs that do not fit its Start block throw before anything runs. */
+  async start(
+    id: string,
+    inputs?: Readonly<Record<string, string | number | boolean>>,
+  ): Promise<AutomationRunView> {
     const { dataDir, registry, history, workspaceId } = this.options;
     const workspace = workspaceId();
     if (this.isRunning(workspace, id)) {
@@ -204,6 +208,7 @@ export class AutomationService {
         automation,
         workspaceId: workspace,
         trigger: 'app',
+        inputs,
         dataDir,
         history,
         pathVariables,

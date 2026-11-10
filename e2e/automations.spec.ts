@@ -138,18 +138,15 @@ outputs:
   // Pressing blocks in the library one after another builds a chain from Start.
   await library.getByRole('button', { name: 'Writer' }).click();
   await expect(settings(window)).toHaveAttribute('data-block-id', 'writer');
-  await settings(window)
-    .getByLabel('Use a reference')
-    .nth(1)
-    .selectOption({ label: 'Folder of this run' });
   await settings(window).getByLabel('To', { exact: true }).fill('{{run.folder}}/one.txt');
 
   await library.getByRole('button', { name: 'Writer' }).click();
   await expect(settings(window)).toHaveAttribute('data-block-id', 'writer-2');
-  await settings(window)
-    .getByLabel('Use a reference')
-    .nth(0)
-    .selectOption({ label: 'Writer: file' });
+  // Typing = makes the value follow another one: here, the file the first block wrote.
+  await settings(window).getByLabel('From', { exact: true }).fill('= steps.writer.outputs.file');
+  await expect(settings(window).getByTestId('expression-shown')).toHaveText(
+    'Worked out when the automation runs',
+  );
   await settings(window).getByLabel('To', { exact: true }).fill('{{run.folder}}/two.txt');
 
   // A block added after one whose way on is taken goes in between.
@@ -186,7 +183,7 @@ outputs:
     join(dataDir, 'workspaces', 'default', 'automations', 'hand-over.yaml'),
     'utf8',
   );
-  expect(stored).toContain('{{steps.writer.outputs.file}}');
+  expect(stored).toContain('expression: steps.writer.outputs.file');
 });
 
 test('a failed step stops the automation and says why', async () => {

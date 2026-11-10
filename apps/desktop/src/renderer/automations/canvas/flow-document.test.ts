@@ -28,7 +28,7 @@ import {
   updateBlock,
 } from './flow-document.js';
 import type { FlowDocument } from './flow-document.js';
-import { referenceOptionsFor } from './references.js';
+import { valueChoices } from './values.js';
 
 const tool = (id: string, outputs: string[] = []): ToolView => ({
   key: `global/${id}`,
@@ -39,6 +39,7 @@ const tool = (id: string, outputs: string[] = []): ToolView => ({
   program: 'C:\\tool.exe',
   parameters: [],
   outputs,
+  outputDetails: outputs.map((name) => ({ name, type: 'path' as const })),
   permissions: [],
   runtime: { status: 'ok' } as unknown as ToolView['runtime'],
 });
@@ -249,13 +250,13 @@ describe('block names and references', () => {
     doc = addAfter(doc, 'start', run(doc, 'acme.extract')).document;
     doc = addAfter(doc, 'extract', run(doc, 'report')).document;
     const tools = [tool('acme.extract', ['csv']), tool('report')];
-    const names = blockNames(doc.blocks, tools);
-    const options = referenceOptionsFor(doc, 'report', tools, (id) => names.get(id) ?? id);
-    expect(options.map(({ value }) => value)).toEqual([
-      '{{run.folder}}/',
-      '{{steps.extract.outputs.csv}}',
-    ]);
-    expect(referenceOptionsFor(doc, 'extract', tools, (id) => id)).toHaveLength(1);
+    const context = { ...doc, tools, profiles: new Map() };
+    const results = (id: string) =>
+      valueChoices(context, id).flatMap(({ group, expression }) =>
+        group === 'result' || group === 'run' ? [expression] : [],
+      );
+    expect(results('report')).toEqual(['run.folder', 'steps.extract.outputs.csv']);
+    expect(results('extract')).toEqual(['run.folder']);
   });
 });
 
@@ -367,10 +368,11 @@ describe('copy and paste', () => {
       count: 3,
     });
     const decide = document?.blocks.find(({ id }) => id === 'decide-2');
-    expect(decide?.type === 'if' ? decide.condition.rules.map(({ block }) => block) : []).toEqual([
-      'report-2',
-      'start',
-    ]);
+    expect(
+      decide?.type === 'if'
+        ? decide.condition.rules.map((rule) => ('block' in rule ? rule.block : ''))
+        : [],
+    ).toEqual(['report-2', 'start']);
     // A second paste takes the next free ids.
     const again = document === undefined ? undefined : pasteItems(document, clip, { x: 0, y: 0 });
     expect(again?.ids[0]).toBe('extract-3');

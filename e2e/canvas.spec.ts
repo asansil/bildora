@@ -615,6 +615,7 @@ test('a right-click on the canvas opens its menu, which adds where it was asked'
   await expect(menu.getByRole('menuitem')).toHaveText([
     /^Add a block after this one…/,
     /^Connect an output…/,
+    /^Rename…/,
   ]);
   await window.keyboard.press('Escape');
   await expect(menu).toBeHidden();
@@ -1475,6 +1476,7 @@ test('a block menu duplicates and takes out, and Selection selects downstream', 
   await expect(menu.getByRole('menuitem')).toHaveText([
     /^Add a block after this one…/,
     /^Connect an output…/,
+    /^Rename…/,
     /^Copy/,
     /^Duplicate/,
     /^Take out of the flow/,

@@ -46,11 +46,13 @@ import {
   GAP_X,
   addAfter,
   addBlocks,
+  blockIdProblem,
   createBlocks,
   documentOf,
   draftOf,
   addNote,
   groupBlocks,
+  renameBlock,
   sizeOf,
   spliceInto,
   ungroup,
@@ -65,7 +67,11 @@ import { Outline } from './canvas/Outline.js';
 import { record, redo, replace, startHistory, undo } from './canvas/undo.js';
 import { placeMissing } from './canvas/layout.js';
 import type { ConnectionRef, FlowDocument, NewBlock } from './canvas/flow-document.js';
-import { referenceOptionsFor } from './canvas/references.js';
+import { useBlockProfiles } from './canvas/use-profiles.js';
+import { inputsOfFlow } from './canvas/values.js';
+import type { ValueContext } from './canvas/values.js';
+import { RunInputsDialog } from './RunInputsDialog.js';
+import { DataView } from './DataView.js';
 import { problemText } from './problem-text.js';
 
 const api = window.bildora;
@@ -339,7 +345,10 @@ interface AutomationTabProps {
   /** A new automation was saved, and its tab now shows it. */
   readonly onSaved: (id: string) => void;
   /** Starts the saved automation with this id. Rejects when it cannot start. */
-  readonly onRun: (id: string) => Promise<unknown>;
+  readonly onRun: (
+    id: string,
+    inputs?: Readonly<Record<string, string | number | boolean>>,
+  ) => Promise<unknown>;
   readonly onShowTool: (id: string) => void;
   readonly onDirty: (dirty: boolean) => void;
   readonly onUsed: () => void;
@@ -410,7 +419,9 @@ function FlowEditor({
     refusalsForNewTabs.delete(automation.id);
     return handed;
   });
-  const [lower, setLower] = useState<'problems' | 'runs' | 'outline' | 'output'>('problems');
+  const [lower, setLower] = useState<'problems' | 'runs' | 'outline' | 'output' | 'data'>(
+    'problems',
+  );
   const nameField = useRef<HTMLInputElement>(null);
   /** False once the tab has gone, such as after a new automation is saved under its id. */
   const mounted = useRef(true);
@@ -550,6 +561,18 @@ function FlowEditor({
   }, [automation, status, revision, onError]);
 
   const names = useMemo(() => blockNames(document.blocks, tools), [document.blocks, tools]);
+  const profiles = useBlockProfiles(document.blocks, onError);
+  const valueContext: ValueContext = useMemo(
+    () => ({ blocks: document.blocks, connections: document.connections, tools, profiles }),
+    [document.blocks, document.connections, tools, profiles],
+  );
+  /** The automation whose inputs Run is asking for, while the form is open. */
+  const [asking, setAsking] = useState<string | undefined>();
+  /** The block whose name in links Rename asked for, until its field takes the caret. */
+  const [renaming, setRenaming] = useState<string | undefined>();
+  const renamed = useCallback(() => {
+    setRenaming(undefined);
+  }, []);
   const nameOf = useCallback((id: string) => names.get(id) ?? id, [names]);
   const problemCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -758,7 +781,19 @@ function FlowEditor({
       if (problems.length > 0) refuse(refusalOf(problems));
     }
     if (problems.length > 0) return;
-    await onRun(id).catch((error: unknown) => {
+    // A new automation's tab reopens under its id, so only a tab that stays can ask.
+    if (inputsOfFlow(document.blocks).length > 0 && mounted.current && automation !== undefined) {
+      setAsking(id);
+      return;
+    }
+    await start(id);
+  }
+
+  async function start(
+    id: string,
+    inputs?: Readonly<Record<string, string | number | boolean>>,
+  ): Promise<void> {
+    await onRun(id, inputs).catch((error: unknown) => {
       const message = messageOf(error);
       // A new automation's tab has reopened by now, so the shell shows why.
       if (mounted.current) refuse({ kind: 'error', message });
@@ -795,7 +830,7 @@ function FlowEditor({
     settingsCollapsed ? STRIP : `auto ${String(settingsWidth)}px`,
   ].join(' ');
   // The Output tab belongs to a run, and editing has none.
-  if (lower === 'output' && runOnView === undefined) setLower('problems');
+  if ((lower === 'output' || lower === 'data') && runOnView === undefined) setLower('problems');
 
   const editing = view.kind === 'edit';
   const editor: EditorCommands = {
@@ -1086,6 +1121,10 @@ function FlowEditor({
           onOpenBlock={(id) => {
             pick(id);
           }}
+          onRenameBlock={(id) => {
+            pick(id);
+            setRenaming(id);
+          }}
           onAddAfter={(anchor, choice) => add(choice, undefined, anchor)}
           {...(focusRequest === undefined ? {} : { focusRequest })}
           options={canvasOptions}
@@ -1196,13 +1235,22 @@ function FlowEditor({
               blocks={document.blocks}
               tools={tools}
               names={names}
-              references={referenceOptionsFor(document, selectedBlock.id, tools, nameOf)}
+              context={valueContext}
+              problems={checked.filter(({ blockId }) => blockId === selectedBlock.id)}
+              focusName={renaming === selectedBlock.id}
+              onNameFocused={renamed}
+              idProblem={(next) => blockIdProblem(document, selectedBlock.id, next)}
               onChange={(block, renamed) => {
                 change(
                   (current) => updateBlock(current, block, renamed),
                   renamed === undefined ? `block:${block.id}` : undefined,
                 );
               }}
+              onRename={(from, to) => {
+                change((current) => renameBlock(current, from, to));
+                setSelected(new Set([to]));
+              }}
+              onGoTo={pick}
               onError={onError}
             />
           )}
@@ -1271,6 +1319,18 @@ function FlowEditor({
               {t('canvas.output')}
             </button>
           )}
+          {runOnView === undefined ? null : (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={lower === 'data'}
+              onClick={() => {
+                showLower('data');
+              }}
+            >
+              {t('canvas.data')}
+            </button>
+          )}
           <button
             type="button"
             className="icon-button panel-collapse"
@@ -1289,7 +1349,9 @@ function FlowEditor({
           </button>
         </div>
         <div className="flow-lower-body" role="tabpanel" hidden={lowerCollapsed}>
-          {lower === 'output' && runOnView !== undefined ? (
+          {lower === 'data' && runOnView !== undefined ? (
+            <DataView step={runOnView.steps.find(({ id }) => id === only)} />
+          ) : lower === 'output' && runOnView !== undefined ? (
             <BlockOutput
               block={selectedBlock}
               step={runOnView.steps.find(({ id }) => id === only)}
@@ -1327,6 +1389,21 @@ function FlowEditor({
           )}
         </div>
       </div>
+      {asking === undefined ? null : (
+        <RunInputsDialog
+          name={document.name}
+          inputs={inputsOfFlow(document.blocks)}
+          onRun={(values) => {
+            const id = asking;
+            setAsking(undefined);
+            void start(id, values);
+          }}
+          onClose={() => {
+            setAsking(undefined);
+          }}
+          onError={onError}
+        />
+      )}
     </section>
   );
 }

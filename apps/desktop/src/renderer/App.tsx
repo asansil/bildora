@@ -37,6 +37,8 @@ import {
 } from './automations/canvas/canvas-commands.js';
 import type { CanvasCommand, CanvasCommands } from './automations/canvas/canvas-commands.js';
 import { AutomationsPanel } from './automations/AutomationsPanel.js';
+import { inputsOfFlow } from './automations/canvas/values.js';
+import { RunInputsDialog } from './automations/RunInputsDialog.js';
 import { LIBRARY_DRAG_TYPE } from './automations/canvas/Canvas.js';
 import { HistoryView } from './history/HistoryView.js';
 import type { HistoryFilter } from './history/HistoryView.js';
@@ -146,6 +148,12 @@ export function App() {
   const [runs, setRuns] = useState<readonly RunView[]>([]);
   const [automations, setAutomations] = useState(NO_AUTOMATIONS);
   const [automationsLoaded, setAutomationsLoaded] = useState(false);
+  /** The automation whose inputs the palette's Run is asking for. */
+  const [askingInputs, setAskingInputs] = useState<string | undefined>();
+  const inputsAutomation =
+    askingInputs === undefined
+      ? undefined
+      : automations.automations.find((item) => item.id === askingInputs);
   const [automationRuns, setAutomationRuns] = useState<readonly AutomationRunStateView[]>([]);
   const [version, setVersion] = useState('');
   const [workspaces, setWorkspaces] = useState(NO_WORKSPACES);
@@ -587,7 +595,13 @@ export function App() {
     return saved;
   }
 
+  /** Runs a saved automation, asking first for the inputs its Start block declares. */
   function runAutomation(id: string): void {
+    const automation = automations.automations.find((item) => item.id === id);
+    if (automation !== undefined && inputsOfFlow(automation.blocks).length > 0) {
+      setAskingInputs(id);
+      return;
+    }
     void api.startAutomation(id).catch(report);
   }
 
@@ -1067,7 +1081,7 @@ export function App() {
             markUnsaved(tab.key, false);
             changeTabs((state) => rename(state, tab.key, { kind: 'automation', id }));
           }}
-          onRun={(id) => api.startAutomation(id)}
+          onRun={(id, inputs) => api.startAutomation(id, inputs)}
           onShowTool={(id) => {
             showTool(id);
           }}
@@ -1416,6 +1430,20 @@ export function App() {
         </div>
       ) : null}
 
+      {inputsAutomation === undefined ? null : (
+        <RunInputsDialog
+          name={inputsAutomation.name}
+          inputs={inputsOfFlow(inputsAutomation.blocks)}
+          onRun={(values) => {
+            setAskingInputs(undefined);
+            void api.startAutomation(inputsAutomation.id, values).catch(report);
+          }}
+          onClose={() => {
+            setAskingInputs(undefined);
+          }}
+          onError={report}
+        />
+      )}
       {question === 'running' ? (
         <Dialog
           title={t('tabs.runningTitle', { name: askingName })}

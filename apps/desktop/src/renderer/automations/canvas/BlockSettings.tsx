@@ -1,456 +1,23 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import { CONDITION_RULES_MAX, SWITCH_CASES_MAX } from '@bildora/protocol';
-import type {
-  AutomationBlock,
-  AutomationCondition,
-  AutomationRule,
-  RunBlock,
-} from '@bildora/protocol';
+import { SWITCH_CASES_MAX } from '@bildora/protocol';
+import type { AutomationBlock } from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
-import type { MessageKey } from '../../../shared/i18n/translate.js';
-import type { ParameterView, ProfileView, ToolView } from '../../../shared/ipc-contract.js';
-import { ParameterForm } from '../../tools/ParameterForm.js';
-import { parameterProblem, submittedValues } from '../../tools/parameter-form.js';
-import type { FormValue, FormValues } from '../../tools/parameter-form.js';
+import type { AutomationProblemView, ToolView } from '../../../shared/ipc-contract.js';
 import { without } from '../automation-draft.js';
-import { conditionSentence, kindLabel } from './block-text.js';
-import type { ReferenceOption } from './references.js';
-
-const api = window.bildora;
+import { problemText } from '../problem-text.js';
+import { kindLabel } from './block-text.js';
+import { ConditionEditor } from './ConditionEditor.js';
+import { NameField, NumberField, Select } from './fields.js';
+import type { BlockIdProblem } from './flow-document.js';
+import { InputsEditor } from './InputsEditor.js';
+import { RunFields } from './RunFields.js';
+import { valueChoices } from './values.js';
+import type { ValueContext } from './values.js';
 
 /** What a case can be named: a name a connection can hold, and not one another output has. */
 const CASE_NAME = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const RESERVED_CASES = new Set(['next', 'error', 'true', 'false', 'default']);
-
-function NumberField({
-  label,
-  value,
-  min,
-  max,
-  onChange,
-}: {
-  readonly label: string;
-  readonly value: number;
-  readonly min: number;
-  readonly max?: number;
-  readonly onChange: (value: number) => void;
-}) {
-  const id = useId();
-  return (
-    <div className="field">
-      <label className="field-label" htmlFor={id}>
-        {label}
-      </label>
-      <input
-        id={id}
-        type="number"
-        value={value}
-        min={min}
-        {...(max === undefined ? {} : { max })}
-        onChange={(event) => {
-          const next = Number(event.target.value);
-          if (Number.isInteger(next) && next >= min && (max === undefined || next <= max)) {
-            onChange(next);
-          }
-        }}
-      />
-    </div>
-  );
-}
-
-function Select<Value extends string>({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  readonly label: string;
-  readonly value: Value;
-  readonly options: readonly { readonly value: Value; readonly label: string }[];
-  readonly onChange: (value: Value) => void;
-}) {
-  const id = useId();
-  return (
-    <div className="field">
-      <label className="field-label" htmlFor={id}>
-        {label}
-      </label>
-      <select
-        id={id}
-        value={value}
-        onChange={(event) => {
-          onChange(event.target.value as Value);
-        }}
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-function formFrom(parameters: readonly ParameterView[], values: RunBlock['values']): FormValues {
-  return Object.fromEntries(
-    parameters.map(({ name, type }) => {
-      const value = values?.[name];
-      return [name, type === 'boolean' ? value === true : String(value ?? '')];
-    }),
-  );
-}
-
-/** What a form holds, as a block stores it: only what was set, so the rest stays as the tool has it. */
-function blockValues(
-  parameters: readonly ParameterView[],
-  form: FormValues,
-): NonNullable<RunBlock['values']> {
-  const usable = parameters.filter(
-    (parameter) => parameterProblem(parameter, form[parameter.name], false) === undefined,
-  );
-  const { plain } = submittedValues(usable, form);
-  return Object.fromEntries(Object.entries(plain).filter(([, value]) => value !== false));
-}
-
-interface RunFieldsProps {
-  readonly block: RunBlock;
-  readonly tools: readonly ToolView[];
-  readonly references: readonly ReferenceOption[];
-  readonly onChange: (block: RunBlock) => void;
-  readonly onError: (error: unknown) => void;
-}
-
-/** A Run tool block. Secrets have no field here: they only ever come from a profile. */
-function RunFields({ block, tools, references, onChange, onError }: RunFieldsProps) {
-  const toolId = useId();
-  const profileId = useId();
-  const tool = tools.find(({ id }) => id === block.tool);
-  const parameters = useMemo(
-    // All optional here: a value can also come from a profile or from the tool's default.
-    () =>
-      (tool?.parameters ?? [])
-        .filter(({ secret }) => secret !== true)
-        .map((parameter) => ({ ...parameter, required: false })),
-    [tool],
-  );
-  const [form, setForm] = useState<FormValues>(() => formFrom(parameters, block.values));
-  const [profiles, setProfiles] = useState<readonly ProfileView[]>([]);
-  const toolLevel = tool?.level;
-
-  useEffect(() => {
-    let current = true;
-    if (toolLevel === 1) {
-      void api
-        .listProfiles(block.tool)
-        .then((list) => {
-          if (current) setProfiles(list);
-        })
-        .catch(onError);
-    }
-    return () => {
-      current = false;
-    };
-  }, [block.tool, toolLevel, onError]);
-
-  function setValue(name: string, value: FormValue): void {
-    const next = { ...form, [name]: value };
-    setForm(next);
-    const rest: RunBlock = without(block, 'values');
-    const values = blockValues(parameters, next);
-    onChange(Object.keys(values).length === 0 ? rest : { ...rest, values });
-  }
-
-  const problems = Object.fromEntries(
-    parameters.flatMap((parameter) => {
-      const problem = parameterProblem(parameter, form[parameter.name], false);
-      return problem === undefined ? [] : [[parameter.name, problem]];
-    }),
-  ) as Readonly<Record<string, MessageKey>>;
-  const retry = typeof block.onFailure === 'object' ? block.onFailure.retry : undefined;
-
-  return (
-    <>
-      <div className="field">
-        <label className="field-label" htmlFor={toolId}>
-          {t('automation.tool')}
-        </label>
-        <select
-          id={toolId}
-          value={block.tool}
-          onChange={(event) => {
-            onChange({ ...without(block, 'profile', 'values'), tool: event.target.value });
-          }}
-        >
-          {tool === undefined ? (
-            <option value={block.tool}>{t('automation.toolMissing', { id: block.tool })}</option>
-          ) : null}
-          {tools.map(({ id, name }) => (
-            <option key={id} value={id}>
-              {name}
-            </option>
-          ))}
-        </select>
-      </div>
-      {toolLevel === 1 ? (
-        <div className="field">
-          <label className="field-label" htmlFor={profileId}>
-            {t('automation.profile')}
-          </label>
-          <select
-            id={profileId}
-            value={block.profile ?? ''}
-            onChange={(event) => {
-              const rest: RunBlock = without(block, 'profile');
-              onChange(event.target.value === '' ? rest : { ...rest, profile: event.target.value });
-            }}
-          >
-            <option value="">{t('automation.noProfile')}</option>
-            {profiles.map(({ id, name }) => (
-              <option key={id} value={id}>
-                {name}
-              </option>
-            ))}
-          </select>
-        </div>
-      ) : null}
-      {parameters.length === 0 ? null : (
-        <>
-          <p className="field-hint">{t('automation.valuesHint')}</p>
-          <ParameterForm
-            parameters={parameters}
-            values={form}
-            problems={problems}
-            savedSecrets={[]}
-            disabled={false}
-            onChange={setValue}
-            onBrowse={(name) => {
-              void api
-                .pickPath()
-                .then((path) => {
-                  if (path !== undefined) setValue(name, path);
-                })
-                .catch(onError);
-            }}
-            onForget={() => undefined}
-            pathControl={(name) => (
-              <select
-                className="reference-select"
-                aria-label={t('automation.insertReference')}
-                value=""
-                onChange={(event) => {
-                  setValue(name, event.target.value);
-                }}
-              >
-                <option value="">{t('automation.reference')}</option>
-                {references.map(({ label, value }) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            )}
-          />
-        </>
-      )}
-      <Select
-        label={t('canvas.onFailure')}
-        value={retry === undefined ? 'stop' : 'retry'}
-        options={[
-          { value: 'stop', label: t('canvas.failureStop') },
-          { value: 'retry', label: t('automation.failureRetry') },
-        ]}
-        onChange={(choice) => {
-          const rest: RunBlock = without(block, 'onFailure');
-          onChange(
-            choice === 'stop'
-              ? rest
-              : { ...rest, onFailure: { retry: { attempts: 3, delaySeconds: 30 } } },
-          );
-        }}
-      />
-      {retry === undefined ? null : (
-        <div className="automation-retry">
-          <NumberField
-            label={t('automation.attempts')}
-            value={retry.attempts}
-            min={2}
-            max={20}
-            onChange={(attempts) => {
-              onChange({ ...block, onFailure: { retry: { ...retry, attempts } } });
-            }}
-          />
-          <NumberField
-            label={t('automation.retryDelay')}
-            value={retry.delaySeconds ?? 0}
-            min={0}
-            max={86_400}
-            onChange={(delaySeconds) => {
-              onChange({ ...block, onFailure: { retry: { ...retry, delaySeconds } } });
-            }}
-          />
-        </div>
-      )}
-      <p className="field-hint">{t('canvas.errorOutputHint')}</p>
-    </>
-  );
-}
-
-const RESULT_OPERATORS = ['is', 'is-not'] as const;
-const EXIT_OPERATORS = ['equals', 'not-equals', 'greater-than', 'less-than'] as const;
-const RESULTS = ['completed', 'failed', 'skipped'] as const;
-
-interface ConditionEditorProps {
-  readonly condition: AutomationCondition;
-  /** Blocks a rule can read, by id, with their names. */
-  readonly sources: readonly { readonly id: string; readonly name: string }[];
-  readonly nameOf: (id: string) => string;
-  readonly onChange: (condition: AutomationCondition) => void;
-}
-
-/** One row per rule: block, what to read, how to compare and with what, and the rule read back. */
-function ConditionEditor({ condition, sources, nameOf, onChange }: ConditionEditorProps) {
-  const setRule = (index: number, rule: AutomationRule): void => {
-    onChange({
-      ...condition,
-      rules: condition.rules.map((item, position) => (position === index ? rule : item)),
-    });
-  };
-  const fallback = sources[0]?.id ?? 'start';
-  return (
-    <div className="condition">
-      {condition.rules.length > 1 ? (
-        <Select
-          label={t('canvas.match')}
-          value={condition.match}
-          options={[
-            { value: 'all', label: t('canvas.matchAll') },
-            { value: 'any', label: t('canvas.matchAny') },
-          ]}
-          onChange={(match) => {
-            onChange({ ...condition, match });
-          }}
-        />
-      ) : null}
-      {condition.rules.map((rule, index) => (
-        <fieldset key={index} className="condition-rule" data-testid="condition-rule">
-          <legend className="visually-hidden">
-            {t('canvas.ruleNumber', { number: index + 1 })}
-          </legend>
-          <Select
-            label={t('canvas.ruleBlock')}
-            value={rule.block}
-            options={[
-              ...(sources.some(({ id }) => id === rule.block)
-                ? []
-                : [{ value: rule.block, label: nameOf(rule.block) }]),
-              ...sources.map(({ id, name }) => ({ value: id, label: name })),
-            ]}
-            onChange={(block) => {
-              setRule(index, { ...rule, block });
-            }}
-          />
-          <Select
-            label={t('canvas.ruleField')}
-            value={rule.field}
-            options={[
-              { value: 'result', label: t('canvas.fieldResult') },
-              { value: 'exit-code', label: t('canvas.fieldExitCode') },
-            ]}
-            onChange={(field) => {
-              setRule(
-                index,
-                field === 'result'
-                  ? { block: rule.block, field, operator: 'is', value: 'completed' }
-                  : { block: rule.block, field, operator: 'equals', value: 0 },
-              );
-            }}
-          />
-          {rule.field === 'result' ? (
-            <>
-              <Select
-                label={t('canvas.ruleOperator')}
-                value={rule.operator}
-                options={RESULT_OPERATORS.map((value) => ({
-                  value,
-                  label: t(`canvas.operator.${value}`),
-                }))}
-                onChange={(operator) => {
-                  setRule(index, { ...rule, operator });
-                }}
-              />
-              <Select
-                label={t('canvas.ruleValue')}
-                value={rule.value}
-                options={RESULTS.map((value) => ({ value, label: t(`canvas.result.${value}`) }))}
-                onChange={(value) => {
-                  setRule(index, { ...rule, value });
-                }}
-              />
-            </>
-          ) : (
-            <>
-              <Select
-                label={t('canvas.ruleOperator')}
-                value={rule.operator}
-                options={EXIT_OPERATORS.map((value) => ({
-                  value,
-                  label: t(`canvas.operator.${value}`),
-                }))}
-                onChange={(operator) => {
-                  setRule(index, { ...rule, operator });
-                }}
-              />
-              <NumberField
-                label={t('canvas.ruleValue')}
-                value={rule.value}
-                min={-2_147_483_648}
-                onChange={(value) => {
-                  setRule(index, { ...rule, value });
-                }}
-              />
-            </>
-          )}
-          {condition.rules.length > 1 ? (
-            <button
-              type="button"
-              onClick={() => {
-                onChange({
-                  ...condition,
-                  rules: condition.rules.filter((_rule, position) => position !== index),
-                });
-              }}
-            >
-              <Trash2 className="icon" aria-hidden="true" />
-              {t('canvas.removeRule')}
-            </button>
-          ) : null}
-        </fieldset>
-      ))}
-      {condition.rules.length < CONDITION_RULES_MAX ? (
-        <button
-          type="button"
-          onClick={() => {
-            onChange({
-              ...condition,
-              rules: [
-                ...condition.rules,
-                { block: fallback, field: 'result', operator: 'is', value: 'completed' },
-              ],
-            });
-          }}
-        >
-          <Plus className="icon" aria-hidden="true" />
-          {t('canvas.addRule')}
-        </button>
-      ) : null}
-      <p className="condition-sentence" data-testid="condition-sentence">
-        {t('canvas.ifName', { rule: conditionSentence(condition, nameOf) })}
-      </p>
-    </div>
-  );
-}
 
 /** A case name being typed, applied once it is one a connection can hold. */
 function CaseName({
@@ -492,8 +59,21 @@ export interface BlockSettingsProps {
   readonly blocks: readonly AutomationBlock[];
   readonly tools: readonly ToolView[];
   readonly names: ReadonlyMap<string, string>;
-  readonly references: readonly ReferenceOption[];
+  /** What links and rules can read, and what linked values resolve to. */
+  readonly context: ValueContext;
+  /** Problems of the flow about this block. */
+  readonly problems: readonly AutomationProblemView[];
+  /** The block's name in links should take the caret, as Rename asks. */
+  readonly focusName?: boolean;
+  /** Called once the name has taken the caret, so that it does not again. */
+  readonly onNameFocused?: () => void;
+  /** Why another id cannot name this block, or undefined when it can. */
+  readonly idProblem: (next: string) => BlockIdProblem | undefined;
   readonly onChange: (block: AutomationBlock, renamed?: Readonly<Record<string, string>>) => void;
+  /** Gives the block another id, which everything that names it follows. */
+  readonly onRename: (from: string, to: string) => void;
+  /** Selects another block on the canvas. */
+  readonly onGoTo: (blockId: string) => void;
   readonly onError: (error: unknown) => void;
 }
 
@@ -503,26 +83,77 @@ export function BlockSettings({
   blocks,
   tools,
   names,
-  references,
+  context,
+  problems,
+  focusName = false,
+  onNameFocused,
+  idProblem,
   onChange,
+  onRename,
+  onGoTo,
   onError,
 }: BlockSettingsProps) {
   const messageId = useId();
+  const idField = useRef<HTMLInputElement>(null);
   const nameOf = (id: string): string => names.get(id) ?? id;
   const sources = blocks
     .filter(({ id, type }) => id !== block.id && type !== 'start')
     .map(({ id }) => ({ id, name: nameOf(id) }));
+  const choices = useMemo(() => valueChoices(context, block.id), [context, block.id]);
+  /** Problems about a value, worded, by the label of the field or rule they name. */
+  const fieldProblems = new Map(
+    problems.flatMap((problem) => {
+      const label = problem.params['label'];
+      return label === undefined ? [] : [[label, problemText(problem, nameOf).what] as const];
+    }),
+  );
+
+  useEffect(() => {
+    if (!focusName) return;
+    idField.current?.focus();
+    idField.current?.select();
+    onNameFocused?.();
+  }, [focusName, onNameFocused]);
+
   return (
     <div className="block-settings" data-testid="block-settings" data-block-id={block.id}>
       <h2>{kindLabel(block.type)}</h2>
-      {block.type === 'start' ? <p className="field-hint">{t('canvas.startHint')}</p> : null}
+      <NameField
+        label={t('canvas.blockId')}
+        value={block.id}
+        hint={t('canvas.blockIdHint', { id: block.id })}
+        applyOnBlur
+        inputRef={idField}
+        problemOf={(next) => {
+          const problem = idProblem(next);
+          return problem === undefined ? undefined : t(`canvas.blockIdProblem.${problem}`);
+        }}
+        onRename={(next) => {
+          onRename(block.id, next);
+        }}
+      />
+      {block.type === 'start' ? (
+        <>
+          <p className="field-hint">{t('canvas.startHint')}</p>
+          <InputsEditor
+            inputs={block.inputs ?? []}
+            onChange={(inputs) => {
+              const rest = without(block, 'inputs');
+              onChange(inputs.length === 0 ? rest : { ...rest, inputs: [...inputs] });
+            }}
+          />
+        </>
+      ) : null}
       {block.type === 'run' ? (
         <RunFields
           key={block.tool}
           block={block}
           tools={tools}
-          references={references}
+          context={context}
+          problems={fieldProblems}
+          nameOf={nameOf}
           onChange={onChange}
+          onGoTo={onGoTo}
           onError={onError}
         />
       ) : null}
@@ -556,6 +187,8 @@ export function BlockSettings({
         <ConditionEditor
           condition={block.condition}
           sources={sources}
+          choices={choices}
+          context={context}
           nameOf={nameOf}
           onChange={(condition) => {
             onChange({ ...block, condition });
@@ -587,6 +220,8 @@ export function BlockSettings({
               <ConditionEditor
                 condition={branch.condition}
                 sources={sources}
+                choices={choices}
+                context={context}
                 nameOf={nameOf}
                 onChange={(condition) => {
                   onChange({
