@@ -172,6 +172,27 @@ describe('toolManifestSchema', () => {
       );
     });
 
+    it('accepts a JSON output with typed fields, and checks its fields', () => {
+      const json = (fields: unknown[]) => [{ name: 'result', json: 'out/result.json', fields }];
+      const fields = [
+        { name: 'count', type: 'integer' },
+        { name: 'files', type: 'list' },
+        { name: 'token', type: 'string', secret: true },
+      ];
+      expect(issues(withParameters([], json(fields)))).toEqual([]);
+      expect(toolManifestSchema.parse(withParameters([], json(fields)))).toMatchObject({
+        outputs: [{ fields: [{ secret: false }, { secret: false }, { secret: true }] }],
+      });
+      expect(issues(withParameters([], json([fields[0], fields[0]])))).toContainEqual(
+        expect.stringContaining('more than once'),
+      );
+      expect(
+        issues(withParameters([], json([{ name: 'n', type: 'number', secret: true }]))),
+      ).toContainEqual(expect.stringContaining('only text fields'));
+      expect(issues(withParameters([], json([])))).not.toEqual([]);
+      expect(issues(withParameters([], json([{ name: 'd', type: 'date' }])))).not.toEqual([]);
+    });
+
     it('rejects a default on a secret', () => {
       const parameter = { ...text, name: 'a', secret: true, default: 'hunter2' };
       expect(issues(withParameters([parameter]))).toContainEqual(expect.stringContaining('secret'));

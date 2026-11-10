@@ -105,9 +105,39 @@ const outputFields = {
   description: nonEmpty.optional(),
 };
 
+/** Fields a JSON output can declare. */
+export const OUTPUT_FIELDS_MAX = 100;
+
+/** Types a field of a JSON output can have. A list holds text, such as file names. */
+export const OUTPUT_FIELD_TYPES = [
+  'string',
+  'path',
+  'integer',
+  'number',
+  'boolean',
+  'list',
+] as const;
+
+const outputFieldSchema = z.strictObject({
+  name: z.string().regex(NAME_PATTERN),
+  type: z.enum(OUTPUT_FIELD_TYPES),
+  description: nonEmpty.optional(),
+  /** Kept from history and from other blocks. Only text can be secret. */
+  secret: z.boolean().default(false),
+});
+
 const outputSchema = z.union([
   z.strictObject({ ...outputFields, param: z.string().regex(NAME_PATTERN) }),
   z.strictObject({ ...outputFields, path: nonEmpty }),
+  /**
+   * A JSON file the tool writes, holding one object with these fields. Bildora reads it after the
+   * tool ends. A relative path is read from the tool's folder, and it may use path variables.
+   */
+  z.strictObject({
+    ...outputFields,
+    json: nonEmpty,
+    fields: z.array(outputFieldSchema).min(1).max(OUTPUT_FIELDS_MAX),
+  }),
 ]);
 
 /** One answer of a console script: wait for `expect` in the output, then type `send` and Enter. */
@@ -296,6 +326,25 @@ export const toolManifestSchema = manifestShape.superRefine((manifest, context) 
   });
 
   outputs.forEach((output, index) => {
+    if ('json' in output) {
+      for (const name of findDuplicates(output.fields.map((field) => field.name))) {
+        context.addIssue({
+          code: 'custom',
+          path: ['outputs', index, 'fields'],
+          message: `Field "${name}" is declared more than once`,
+        });
+      }
+      output.fields.forEach((field, position) => {
+        if (field.secret && field.type !== 'string') {
+          context.addIssue({
+            code: 'custom',
+            path: ['outputs', index, 'fields', position, 'secret'],
+            message: `Field "${field.name}" cannot be secret: only text fields can`,
+          });
+        }
+      });
+      return;
+    }
     if (!('param' in output)) {
       return;
     }
@@ -320,6 +369,9 @@ export type ToolManifest = z.output<typeof toolManifestSchema>;
 export type ToolManifestInput = z.input<typeof toolManifestSchema>;
 export type ToolParameter = z.output<typeof parameterSchema>;
 export type ToolOutput = z.output<typeof outputSchema>;
+export type ToolJsonOutput = Extract<ToolOutput, { json: string }>;
+export type ToolOutputField = z.output<typeof outputFieldSchema>;
+export type ToolOutputFieldType = (typeof OUTPUT_FIELD_TYPES)[number];
 export type ToolCommand = z.output<typeof commandSchema>;
 export type ToolScriptEntry = z.output<typeof scriptEntrySchema>;
 

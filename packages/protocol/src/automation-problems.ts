@@ -6,10 +6,12 @@ const PARAMETER_NAMES = [
   'case',
   'count',
   'detail',
+  'field',
   'from',
   'group',
   'id',
   'index',
+  'input',
   'label',
   'output',
   'parallel',
@@ -35,6 +37,8 @@ const MESSAGES = {
   // Blocks and connections.
   'duplicate-block': ({ block }) => `Block "${block}" is declared more than once`,
   'duplicate-id': ({ id }) => `"${id}" names more than one item`,
+  'block-reserved': ({ block }) =>
+    `"${block}" cannot name a block, because expressions use it for other values`,
   'start-count': ({ count }) =>
     `An automation needs exactly one Start block, and this one has ${count}`,
   'connection-from-missing': ({ index, from }) =>
@@ -59,6 +63,12 @@ const MESSAGES = {
   'case-reserved': ({ case: name }) =>
     `"${name}" cannot name a case, because it is the name of another output`,
   'case-duplicate': ({ case: name }) => `Case "${name}" is declared more than once`,
+  'rule-value-missing': () => 'A rule compares a value with nothing',
+  'rule-value-extra': () => 'A rule that compares with nothing is given a value',
+  // Inputs of the automation.
+  'input-duplicate': ({ input }) => `Input "${input}" is declared more than once`,
+  'input-default-choice': ({ input }) =>
+    `The default of input "${input}" is not one of its choices`,
   'exit-code-not-run': ({ source }) =>
     `Reads the exit code of "${source}", which is not a run block`,
   'exit-code-not-certain': ({ source, block }) =>
@@ -85,8 +95,27 @@ const MESSAGES = {
     `Step "${source}" runs a registered program, which declares no outputs`,
   'reference-not-certain': ({ source }) =>
     `Step "${source}" does not finish on every path that reaches this block, so its output may not exist`,
-  'reference-not-path': ({ parameter }) =>
-    `"${parameter}" is not a path parameter, so it cannot hold a reference`,
+  // Links and expressions. `label` names the field, or the rule, that holds the expression.
+  'expression-syntax': ({ label, detail }) => `The value of "${label}" cannot be read: ${detail}`,
+  'expression-name': ({ label, detail }) => `The value of "${label}" reads a wrong name: ${detail}`,
+  'expression-function': ({ label, detail }) =>
+    `The value of "${label}" calls a function wrongly: ${detail}`,
+  'expression-type': ({ label, detail }) => `The value of "${label}" does not fit: ${detail}`,
+  'link-block-missing': ({ label, source }) =>
+    `"${label}" links to block "${source}", which does not exist`,
+  'link-not-run': ({ label, source }) =>
+    `"${label}" links to "${source}", which runs no tool and so has no values`,
+  'link-parameter-missing': ({ label, source, parameter }) =>
+    `"${label}" links to "${source}.${parameter}", and that tool has no such parameter`,
+  'link-secret': ({ label, source, parameter }) =>
+    `"${label}" links to "${source}.${parameter}", which is secret and cannot be linked`,
+  'link-cycle': ({ label, reference }) =>
+    `"${label}" links in a circle, back to itself: ${reference}`,
+  'input-unknown': ({ label, input }) => `"${label}" reads input "${input}", which does not exist`,
+  'output-field-unknown': ({ label, source, output, field }) =>
+    `"${label}" reads field "${field}" of output "${output}" of "${source}", which it does not declare`,
+  'output-field-secret': ({ label, source, output, field }) =>
+    `"${label}" reads field "${field}" of output "${output}" of "${source}", which is secret`,
 } satisfies Record<string, (params: Filled) => string>;
 
 export type AutomationProblemCode = keyof typeof MESSAGES;

@@ -8,6 +8,8 @@ export function isSupportedProtocolVersion(version: unknown): boolean {
 
 export {
   MANIFEST_SCHEMA_VERSION,
+  OUTPUT_FIELD_TYPES,
+  OUTPUT_FIELDS_MAX,
   PERMISSIONS,
   STDIN_SCRIPT_MAX_ENTRIES,
   STDIN_TIMEOUT_DEFAULT_SECONDS,
@@ -18,9 +20,12 @@ export {
 export type {
   Permission,
   ToolCommand,
+  ToolJsonOutput,
   ToolManifest,
   ToolManifestInput,
   ToolOutput,
+  ToolOutputField,
+  ToolOutputFieldType,
   ToolParameter,
   ToolScriptEntry,
 } from './manifest.js';
@@ -33,18 +38,24 @@ export {
   AUTOMATION_BLOCK_LIMIT,
   AUTOMATION_CONNECTION_LIMIT,
   AUTOMATION_GROUP_LIMIT,
+  AUTOMATION_INPUTS_MAX,
   AUTOMATION_NOTE_LIMIT,
   AUTOMATION_SCHEMA_VERSION,
+  EXPRESSION_MAX_LENGTH,
   NOTE_TEXT_MAX,
   CONDITION_RULES_MAX,
+  RESERVED_BLOCK_IDS,
   RETRY_ATTEMPTS_MAX,
   RETRY_DELAY_SECONDS_MAX,
   SWITCH_CASES_MAX,
+  UNARY_VALUE_RULE_OPERATORS,
+  VALUE_RULE_OPERATORS,
   WAIT_SECONDS_MAX,
   automationFileSchema,
   automationRuleIssues,
   automationSchema,
   buildAutomationJsonSchema,
+  isExpressionValue,
 } from './automation.js';
 export type {
   Automation,
@@ -53,10 +64,17 @@ export type {
   AutomationConnection,
   AutomationGroup,
   AutomationInput,
+  AutomationInputDeclaration,
   AutomationNote,
   AutomationPosition,
   AutomationRule,
+  BlockValue,
+  ExpressionValue,
+  LiteralValue,
   RunBlock,
+  StartBlock,
+  ValueRule,
+  ValueRuleOperator,
 } from './automation.js';
 export {
   AUTOMATION_PROBLEM_CODES,
@@ -113,3 +131,4 @@ export {
   usesRunFolder,
 } from './references.js';
 export type { RunReferenceValues, StepOutputReference } from './references.js';
+export * from './expressions/index.js';
