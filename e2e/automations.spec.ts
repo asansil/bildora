@@ -6,6 +6,12 @@ import { _electron as electron, expect, test } from '@playwright/test';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
 
 const FAKE_TOOL = resolve('examples/fixtures/fake-tool.mjs');
+/** A folder for screenshots, to look at what a test went through. */
+const SHOTS = process.env['BILDORA_SHOTS'];
+
+async function shot(window: Page, name: string): Promise<void> {
+  if (SHOTS !== undefined) await window.screenshot({ path: join(SHOTS, `${name}.png`) });
+}
 
 function electronEnvironment(extra: Record<string, string>): Record<string, string> {
   const inherited = Object.entries(process.env).filter(
@@ -244,7 +250,80 @@ stdin:
   await expect(step(window, 'ask')).toHaveAttribute('data-state', 'completed');
   await rail(window, 'Run history').click();
   await window.locator('.history-row').first().click();
+  await window.locator('.timeline-row[data-block="ask"]').click();
   await expect(window.getByTestId('history-output')).toContainText('HELLO Zoe');
+});
+
+test('history shows an automation run as one entry, with its blocks over time', async () => {
+  const flaky = join(folder, 'flaky.mjs');
+  const marker = join(folder, 'tried-once');
+  await writeFile(
+    flaky,
+    `import { existsSync, writeFileSync } from 'node:fs';
+const marker = ${JSON.stringify(marker)};
+if (existsSync(marker)) {
+  console.log('SECOND TRY');
+} else {
+  writeFileSync(marker, '');
+  console.log('FIRST TRY');
+  process.exitCode = 3;
+}`,
+  );
+  await writeTool(
+    'flaky',
+    'Flaky',
+    `run:
+  program: ${flaky}
+`,
+  );
+  await fakeTool('quick', 'Quick', ['exit', '0']);
+  await writeAutomation(
+    'nightly',
+    'Nightly',
+    `  - { id: first, type: run, tool: quick }
+  - { id: shaky, type: run, tool: flaky, onFailure: { retry: { attempts: 2, delaySeconds: 0 } } }
+`,
+  );
+
+  const { window } = await launchShell();
+  await openAutomation(window, 'Nightly');
+  await window.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(step(window, 'shaky')).toHaveAttribute('data-state', 'completed', {
+    timeout: 20_000,
+  });
+
+  await rail(window, 'Run history').click();
+  const rows = window.locator('.history-row');
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toHaveAttribute('data-kind', 'automation');
+  await expect(rows.first()).toContainText('Nightly');
+  await rows.first().click();
+
+  const timeline = window.getByTestId('history-timeline');
+  await expect(timeline.locator('.timeline-row')).toHaveCount(3);
+  await expect(timeline.locator('.timeline-row').nth(0)).toHaveAttribute('data-block', 'start');
+  const shaky = timeline.locator('.timeline-row[data-block="shaky"]');
+  await expect(shaky).toContainText('2 tries');
+  await expect(shaky.locator('.timeline-bar')).toHaveCount(2);
+  await shaky.click();
+  await expect(window.getByTestId('history-output')).toContainText('SECOND TRY');
+  await window.getByRole('button', { name: 'Try 1' }).click();
+  await expect(window.getByTestId('history-output')).toContainText('FIRST TRY');
+  await shot(window, 'history-automation-run');
+
+  await window.getByLabel('Show').selectOption({ label: 'Quick' });
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toHaveAttribute('data-kind', 'automation');
+  await rows.first().click();
+  await expect(window.locator('.timeline-row[data-block="first"]')).toHaveAttribute(
+    'aria-current',
+    'true',
+  );
+
+  await window.getByRole('button', { name: 'Show on canvas' }).click();
+  await expect(window.getByRole('tab', { name: /Nightly/, selected: true })).toBeVisible();
+  await expect(window.locator('.automation-run[aria-pressed="true"]')).toBeVisible();
+  await expect(step(window, 'shaky')).toHaveAttribute('data-state', 'completed');
 });
 
 test('a run that went on past a failed step says so', async () => {

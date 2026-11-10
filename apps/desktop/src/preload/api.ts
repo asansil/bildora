@@ -7,8 +7,9 @@ import type {
   AutomationView,
   DetectionView,
   EditCommand,
+  HistoryAutomationRunView,
+  HistoryEntryView,
   HistoryRecordView,
-  HistorySummaryView,
   LayoutUpdate,
   PathVariableView,
   ProfileView,
@@ -79,7 +80,12 @@ export interface ShellApi {
   listProfiles(toolId: string): Promise<readonly ProfileView[]>;
   saveProfile(input: SaveProfileInput): Promise<ProfileView>;
   removeProfile(toolId: string, id: string): Promise<void>;
-  listHistory(toolId?: string): Promise<readonly HistorySummaryView[]>;
+  /** Lists tool runs and automation runs, filtered by one tool or one automation. */
+  listHistory(filter: {
+    readonly toolId?: string;
+    readonly automationId?: string;
+  }): Promise<readonly HistoryEntryView[]>;
+  getHistoryAutomationRun(runId: string): Promise<HistoryAutomationRunView | undefined>;
   getHistoryRun(runId: string): Promise<HistoryRecordView | undefined>;
   recentTools(): Promise<readonly string[]>;
   clearHistory(): Promise<void>;

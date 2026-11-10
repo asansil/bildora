@@ -70,8 +70,12 @@ const UPGRADE_TO_WORKSPACES = `
   CREATE INDEX runs_by_time ON runs (workspace_id, started_at DESC);
 `;
 
-const SUMMARY_COLUMNS =
-  'id, tool_id, tool_name, level, started_at, status, exit_code, duration_ms, failure_kind, failure_message';
+const SUMMARY_COLUMNS = `r.id, r.tool_id, r.tool_name, r.level, r.started_at, r.status, r.exit_code,
+  r.duration_ms, r.failure_kind, r.failure_message, r.automation_run_id, a.automation_id,
+  a.automation_name`;
+
+/** A step's automation run may be gone, pruned or with its automation, so it is joined loosely. */
+const RUNS_WITH_AUTOMATION = 'runs r LEFT JOIN automation_runs a ON a.id = r.automation_run_id';
 
 /** `interrupted` means Bildora closed before it could see the run end. */
 export type RecordedStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
@@ -87,6 +91,19 @@ export interface RunSummary {
   readonly exitCode?: number;
   readonly durationMs?: number;
   readonly failure?: { readonly kind: string; readonly message: string };
+  /** Set when the run was a step of an automation. */
+  readonly automation?: RunOrigin;
+}
+
+/**
+ * The automation run a tool run was a step of. The automation is left out when the record of that
+ * run has gone, because the automation was deleted or its older runs were pruned.
+ */
+export interface RunOrigin {
+  readonly runId: string;
+  readonly id?: string;
+  /** The name it had when it ran. */
+  readonly name?: string;
 }
 
 export interface RunRecord extends RunSummary {
@@ -140,8 +157,12 @@ export interface TakenPath {
 export interface AutomationStepRecord {
   readonly id: string;
   readonly state: StepState;
+  /** When the run reached it, in milliseconds since the epoch. Runs from before it was kept lack it. */
+  readonly startedAt?: number;
   /** The tool run of the latest attempt. */
   readonly toolRunId?: string;
+  /** The tool run of every attempt, in order. */
+  readonly toolRunIds?: readonly string[];
   /** Which try this is, for a step that retries. */
   readonly attempt?: number;
   readonly durationMs?: number;
@@ -182,6 +203,20 @@ export interface AutomationRunFinish {
   readonly paths: readonly TakenPath[];
 }
 
+/**
+ * One row of the history a person reads: a tool run, or an automation run standing for the tool
+ * runs it made. A step whose automation run is gone shows as a tool run, with its origin.
+ */
+export type HistoryEntry =
+  | ({ readonly kind: 'tool' } & RunSummary)
+  | ({ readonly kind: 'automation' } & AutomationRunSummary);
+
+/** What a history listing keeps. A tool also keeps the automation runs that ran it. */
+export interface HistoryFilter {
+  readonly toolId?: string | undefined;
+  readonly automationId?: string | undefined;
+}
+
 /** Names an automation run whose record went, so that its folder can go too. */
 export interface RemovedAutomationRun {
   readonly workspaceId: string;
@@ -205,6 +240,9 @@ interface SummaryRow {
   duration_ms: number | null;
   failure_kind: string | null;
   failure_message: string | null;
+  automation_run_id: string | null;
+  automation_id: string | null;
+  automation_name: string | null;
 }
 
 interface RecordRow extends SummaryRow {
@@ -296,6 +334,15 @@ function summaryOf(row: SummaryRow): RunSummary {
     ...(row.failure_kind === null
       ? {}
       : { failure: { kind: row.failure_kind, message: row.failure_message ?? '' } }),
+    ...(row.automation_run_id === null
+      ? {}
+      : {
+          automation: {
+            runId: row.automation_run_id,
+            ...(row.automation_id === null ? {} : { id: row.automation_id }),
+            ...(row.automation_name === null ? {} : { name: row.automation_name }),
+          },
+        }),
   };
 }
 
@@ -520,12 +567,74 @@ export class RunHistory {
     this.removeAutomationRuns('workspace_id = ? AND automation_id = ?', workspaceId, automationId);
   }
 
+  /** One automation run, whichever client started it. */
+  getAutomationRun(workspaceId: string, runId: string): AutomationRunSummary | undefined {
+    const row = this.database
+      .prepare<[string, string], AutomationRow>(
+        'SELECT * FROM automation_runs WHERE id = ? AND workspace_id = ?',
+      )
+      .get(runId, workspaceId);
+    return row === undefined ? undefined : automationSummaryOf(row);
+  }
+
+  /** The tool runs an automation run made, every retry included, in the order they started. */
+  stepRuns(workspaceId: string, automationRunId: string): readonly RunSummary[] {
+    return this.database
+      .prepare<[string, string], SummaryRow>(
+        `SELECT ${SUMMARY_COLUMNS} FROM ${RUNS_WITH_AUTOMATION}
+         WHERE r.workspace_id = ? AND r.automation_run_id = ?
+         ORDER BY r.started_at, r.rowid`,
+      )
+      .all(workspaceId, automationRunId)
+      .map(summaryOf);
+  }
+
+  /**
+   * Lists a Workspace's history as a person reads it, newest first: tool runs, and automation runs
+   * in place of the tool runs they made.
+   */
+  entries(workspaceId: string, filter: HistoryFilter = {}): readonly HistoryEntry[] {
+    const tools =
+      filter.automationId === undefined
+        ? this.database
+            .prepare<unknown[], SummaryRow>(
+              `SELECT ${SUMMARY_COLUMNS} FROM ${RUNS_WITH_AUTOMATION}
+               WHERE r.workspace_id = ? AND a.id IS NULL ${filter.toolId === undefined ? '' : 'AND r.tool_id = ?'}
+               ORDER BY r.started_at DESC, r.rowid DESC LIMIT ${String(LIST_LIMIT)}`,
+            )
+            .all(workspaceId, ...(filter.toolId === undefined ? [] : [filter.toolId]))
+            .map((row): HistoryEntry => ({ kind: 'tool', ...summaryOf(row) }))
+        : [];
+    const conditions = ['workspace_id = ?'];
+    const values: string[] = [workspaceId];
+    if (filter.automationId !== undefined) {
+      conditions.push('automation_id = ?');
+      values.push(filter.automationId);
+    }
+    if (filter.toolId !== undefined) {
+      conditions.push(
+        'id IN (SELECT automation_run_id FROM runs WHERE workspace_id = ? AND tool_id = ?)',
+      );
+      values.push(workspaceId, filter.toolId);
+    }
+    const automations = this.database
+      .prepare<unknown[], AutomationRow>(
+        `SELECT * FROM automation_runs WHERE ${conditions.join(' AND ')}
+         ORDER BY started_at DESC, rowid DESC LIMIT ${String(LIST_LIMIT)}`,
+      )
+      .all(...values)
+      .map((row): HistoryEntry => ({ kind: 'automation', ...automationSummaryOf(row) }));
+    return [...tools, ...automations]
+      .sort((a, b) => b.startedAt - a.startedAt)
+      .slice(0, LIST_LIMIT);
+  }
+
   /** Lists a Workspace's runs, newest first, leaving out what is too large to show in a list. */
   list(workspaceId: string, toolId?: string): readonly RunSummary[] {
-    const filter = toolId === undefined ? '' : 'AND tool_id = ?';
+    const filter = toolId === undefined ? '' : 'AND r.tool_id = ?';
     const statement = this.database.prepare<unknown[], SummaryRow>(
-      `SELECT ${SUMMARY_COLUMNS} FROM runs WHERE workspace_id = ? ${filter}
-       ORDER BY started_at DESC, rowid DESC LIMIT ${String(LIST_LIMIT)}`,
+      `SELECT ${SUMMARY_COLUMNS} FROM ${RUNS_WITH_AUTOMATION} WHERE r.workspace_id = ? ${filter}
+       ORDER BY r.started_at DESC, r.rowid DESC LIMIT ${String(LIST_LIMIT)}`,
     );
     const rows =
       toolId === undefined ? statement.all(workspaceId) : statement.all(workspaceId, toolId);
@@ -534,7 +643,10 @@ export class RunHistory {
 
   get(workspaceId: string, runId: string): RunRecord | undefined {
     const row = this.database
-      .prepare<[string, string], RecordRow>('SELECT * FROM runs WHERE id = ? AND workspace_id = ?')
+      .prepare<[string, string], RecordRow>(
+        `SELECT ${SUMMARY_COLUMNS}, r.parameters, r.output, r.output_truncated
+         FROM ${RUNS_WITH_AUTOMATION} WHERE r.id = ? AND r.workspace_id = ?`,
+      )
       .get(runId, workspaceId);
     return row === undefined
       ? undefined

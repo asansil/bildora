@@ -39,6 +39,7 @@ import type { CanvasCommand, CanvasCommands } from './automations/canvas/canvas-
 import { AutomationsPanel } from './automations/AutomationsPanel.js';
 import { LIBRARY_DRAG_TYPE } from './automations/canvas/Canvas.js';
 import { HistoryView } from './history/HistoryView.js';
+import type { HistoryFilter } from './history/HistoryView.js';
 import { ImportReview } from './import/ImportReview.js';
 import { CommandPalette } from './palette/CommandPalette.js';
 import type { Command } from './palette/CommandPalette.js';
@@ -125,6 +126,20 @@ function layoutOf(list: WorkspaceListView): WorkspaceLayoutView | undefined {
   return list.workspaces.find(({ id }) => id === list.activeId)?.layout;
 }
 
+/** The History filter a Workspace stored. A tool wins, as only one is ever stored. */
+function historyFilterOf(layout: WorkspaceLayoutView | undefined): HistoryFilter {
+  if (layout?.historyFilter !== undefined) return { toolId: layout.historyFilter };
+  if (layout?.historyAutomation !== undefined) return { automationId: layout.historyAutomation };
+  return {};
+}
+
+function historyLayout(filter: HistoryFilter): LayoutUpdate {
+  return {
+    historyFilter: filter.toolId ?? null,
+    historyAutomation: filter.automationId ?? null,
+  };
+}
+
 export function App() {
   const [catalog, setCatalog] = useState(EMPTY_CATALOG);
   const [loaded, setLoaded] = useState(false);
@@ -144,7 +159,11 @@ export function App() {
   const [historyRunLimit, setHistoryRunLimit] = useState(200);
   const [recent, setRecent] = useState(EMPTY_RECENT);
   const [tabs, setTabs] = useState<TabState>(NO_TABS);
-  const [historyFilter, setHistoryFilter] = useState<string | undefined>(undefined);
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>({});
+  /** Asks an automation tab to show one of its past runs; `count` repeats the same request. */
+  const [runShown, setRunShown] = useState<
+    { id: string; runId: string; count: number } | undefined
+  >(undefined);
   /** Tabs whose automation has edits that are not saved. */
   const [unsaved, setUnsaved] = useState<ReadonlySet<string>>(NO_KEYS);
   /** Tabs waiting to close, the first of which is asking the user. */
@@ -199,7 +218,7 @@ export function App() {
     const restored = fromLayout(layout);
     tabsNow.current = restored;
     setTabs(restored);
-    setHistoryFilter(layout?.historyFilter);
+    setHistoryFilter(historyFilterOf(layout));
     setUnsaved(NO_KEYS);
     setClosing([]);
   }
@@ -217,7 +236,7 @@ export function App() {
         const restored = fromLayout(layout);
         tabsNow.current = restored;
         setTabs(restored);
-        setHistoryFilter(layout?.historyFilter);
+        setHistoryFilter(historyFilterOf(layout));
         setPanelWidth(layout?.panelWidth ?? PANEL_WIDTH_DEFAULT);
         setAutomationPanels(layout?.automationPanels ?? NO_PANELS);
         setCanvasOptions(layout?.automationCanvas ?? NO_CANVAS_OPTIONS);
@@ -279,7 +298,10 @@ export function App() {
   const historyShown = tabs.activeKey === tabKey(HISTORY_TAB);
   // History stays mounted behind other tabs, so coming back to it reads the runs again, which
   // may include some the command line made meanwhile.
-  const historyRevision = useMemo(() => ({ runs, historyShown }), [runs, historyShown]);
+  const historyRevision = useMemo(
+    () => ({ runs, automationRuns, historyShown }),
+    [runs, automationRuns, historyShown],
+  );
 
   function toolOf(tab: TabRef): ToolView | undefined {
     return tab.kind === 'tool' ? allTools.find((item) => item.id === tab.id) : undefined;
@@ -608,11 +630,9 @@ export function App() {
     });
   }
 
-  function showHistory(toolId?: string): void {
-    setHistoryFilter(toolId);
-    changeTabs((state) => open(state, HISTORY_TAB, { pin: true }), {
-      historyFilter: toolId ?? null,
-    });
+  function showHistory(filter: HistoryFilter = {}): void {
+    setHistoryFilter(filter);
+    changeTabs((state) => open(state, HISTORY_TAB, { pin: true }), historyLayout(filter));
   }
 
   function questionFor(key: string, state: TabState): CloseQuestion | undefined {
@@ -1002,11 +1022,19 @@ export function App() {
       return (
         <HistoryView
           tools={allTools}
-          toolId={historyFilter}
+          automations={automations.automations}
+          filter={historyFilter}
           revision={historyRevision}
-          onToolId={(toolId) => {
-            setHistoryFilter(toolId);
-            saveWorkspace({ layout: { historyFilter: toolId ?? null } });
+          onFilter={(filter) => {
+            setHistoryFilter(filter);
+            saveWorkspace({ layout: historyLayout(filter) });
+          }}
+          onOpenAutomation={(id) => {
+            openTab({ kind: 'automation', id }, true);
+          }}
+          onShowRun={(id, runId) => {
+            setRunShown((asked) => ({ id, runId, count: (asked?.count ?? 0) + 1 }));
+            openTab({ kind: 'automation', id }, true);
           }}
           onError={report}
         />
@@ -1054,6 +1082,11 @@ export function App() {
           renameRequest={
             renaming !== undefined && renaming.id === tab.id ? renaming.count : undefined
           }
+          showRunRequest={
+            runShown !== undefined && runShown.id === tab.id
+              ? { runId: runShown.runId, count: runShown.count }
+              : undefined
+          }
         />
       );
     }
@@ -1092,7 +1125,7 @@ export function App() {
           launch(tool, request);
         }}
         onHistory={() => {
-          showHistory(tool.id);
+          showHistory({ toolId: tool.id });
         }}
         onUsed={() => {
           pinTab(tab.key);

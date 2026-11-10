@@ -100,6 +100,8 @@ export interface WorkspaceLayout {
   readonly activeTab?: string;
   /** The tool id the History tab is filtered by. */
   readonly historyFilter?: string;
+  /** The automation id the History tab is filtered by, when no tool is. */
+  readonly historyAutomation?: string;
   /** Ids of the tools whose form answers their console script, absent when there are none. */
   readonly scriptAnswers?: readonly string[];
   readonly automationPanels?: AutomationPanels;
@@ -131,6 +133,7 @@ export interface LayoutChanges {
   readonly tabs?: readonly TabChange[] | undefined;
   readonly activeTab?: string | null | undefined;
   readonly historyFilter?: string | null | undefined;
+  readonly historyAutomation?: string | null | undefined;
   /** Replaces the list. An empty one clears it. */
   readonly scriptAnswers?: readonly string[] | undefined;
   /** Replaces the panels. A size out of limits is dropped, and `null` clears them. */
@@ -286,13 +289,14 @@ function layoutOf(value: unknown): WorkspaceLayout {
   }
   const fields: Record<string, unknown> = { ...value };
   const { categoryOrder, panelWidth, openCategory, tabs, activeTab, historyFilter } = fields;
-  const { scriptAnswers, automationPanels, automationCanvas } = fields;
+  const { scriptAnswers, automationPanels, automationCanvas, historyAutomation } = fields;
   return withTabs(
     {
       categoryOrder: stringsIn(categoryOrder),
       ...(isPanelWidth(panelWidth) ? { panelWidth } : {}),
       ...(typeof openCategory === 'string' ? { openCategory } : {}),
       ...(typeof historyFilter === 'string' ? { historyFilter } : {}),
+      ...(typeof historyAutomation === 'string' ? { historyAutomation } : {}),
       ...scriptAnswersOf(stringsIn(scriptAnswers)),
       ...automationPanelsOf(automationPanels),
       ...automationCanvasOf(automationCanvas),
@@ -455,12 +459,14 @@ function changedLayout(layout: WorkspaceLayout, changes: LayoutChanges): Workspa
   const { categoryOrder = layout.categoryOrder, panelWidth = layout.panelWidth } = changes;
   const openCategory = merged(layout.openCategory, changes.openCategory);
   const historyFilter = merged(layout.historyFilter, changes.historyFilter);
+  const historyAutomation = merged(layout.historyAutomation, changes.historyAutomation);
   return withTabs(
     {
       categoryOrder,
       ...(panelWidth === undefined ? {} : { panelWidth }),
       ...(openCategory === undefined ? {} : { openCategory }),
       ...(historyFilter === undefined ? {} : { historyFilter }),
+      ...(historyAutomation === undefined ? {} : { historyAutomation }),
       ...scriptAnswersOf(changes.scriptAnswers ?? layout.scriptAnswers ?? []),
       ...automationPanelsOf(merged(layout.automationPanels, changes.automationPanels)),
       ...automationCanvasOf(merged<unknown>(layout.automationCanvas, changes.automationCanvas)),

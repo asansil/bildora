@@ -317,9 +317,18 @@ export function registerIpc(context: IpcContext): void {
     tools.removeProfile(toolId, id),
   );
 
-  handle(CHANNELS.historyList, historyListSchema, ({ toolId }) =>
-    history.list(workspaces.activeId, toolId),
+  handle(CHANNELS.historyList, historyListSchema, (filter) =>
+    history.entries(workspaces.activeId, filter),
   );
+  handle(CHANNELS.historyAutomationRun, runIdSchema, ({ runId }) => {
+    const run = history.getAutomationRun(workspaces.activeId, runId);
+    return run === undefined
+      ? undefined
+      : {
+          run: { kind: 'automation' as const, ...run },
+          toolRuns: history.stepRuns(workspaces.activeId, runId),
+        };
+  });
   handle(CHANNELS.historyGet, runIdSchema, ({ runId }) => history.get(workspaces.activeId, runId));
   handle(CHANNELS.historyRecent, noInputSchema, () =>
     history.recentToolIds(workspaces.activeId, RECENT_TOOLS_LIMIT),

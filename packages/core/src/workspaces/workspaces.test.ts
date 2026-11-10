@@ -89,14 +89,19 @@ describe('Workspaces', () => {
         layout: { historyFilter: 'a', openCategory: 'x', panelWidth: 300 },
       });
       const updated = await updateWorkspace(dataDir, 'work', {
-        layout: { historyFilter: null, categoryOrder: ['x'] },
+        layout: { historyFilter: null, historyAutomation: 'nightly', categoryOrder: ['x'] },
       });
       expect(updated.layout).toEqual({
         categoryOrder: ['x'],
         panelWidth: 300,
         openCategory: 'x',
+        historyAutomation: 'nightly',
         tabs: [],
       });
+      const cleared = await updateWorkspace(dataDir, 'work', {
+        layout: { historyAutomation: null },
+      });
+      expect(cleared.layout.historyAutomation).toBeUndefined();
     });
 
     it('remembers which tools answer their console script', async () => {

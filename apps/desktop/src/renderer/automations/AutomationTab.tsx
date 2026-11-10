@@ -346,6 +346,8 @@ interface AutomationTabProps {
   readonly onError: (error: unknown) => void;
   /** Changes each time the sidebar asks to rename the automation: its name field is selected. */
   readonly renameRequest?: number | undefined;
+  /** Asks to show one of its past runs; a new `count` asks again. */
+  readonly showRunRequest?: { readonly runId: string; readonly count: number } | undefined;
   /** Given while this tab is on view, so the app's menus act on its canvas. */
   readonly onCommands?: ((commands: CanvasCommands | undefined) => void) | undefined;
 }
@@ -378,6 +380,7 @@ function FlowEditor({
   onError,
   onCommands,
   renameRequest,
+  showRunRequest,
 }: AutomationTabProps) {
   const [saved, setSaved] = useState(() => documentOf(automation));
   const [history, setHistory] = useState(() => startHistory(saved));
@@ -450,6 +453,20 @@ function FlowEditor({
       setSaved(next);
       if (!dirty) setDocument(next);
     }
+  }
+
+  // History asks for a past run, which shows once the list of past runs holds it.
+  const [handledShow, setHandledShow] = useState<number | undefined>(undefined);
+  const askedRun =
+    showRunRequest === undefined || showRunRequest.count === handledShow
+      ? undefined
+      : past.find(({ runId }) => runId === showRunRequest.runId);
+  if (askedRun !== undefined && showRunRequest !== undefined) {
+    setHandledShow(showRunRequest.count);
+    setView({ kind: 'past', record: askedRun });
+    setSelected(new Set());
+    setRefusal(undefined);
+    setLower('runs');
   }
 
   // A run that starts takes the canvas, so the person sees it move.

@@ -137,7 +137,10 @@ export const saveProfileSchema = z.strictObject({
   secrets: secretsSchema.optional(),
 });
 export const removeProfileSchema = z.strictObject({ toolId: idSchema, id: idSchema });
-export const historyListSchema = z.strictObject({ toolId: idSchema.optional() });
+export const historyListSchema = z.strictObject({
+  toolId: idSchema.optional(),
+  automationId: idSchema.optional(),
+});
 export const preferencesSchema = z.strictObject({
   historyRunLimit: z.int().min(1).max(HISTORY_RUN_LIMIT_MAX).optional(),
 });
@@ -168,6 +171,7 @@ export const updateWorkspaceSchema = z.strictObject({
       tabs: z.array(workspaceTabSchema).max(WORKSPACE_TABS_MAX).optional(),
       activeTab: textSchema.nullable().optional(),
       historyFilter: idSchema.nullable().optional(),
+      historyAutomation: idSchema.nullable().optional(),
       scriptAnswers: z.array(idSchema).max(SCRIPT_ANSWERS_MAX).optional(),
       automationPanels: z
         .strictObject({
@@ -240,6 +244,8 @@ export interface WorkspaceLayoutView {
   readonly activeTab?: string;
   /** The tool id the History tab is filtered by. */
   readonly historyFilter?: string;
+  /** The automation id the History tab is filtered by, when no tool is. */
+  readonly historyAutomation?: string;
   /** Ids of the tools whose form answers their console script. */
   readonly scriptAnswers?: readonly string[];
   /** How the panels around the automation canvas were left, shared by every automation tab. */
@@ -445,6 +451,16 @@ export interface HistorySummaryView {
   readonly exitCode?: number;
   readonly durationMs?: number;
   readonly failure?: { readonly kind: string; readonly message: string };
+  /**
+   * Set when the run was a step of an automation. `id` and `name` are left out once the record of
+   * that automation run has gone, because the automation was deleted or the run was pruned.
+   */
+  readonly automation?: {
+    readonly runId: string;
+    readonly id?: string;
+    /** The name it had when it ran. */
+    readonly name?: string;
+  };
 }
 
 /** Something that keeps an automation from running, worded by the shell from its code. */
@@ -477,7 +493,11 @@ export interface StepRunView {
   /** The kind of block, as in the file. */
   readonly type?: string;
   readonly state: StepStateView;
+  /** When the run reached it, in milliseconds since the epoch. */
+  readonly startedAt?: number;
   readonly toolRunId?: string;
+  /** The tool run of every attempt, in order. */
+  readonly toolRunIds?: readonly string[];
   readonly attempt?: number;
   readonly durationMs?: number;
   readonly failure?: { readonly kind: string; readonly message: string };
@@ -522,6 +542,23 @@ export interface AutomationRunRecordView {
   readonly format: 'steps' | 'blocks';
   readonly steps: readonly StepRunView[];
   readonly paths: readonly TakenPathView[];
+}
+
+/** One row of Run history: a tool run, or an automation run standing for the tool runs it made. */
+export type HistoryEntryView =
+  | ({ readonly kind: 'tool' } & HistorySummaryView)
+  | ({
+      readonly kind: 'automation';
+      readonly automationId: string;
+      /** The name it had when it ran. */
+      readonly automationName: string;
+    } & AutomationRunRecordView);
+
+/** An automation run in Run history, with the tool runs it made, every retry included. */
+export interface HistoryAutomationRunView {
+  readonly run: Extract<HistoryEntryView, { kind: 'automation' }>;
+  /** In the order they started. */
+  readonly toolRuns: readonly HistorySummaryView[];
 }
 
 export interface HistoryRecordView extends HistorySummaryView {
