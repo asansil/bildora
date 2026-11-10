@@ -589,8 +589,9 @@ test('a list of steps from before blocks still runs, and is rewritten only when 
   await window.getByLabel('Description', { exact: true }).fill('Converted');
   await window.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+  // Save is also disabled while it writes, so the file is read once it has changed.
+  await expect.poll(() => readFile(old, 'utf8')).toContain('schemaVersion: 2');
   const saved = await readFile(old, 'utf8');
-  expect(saved).toContain('schemaVersion: 2');
   expect(saved).toContain('blocks:');
   expect(saved).toContain('positions:');
 });

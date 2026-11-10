@@ -142,8 +142,9 @@ test('a file with no positions opens laid out, and saving keeps the positions', 
   await drag(window, block(window, 'extract'), { x: 0, y: 120 });
   await window.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+  // Save is also disabled while it writes, so the file is read once it has changed.
+  await expect.poll(() => readFile(automationFile('branched'), 'utf8')).toContain('positions:');
   const text = await readFile(automationFile('branched'), 'utf8');
-  expect(text).toContain('positions:');
   expect(text).toMatch(/report:\s*\n\s+x:/);
 });
 
@@ -228,8 +229,10 @@ test('notes and groups are kept in the file, and a group moves its blocks', asyn
 
   await window.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+  await expect
+    .poll(() => readFile(automationFile('branched'), 'utf8'))
+    .toContain('Runs every night');
   const text = await readFile(automationFile('branched'), 'utf8');
-  expect(text).toContain('Runs every night');
   expect(text).toMatch(/groups:\s*\n\s+- id: group\s*\n\s+name: Prepare/);
 });
 
@@ -385,7 +388,9 @@ test('a Switch takes the case that holds, and parallel branches meet at the Join
   });
   await window.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
-  expect(await readFile(automationFile('forked'), 'utf8')).toContain('onBranchFailure: let-finish');
+  await expect
+    .poll(() => readFile(automationFile('forked'), 'utf8'))
+    .toContain('onBranchFailure: let-finish');
   await shot(window, 'switch-parallel');
 
   await window.getByRole('button', { name: 'Run', exact: true }).click();
