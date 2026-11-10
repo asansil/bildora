@@ -51,6 +51,12 @@ switch (mode) {
   case 'sleep':
     sleepForever();
     break;
+  case 'write': {
+    // Writes <text> to <file>, for tests of the values a tool receives and the files it leaves.
+    const [file, text = ''] = rest;
+    writeFileSync(file, text);
+    break;
+  }
   case 'report': {
     // For tools with a window of their own, whose output cannot be read. `rest` is <file> <then>.
     const [file, then] = rest;

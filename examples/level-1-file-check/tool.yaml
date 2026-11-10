@@ -1,0 +1,47 @@
+# A sample level 1 tool that returns values. The script writes a JSON file next to its work, and
+# the manifest declares that file and its fields, so later blocks of an automation can read them,
+# as in `= steps.check.outputs.summary.lines`, and an If can decide on them. Run by hand, the
+# script works the same: it only writes a file.
+schemaVersion: 1
+id: bildora.sample.file-check
+name: File Check
+version: 1.0.0
+level: 1
+category: Samples
+description: Checks a text file and writes a summary that automations can read.
+interpreter: node
+permissions:
+  - filesystem.read
+  - filesystem.write
+run:
+  program: check.mjs
+parameters:
+  - name: file
+    type: path
+    label: File
+    description: The text file to check.
+    required: true
+    flag: --file
+  - name: out
+    type: path
+    label: Summary folder
+    description: Where summary.json goes.
+    required: true
+    flag: --out
+  - name: maxLength
+    type: integer
+    label: Longest line allowed
+    default: 120
+    flag: --max-length
+outputs:
+  - name: summary
+    description: What the check found.
+    # Paths can use the values the tool ran with, and path variables.
+    json: '{{params.out}}/summary.json'
+    fields:
+      - { name: lines, type: integer, description: Lines in the file. }
+      - { name: words, type: integer, description: Words in the file. }
+      - { name: empty, type: boolean, description: Whether the file holds nothing. }
+      - { name: longest, type: integer, description: Length of the longest line. }
+      - { name: tooLong, type: list, description: 'Numbers of the lines longer than allowed.' }
+      - { name: name, type: string, description: The file's name. }

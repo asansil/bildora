@@ -1,15 +1,29 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
-import { dirname, isAbsolute, normalize, resolve } from 'node:path';
+import { access, mkdir } from 'node:fs/promises';
+import { normalize } from 'node:path';
 import {
   DEFAULT_CASE,
+  ExpressionError,
   automationRuleIssues,
   connectionOutput,
+  expressionsOf,
   findStepOutputReferences,
+  isExpressionValue,
   replaceRunReferences,
+  runtimeText,
+  targetsOf,
+  toParameterValue,
   usesRunFolder,
+  valueRuleHolds,
 } from '@bildora/protocol';
-import type { AutomationBlock, AutomationCondition, Automation, RunBlock } from '@bildora/protocol';
+import type {
+  AutomationBlock,
+  AutomationCondition,
+  Automation,
+  LiteralValue,
+  RunBlock,
+  RuntimeValue,
+} from '@bildora/protocol';
 import type {
   AutomationFailure,
   AutomationStepRecord,
@@ -17,20 +31,29 @@ import type {
   AutomationTrigger,
   RunHistory,
 } from '../history/run-history.js';
+import { getProfile } from '../profiles/profile-store.js';
+import type { Profile } from '../profiles/profile-store.js';
 import type { RegisteredTool } from '../registry/tool-registry.js';
 import type { ParameterValue, ParameterValues } from '../runner/command-line.js';
-import { expandPath } from '../runner/expand-paths.js';
 import type { PathVariables } from '../runner/expand-paths.js';
 import type { RunProgress } from '../runner/progress-lines.js';
 import type { RecordedToolRun } from '../runner/recorded-run.js';
 import { automationRunFolder } from '../storage/data-directory.js';
 import { DEFAULT_PREFERENCES, readPreferences } from '../storage/preferences.js';
+import { resolveInputs } from './automation-inputs.js';
 import { removeRunFolders } from './automation-store.js';
+import { evaluateInRun, parametersOf } from './automation-values.js';
+import type { OutputValue, RunValueContext } from './automation-values.js';
+import { limitStepData, stepOutputs, stepValues } from './step-data.js';
+import { OutputError, readToolOutputs, secretOutputFields } from './tool-outputs.js';
 
 const MS_PER_SECOND = 1000;
 
 /** A step refers to something an earlier step did not leave. */
 class MissingOutputError extends Error {}
+
+/** A value of a step could not be worked out. */
+class ValueError extends Error {}
 
 /** A condition reads something a block did not leave. */
 class ConditionError extends Error {}
@@ -62,6 +85,11 @@ export interface AutomationRunOptions {
   readonly automation: Automation;
   readonly workspaceId: string;
   readonly trigger: AutomationTrigger;
+  /**
+   * Values for the inputs its Start block declares, by name. Defaults fill the rest. Values that do
+   * not fit make `startAutomationRun` throw an `InputError` before anything runs.
+   */
+  readonly inputs?: Readonly<Record<string, LiteralValue>> | undefined;
   readonly dataDir: string;
   readonly history: RunHistory;
   readonly startStep: StepStarter;
@@ -143,6 +171,7 @@ function waitFor(milliseconds: number, signal: AbortSignal): Promise<void> {
 /** A step without what only matters while it is going on. */
 function recordOf(step: StepView): AutomationStepRecord {
   const { id, state, startedAt, toolRunId, toolRunIds, attempt, durationMs, failure } = step;
+  const { values, outputs, truncated } = step;
   return {
     id,
     state,
@@ -152,37 +181,20 @@ function recordOf(step: StepView): AutomationStepRecord {
     ...(attempt === undefined ? {} : { attempt }),
     ...(durationMs === undefined ? {} : { durationMs }),
     ...(failure === undefined ? {} : { failure }),
+    ...(values === undefined ? {} : { values }),
+    ...(outputs === undefined ? {} : { outputs }),
+    ...(truncated === undefined ? {} : { truncated }),
   };
 }
 
-/** What a tool wrote where it declared, now that its step has run. Secret values never get here. */
-function outputsOf(
-  tool: RegisteredTool,
-  run: RecordedToolRun,
-  variables: PathVariables,
-): ReadonlyMap<string, string> {
-  const { manifest } = tool;
-  const outputs = new Map<string, string>();
-  if (manifest.level !== 1) {
-    return outputs;
+/** Tells whether a path names something that is there. */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
   }
-  for (const output of manifest.outputs) {
-    if ('param' in output) {
-      const value = run.parameters.find(({ name }) => name === output.param)?.value;
-      if (typeof value === 'string' && value !== '') {
-        outputs.set(output.name, value);
-      }
-    } else {
-      try {
-        const path = expandPath(output.path, variables);
-        const base = dirname(expandPath(manifest.run.program, variables));
-        outputs.set(output.name, isAbsolute(path) ? path : resolve(base, path));
-      } catch {
-        // A variable with no value leaves the output unknown, which a step using it will report.
-      }
-    }
-  }
-  return outputs;
 }
 
 /** Where a path of blocks runs, so that a Parallel can end its branches without ending the rest. */
@@ -249,6 +261,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
   if (broken !== undefined) {
     throw new Error(`The automation cannot run: ${broken.message}`);
   }
+  const inputs = resolveInputs(automation, options.inputs);
   const variables: PathVariables = pathVariables ?? new Map<string, string>();
   const delay = options.delay ?? waitFor;
   const runId = options.runId ?? randomUUID();
@@ -259,7 +272,21 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
   const steps = new Map<string, StepView>(
     automation.blocks.map(({ id, type }) => [id, { id, type, state: 'idle' }]),
   );
-  const outputs = new Map<string, ReadonlyMap<string, string>>();
+  const outputs = new Map<string, ReadonlyMap<string, OutputValue>>();
+  /** Tools and profiles of every run block, which links read; filled when the run begins. */
+  const tools = new Map<string, RegisteredTool>();
+  const profiles = new Map<string, Profile>();
+  const runFolder = automationRunFolder(dataDir, workspaceId, automation.id, runId);
+  const usesFolder = automation.blocks.some(
+    (block) =>
+      (block.type === 'run' &&
+        Object.values(block.values ?? {}).some(
+          (value) => typeof value === 'string' && usesRunFolder(value),
+        )) ||
+      expressionsOf([block]).some(({ expression }) =>
+        targetsOf(expression).some(({ target }) => target.kind === 'run-folder'),
+      ),
+  );
   const results = new Map<string, BlockResult>();
   /** A block reached from several paths still runs once. */
   const reached = new Set<string>();
@@ -340,31 +367,90 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       .map(({ to }) => to);
   }
 
+  /** What an earlier block left, a field of a JSON output included. */
+  function outputValue(step: string, output: string, field?: string): RuntimeValue | undefined {
+    const left = outputs.get(step)?.get(output);
+    return field === undefined ? left?.value : left?.fields?.get(field);
+  }
+
+  /** Replaces `{{...}}` references in a text value. A path is tidied once something replaced. */
+  function expandText(value: string, isPath: boolean): string {
+    for (const { step, output, field } of findStepOutputReferences(value)) {
+      if (outputValue(step, output, field) === undefined) {
+        const what = field === undefined ? output : `${output}.${field}`;
+        throw new MissingOutputError(`Step "${step}" did not produce output "${what}"`);
+      }
+    }
+    const replaced = replaceRunReferences(value, {
+      runFolder: () => runFolder,
+      stepOutput: ({ step, output, field }) => runtimeText(outputValue(step, output, field) ?? ''),
+    });
+    return replaced !== value && isPath ? normalize(replaced) : replaced;
+  }
+
+  function valueContext(): RunValueContext {
+    return {
+      automation,
+      tools,
+      profiles,
+      inputs,
+      outputs,
+      runFolder,
+      pathVariables: variables,
+      expandText,
+    };
+  }
+
+  /** Works out an expression. A missing output reads as a missing reference, as in text. */
+  function worked(text: string, what: string): RuntimeValue {
+    try {
+      return evaluateInRun(valueContext(), text);
+    } catch (error) {
+      if (!(error instanceof ExpressionError)) throw error;
+      const message = `${what}: ${error.message}`;
+      throw error.code === 'name' ? new MissingOutputError(message) : new ValueError(message);
+    }
+  }
+
   async function valuesFor(step: RunBlock, tool: RegisteredTool): Promise<ParameterValues> {
-    const parameters = tool.manifest.level === 1 ? tool.manifest.parameters : [];
+    if (usesFolder) {
+      await mkdir(runFolder, { recursive: true });
+    }
+    const parameters = parametersOf(tool);
     const values: Record<string, ParameterValue> = {};
     for (const [name, value] of Object.entries(step.values ?? {})) {
-      const isPath = parameters.some((item) => item.name === name && item.type === 'path');
-      values[name] = isPath && typeof value === 'string' ? await expanded(value) : value;
+      const parameter = parameters.find((item) => item.name === name);
+      if (isExpressionValue(value)) {
+        // The check before the run reports a parameter the tool does not have.
+        if (parameter === undefined) continue;
+        const result = worked(value.expression, parameter.label);
+        try {
+          values[name] = toParameterValue(result, parameter.type, { start: 0, end: 0 });
+        } catch (error) {
+          if (!(error instanceof ExpressionError)) throw error;
+          throw new ValueError(`${parameter.label}: ${error.message}`);
+        }
+        continue;
+      }
+      const isText = parameter?.type === 'path' || parameter?.type === 'string';
+      values[name] =
+        isText && typeof value === 'string' ? expandText(value, parameter.type === 'path') : value;
     }
     return values;
   }
 
-  async function expanded(value: string): Promise<string> {
-    const folder = automationRunFolder(dataDir, workspaceId, automation.id, runId);
-    if (usesRunFolder(value)) {
-      await mkdir(folder, { recursive: true });
-    }
-    for (const { step, output } of findStepOutputReferences(value)) {
-      if (outputs.get(step)?.get(output) === undefined) {
-        throw new MissingOutputError(`Step "${step}" did not produce output "${output}"`);
-      }
-    }
-    const replaced = replaceRunReferences(value, {
-      runFolder: () => folder,
-      stepOutput: ({ step, output }) => outputs.get(step)?.get(output) ?? '',
+  /** Keeps what a block received and produced on its step, within the limit history allows. */
+  function recordData(id: string, data: Pick<StepView, 'values' | 'outputs'>): void {
+    const current = stepView(id);
+    const limited = limitStepData(
+      data.values ?? current.values ?? [],
+      data.outputs ?? current.outputs ?? [],
+    );
+    setStep(id, {
+      values: limited.values,
+      outputs: limited.outputs,
+      ...(limited.truncated === undefined ? {} : { truncated: limited.truncated }),
     });
-    return replaced === value ? value : normalize(replaced);
   }
 
   async function runOnce(step: RunBlock, scope: Scope): Promise<StepOutcome> {
@@ -382,9 +468,9 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     try {
       values = await valuesFor(step, tool);
     } catch (error) {
-      return error instanceof MissingOutputError
-        ? failed('reference', error.message)
-        : failed('not-started', 'The run folder could not be created');
+      if (error instanceof MissingOutputError) return failed('reference', error.message);
+      if (error instanceof ValueError) return failed('value', error.message);
+      return failed('not-started', 'The run folder could not be created');
     }
     if (isCancelled()) {
       return { status: 'cancelled' };
@@ -409,13 +495,24 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       toolRunId: run.runId,
       toolRunIds: [...(stepView(step.id).toolRunIds ?? []), run.runId],
     });
+    recordData(step.id, { values: stepValues(step, run.parameters), outputs: [] });
     if (isCancelled()) {
       run.cancel();
     }
     const result = await run.result;
     scope.live.delete(run);
     if (result.status === 'completed') {
-      outputs.set(step.id, outputsOf(tool, run, variables));
+      let left: ReadonlyMap<string, OutputValue>;
+      try {
+        left = await readToolOutputs(tool, run, variables);
+      } catch (error) {
+        if (!(error instanceof OutputError)) throw error;
+        // The tool ended well, but what it left cannot be used, so the block fails.
+        results.set(step.id, { result: 'failed', exitCode: 0 });
+        return failed('output', error.message);
+      }
+      outputs.set(step.id, left);
+      recordData(step.id, { outputs: stepOutputs(left, secretOutputFields(tool)) });
       results.set(step.id, { result: 'completed', exitCode: 0 });
       return { status: 'completed' };
     }
@@ -501,7 +598,27 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     }
   }
 
-  function ruleHolds(rule: AutomationCondition['rules'][number]): boolean {
+  /** Works out a value a rule reads. One that cannot be worked out fails the block. */
+  function ruleValue(text: string): RuntimeValue {
+    try {
+      return worked(text, 'A rule');
+    } catch (error) {
+      if (error instanceof MissingOutputError || error instanceof ValueError) {
+        throw new ConditionError(error.message);
+      }
+      throw error;
+    }
+  }
+
+  async function ruleHolds(rule: AutomationCondition['rules'][number]): Promise<boolean> {
+    if (rule.field === 'value') {
+      const read = ruleValue(rule.read.expression);
+      const value = isExpressionValue(rule.value) ? ruleValue(rule.value.expression) : rule.value;
+      const asksDisk = rule.operator === 'exists' || rule.operator === 'not-exists';
+      const path = runtimeText(read);
+      const exists = asksDisk && path !== '' && (await pathExists(path));
+      return valueRuleHolds(rule.operator, read, value, exists);
+    }
     const known = results.get(rule.block);
     if (rule.field === 'result') {
       const actual = known?.result ?? 'skipped';
@@ -523,8 +640,21 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     }
   }
 
-  function holds({ match, rules }: AutomationCondition): boolean {
-    return match === 'all' ? rules.every(ruleHolds) : rules.some(ruleHolds);
+  /** Rules are read in order, and stop as soon as the answer is known. */
+  async function holds({ match, rules }: AutomationCondition): Promise<boolean> {
+    for (const rule of rules) {
+      const holding = await ruleHolds(rule);
+      if (match === 'all' && !holding) return false;
+      if (match === 'any' && holding) return true;
+    }
+    return match === 'all';
+  }
+
+  async function firstCase(block: Extract<AutomationBlock, { type: 'switch' }>): Promise<string> {
+    for (const { id, condition } of block.cases) {
+      if (await holds(condition)) return id;
+    }
+    return DEFAULT_CASE;
   }
 
   /** Follows the connections of an output. Only a Parallel leaves one with several. */
@@ -619,14 +749,14 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
           region,
         );
       case 'if': {
-        const taken = holds(block.condition);
+        const taken = await holds(block.condition);
         passThrough(block.id);
         return leave(block.id, taken ? 'true' : 'false', scope, region);
       }
       case 'switch': {
-        const taken = block.cases.find(({ condition }) => holds(condition));
+        const taken = await firstCase(block);
         passThrough(block.id);
-        return leave(block.id, taken?.id ?? DEFAULT_CASE, scope, region);
+        return leave(block.id, taken, scope, region);
       }
       case 'parallel':
         return runParallel(block, scope, region);
@@ -676,6 +806,17 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       });
     });
     change();
+
+    // Links read what any block is set to, wherever it sits, so every tool and profile is known first.
+    for (const block of automation.blocks) {
+      if (block.type !== 'run') continue;
+      const tool = await options.findTool(block.tool).catch(() => undefined);
+      if (tool === undefined) continue;
+      tools.set(block.id, tool);
+      if (block.profile === undefined) continue;
+      const profile = await getProfile(tool, block.profile).catch(() => undefined);
+      if (profile !== undefined) profiles.set(block.id, profile);
+    }
 
     const start = automation.blocks.find(({ type }) => type === 'start');
     if (start !== undefined) {

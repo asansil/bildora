@@ -252,7 +252,18 @@ describe('checkAutomation', () => {
       { name: 'mode', type: 'choice', label: 'Mode', choices: ['a', 'b'], flag: '--mode' },
       { name: 'token', type: 'string', label: 'Token', secret: true, flag: '--token' },
     ],
-    outputs: [{ name: 'csv', param: 'out' }],
+    outputs: [
+      { name: 'csv', param: 'out' },
+      {
+        name: 'result',
+        json: 'result.json',
+        fields: [
+          { name: 'count', type: 'integer' },
+          { name: 'files', type: 'list' },
+          { name: 'token', type: 'string', secret: true },
+        ],
+      },
+    ],
   };
 
   async function problems(steps: AutomationV1Input['steps']): Promise<readonly string[]> {
@@ -334,7 +345,7 @@ describe('checkAutomation', () => {
       'a: The tool has no parameter "nope"',
       'a: "count" does not fit a integer parameter',
       'a: "mode" does not fit a choice parameter',
-      'a: "note" is not a path parameter, so it cannot hold a reference',
+      'a: Step "a" does not finish on every path that reaches this block, so its output may not exist',
     ]);
   });
 
@@ -524,6 +535,187 @@ describe('checkAutomation', () => {
           ],
         ),
       ).toEqual([]);
+    });
+  });
+
+  describe('links and expressions', () => {
+    const chain = (...ids: string[]) =>
+      ['start', ...ids].slice(1).map((to, index) => ({ from: ['start', ...ids][index], to }));
+    const step = (id: string, values: object = {}) => ({
+      id,
+      type: 'run',
+      tool: 'declared',
+      values: { in: 'C:\\in', ...values },
+    });
+    const link = (expression: string) => ({ expression });
+    async function blockProblems(blocks: object[], connections: object[], start: object = {}) {
+      const automation = automationSchema.parse({
+        schemaVersion: 2,
+        id: 'flow',
+        name: 'Flow',
+        blocks: [{ id: 'start', type: 'start', ...start }, ...blocks],
+        connections,
+      });
+      const found = await checkAutomation(automation, registry, 'work');
+      return found.map(({ blockId, message }) => `${blockId ?? ''}: ${message}`);
+    }
+
+    it('accepts links to any block, before or after, and to inputs', async () => {
+      const inputs = [{ name: 'size', type: 'integer' }];
+      expect(
+        await blockProblems(
+          [
+            step('a', { out: link('b.out'), count: link('inputs.size * 2') }),
+            step('b', { out: 'C:\\b.csv', note: link('name(a.out) + "_" + a.count') }),
+          ],
+          chain('a', 'b'),
+          { inputs },
+        ),
+      ).toEqual([]);
+    });
+
+    it('reports missing blocks, parameters, inputs and secrets', async () => {
+      expect(
+        await blockProblems(
+          [
+            step('a', {
+              out: link('gone.out'),
+              note: link('b.nothing'),
+              count: link('inputs.size'),
+              mode: link('b.token'),
+            }),
+            step('b'),
+          ],
+          chain('a', 'b'),
+        ),
+      ).toEqual([
+        'a: "Output" links to block "gone", which does not exist',
+        'a: "Note" links to "b.nothing", and that tool has no such parameter',
+        'a: "Count" reads input "size", which does not exist',
+        'a: "Mode" links to "b.token", which is secret and cannot be linked',
+      ]);
+    });
+
+    it('reports a link to a block with no tool values, and expressions that do not fit', async () => {
+      expect(
+        await blockProblems(
+          [
+            step('a', {
+              out: link('start.x'),
+              note: link('1 +'),
+              count: link('a.note'),
+              mode: link('upper(1)'),
+            }),
+          ],
+          chain('a'),
+        ),
+      ).toEqual([
+        'a: "Output" links to "start", which runs no tool and so has no values',
+        'a: The value of "Note" cannot be read: The expression ends too early',
+        'a: The value of "Count" does not fit: it gives text, and needs a whole number',
+        'a: The value of "Mode" does not fit: Needs text or a path here, and this is a whole number',
+      ]);
+    });
+
+    it('reports links that go in a circle once', async () => {
+      expect(
+        await blockProblems(
+          [step('a', { note: link('b.note') }), step('b', { note: link('a.note') })],
+          chain('a', 'b'),
+        ),
+      ).toEqual(['a: "Note" links in a circle, back to itself: a.note → b.note → a.note']);
+    });
+
+    it('reads outputs and JSON fields only where they are certain', async () => {
+      expect(
+        await blockProblems(
+          [
+            step('a', { out: 'C:\\a.csv' }),
+            step('b', {
+              count: link('steps.a.outputs.result.count + 1'),
+              in: link('steps.a.outputs.csv'),
+              note: '{{steps.a.outputs.result.count}} rows',
+            }),
+            step('c', { note: link('text(steps.d.outputs.result.count)') }),
+            step('d'),
+          ],
+          chain('a', 'b', 'c', 'd'),
+        ),
+      ).toEqual([
+        'c: Step "d" does not finish on every path that reaches this block, so its output may not exist',
+      ]);
+      expect(
+        await blockProblems(
+          [
+            step('a'),
+            step('b', {
+              note: link('steps.a.outputs.result.token'),
+              out: link('steps.a.outputs.result.nope'),
+              mode: '{{steps.a.outputs.csv.x}}',
+            }),
+          ],
+          chain('a', 'b'),
+        ),
+      ).toEqual([
+        'b: "Note" reads field "token" of output "result" of "a", which is secret',
+        'b: "Output" reads field "nope" of output "result" of "a", which it does not declare',
+        'b: "mode" does not fit a choice parameter',
+      ]);
+    });
+
+    it('checks rules on values by type', async () => {
+      const condition = (rules: object[]) => ({ match: 'all', rules });
+      const rule = (read: string, operator: string, value?: unknown) => ({
+        field: 'value',
+        read: link(read),
+        operator,
+        ...(value === undefined ? {} : { value }),
+      });
+      expect(
+        await blockProblems(
+          [
+            step('a'),
+            {
+              id: 'check',
+              type: 'if',
+              condition: condition([
+                rule('steps.a.outputs.result.count', 'greater-than', 3),
+                rule('steps.a.outputs.result.files', 'contains', 'x.txt'),
+                rule('a.in', 'exists'),
+                rule('inputs.mode', 'equals', link('a.mode')),
+              ]),
+            },
+          ],
+          chain('a', 'check'),
+          { inputs: [{ name: 'mode', type: 'choice', choices: ['a', 'b'] }] },
+        ),
+      ).toEqual([]);
+      expect(
+        await blockProblems(
+          [
+            step('a'),
+            {
+              id: 'route',
+              type: 'switch',
+              cases: [
+                {
+                  id: 'big',
+                  condition: condition([
+                    rule('steps.a.outputs.result.count', 'contains', 'x'),
+                    rule('a.count', 'greater-than', 'many'),
+                    rule('a.note', 'equals', link('gone.x')),
+                  ]),
+                },
+              ],
+            },
+          ],
+          chain('a', 'route'),
+        ),
+      ).toEqual([
+        'route: The value of "Rule 1 of case "big"" does not fit: "contains" does not work on a whole number',
+        'route: The value of "Rule 2 of case "big"" does not fit: it compares a whole number with text',
+        'route: "Rule 3 of case "big"" links to block "gone", which does not exist',
+      ]);
     });
   });
 

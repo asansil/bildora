@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util';
 import {
+  InputError,
   RunHistory,
   ToolRegistry,
   checkAutomation,
@@ -7,12 +8,16 @@ import {
   findAutomations,
   findVisibleTool,
   getCoreInfo,
+  inputsOf,
   openDataDirectory,
+  parseInputText,
   readPathVariables,
   resolveDataDir,
+  resolveInputs,
   startAutomationRun,
   startToolRun,
 } from '@bildora/core';
+import type { LiteralValue } from '@bildora/protocol';
 import type {
   AutomationResult,
   AutomationRunView,
@@ -24,7 +29,7 @@ import type {
 
 const USAGE = [
   'Usage: bildora --version',
-  '       bildora run <automation> [--workspace <id or name>]',
+  '       bildora run <automation> [--workspace <id or name>] [--input <name>=<value>]...',
 ].join('\n');
 
 export const EXIT_CODES = {
@@ -129,11 +134,46 @@ async function ask(io: CliIo, message: string, signal: AbortSignal): Promise<Man
   return answered ? 'confirmed' : 'no-user';
 }
 
+/**
+ * Reads `--input name=value` pairs as the automation's inputs declare them, with defaults filled
+ * in. Throws an `InputError` naming every value that does not fit.
+ */
+function inputsFrom(
+  { automation }: FoundAutomation,
+  pairs: readonly string[],
+): Readonly<Record<string, LiteralValue>> {
+  const declared = inputsOf(automation);
+  const given: Record<string, LiteralValue> = {};
+  const problems: string[] = [];
+  for (const pair of pairs) {
+    const at = pair.indexOf('=');
+    const name = at < 0 ? pair : pair.slice(0, at);
+    const input = declared.find((candidate) => candidate.name === name);
+    if (at <= 0) {
+      problems.push(`"${pair}" should read <name>=<value>`);
+    } else if (input === undefined) {
+      problems.push(`This automation has no input "${name}"`);
+    } else {
+      try {
+        given[name] = parseInputText(input, pair.slice(at + 1));
+      } catch (error) {
+        if (!(error instanceof InputError)) throw error;
+        problems.push(...error.problems);
+      }
+    }
+  }
+  if (problems.length > 0) throw new InputError(problems);
+  resolveInputs(automation, given);
+  return given;
+}
+
 async function runAutomation(
   dataDir: string,
-  { automation, workspaceId, workspaceName }: FoundAutomation,
+  found: FoundAutomation,
+  inputs: Readonly<Record<string, LiteralValue>>,
   io: CliIo,
 ): Promise<number> {
+  const { automation, workspaceId, workspaceName } = found;
   const registry = await ToolRegistry.open({ dataDir });
   const problems = await checkAutomation(automation, registry, workspaceId);
   if (problems.length > 0) {
@@ -153,6 +193,7 @@ async function runAutomation(
       automation,
       workspaceId,
       trigger: 'cli',
+      inputs,
       dataDir,
       history,
       pathVariables: await readPathVariables(dataDir).catch(() => undefined),
@@ -187,7 +228,10 @@ async function runCommand(args: readonly string[], io: CliIo): Promise<CliResult
     parsed = parseArgs({
       args: [...args],
       allowPositionals: true,
-      options: { workspace: { type: 'string', short: 'w' } },
+      options: {
+        workspace: { type: 'string', short: 'w' },
+        input: { type: 'string', short: 'i', multiple: true },
+      },
     });
   } catch {
     return { exitCode: EXIT_CODES.usage, stderr: USAGE };
@@ -214,7 +258,18 @@ async function runCommand(args: readonly string[], io: CliIo): Promise<CliResult
         stderr: `Several Workspaces hold "${wanted}": ${names}. Choose one with --workspace.`,
       };
     }
-    return { exitCode: await runAutomation(dataDir, first, io) };
+    let inputs: Readonly<Record<string, LiteralValue>>;
+    try {
+      inputs = inputsFrom(first, values.input ?? []);
+    } catch (error) {
+      if (!(error instanceof InputError)) throw error;
+      const lines = [`"${first.automation.name}" cannot take these inputs:`];
+      return {
+        exitCode: EXIT_CODES.usage,
+        stderr: [...lines, ...error.problems.map((problem) => `  ${problem}`)].join('\n'),
+      };
+    }
+    return { exitCode: await runAutomation(dataDir, first, inputs, io) };
   } catch (error) {
     return {
       exitCode: EXIT_CODES.cannotStart,
