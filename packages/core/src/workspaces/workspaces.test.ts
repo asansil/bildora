@@ -89,14 +89,19 @@ describe('Workspaces', () => {
         layout: { historyFilter: 'a', openCategory: 'x', panelWidth: 300 },
       });
       const updated = await updateWorkspace(dataDir, 'work', {
-        layout: { historyFilter: null, categoryOrder: ['x'] },
+        layout: { historyFilter: null, historyAutomation: 'nightly', categoryOrder: ['x'] },
       });
       expect(updated.layout).toEqual({
         categoryOrder: ['x'],
         panelWidth: 300,
         openCategory: 'x',
+        historyAutomation: 'nightly',
         tabs: [],
       });
+      const cleared = await updateWorkspace(dataDir, 'work', {
+        layout: { historyAutomation: null },
+      });
+      expect(cleared.layout.historyAutomation).toBeUndefined();
     });
 
     it('remembers which tools answer their console script', async () => {
@@ -108,6 +113,84 @@ describe('Workspaces', () => {
 
       const cleared = await updateWorkspace(dataDir, 'work', { layout: { scriptAnswers: [] } });
       expect(cleared.layout).not.toHaveProperty('scriptAnswers');
+    });
+
+    it('keeps the automation panels, dropping sizes out of limits', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const updated = await updateWorkspace(dataDir, 'work', {
+        layout: {
+          automationPanels: { libraryWidth: 240, settingsWidth: 9000, lowerCollapsed: true },
+        },
+      });
+      expect(updated.layout.automationPanels).toEqual({ libraryWidth: 240, lowerCollapsed: true });
+      const kept = await updateWorkspace(dataDir, 'work', { layout: { panelWidth: 300 } });
+      expect(kept.layout.automationPanels).toEqual({ libraryWidth: 240, lowerCollapsed: true });
+      expect((await getWorkspace(dataDir, 'work'))?.layout.automationPanels).toEqual({
+        libraryWidth: 240,
+        lowerCollapsed: true,
+      });
+
+      const cleared = await updateWorkspace(dataDir, 'work', {
+        layout: { automationPanels: null },
+      });
+      expect(cleared.layout).not.toHaveProperty('automationPanels');
+    });
+
+    it('keeps only the canvas options that are on, and null clears them', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const updated = await updateWorkspace(dataDir, 'work', {
+        layout: { automationCanvas: { snapToGrid: true, rightAngles: false } },
+      });
+      expect(updated.layout.automationCanvas).toEqual({ snapToGrid: true });
+      const kept = await updateWorkspace(dataDir, 'work', { layout: { panelWidth: 300 } });
+      expect(kept.layout.automationCanvas).toEqual({ snapToGrid: true });
+      expect((await getWorkspace(dataDir, 'work'))?.layout.automationCanvas).toEqual({
+        snapToGrid: true,
+      });
+      const off = await updateWorkspace(dataDir, 'work', {
+        layout: { automationCanvas: { snapToGrid: false } },
+      });
+      expect(off.layout).not.toHaveProperty('automationCanvas');
+      const hidden = await updateWorkspace(dataDir, 'work', {
+        layout: { automationCanvas: { rightAngles: true, hideGrid: true, hideNavigator: true } },
+      });
+      expect(hidden.layout.automationCanvas).toEqual({
+        rightAngles: true,
+        hideGrid: true,
+        hideNavigator: true,
+      });
+      const cleared = await updateWorkspace(dataDir, 'work', {
+        layout: { automationCanvas: null },
+      });
+      expect(cleared.layout).not.toHaveProperty('automationCanvas');
+    });
+
+    it('ignores stored canvas options that are not true', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const file = join(dataDir, 'workspaces', 'work', 'workspace.yaml');
+      await writeFile(
+        file,
+        'formatVersion: 2\nname: Work\nlayout:\n  automationCanvas:\n' +
+          '    snapToGrid: "yes"\n    rightAngles: 1\n    hideGrid: false\n',
+      );
+      expect((await getWorkspace(dataDir, 'work'))?.layout).toEqual({
+        categoryOrder: [],
+        tabs: [],
+      });
+    });
+
+    it('ignores stored automation panels that make no sense', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const file = join(dataDir, 'workspaces', 'work', 'workspace.yaml');
+      await writeFile(
+        file,
+        'formatVersion: 2\nname: Work\nlayout:\n  automationPanels:\n' +
+          '    lowerHeight: 10\n    libraryWidth: 200.5\n    settingsCollapsed: "yes"\n',
+      );
+      expect((await getWorkspace(dataDir, 'work'))?.layout).toEqual({
+        categoryOrder: [],
+        tabs: [],
+      });
     });
 
     it('drops a stored panel width out of limits', async () => {

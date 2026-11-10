@@ -38,6 +38,7 @@ export const CHANNELS = {
   profilesRemove: 'profiles:remove',
   historyList: 'history:list',
   historyGet: 'history:get',
+  historyAutomationRun: 'history:automation-run',
   historyRecent: 'history:recent',
   historyClear: 'history:clear',
   preferencesGet: 'preferences:get',

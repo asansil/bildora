@@ -155,6 +155,21 @@ describe('startAutomationRun', () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
+  it('refuses a flow saved half built, before anything runs', () => {
+    const halfBuilt: Automation = {
+      schemaVersion: 2,
+      id: 'half',
+      name: 'Half',
+      blocks: [
+        { id: 'start', type: 'start' },
+        { id: 'fork', type: 'parallel' },
+      ],
+      connections: [{ from: 'start', to: 'fork' }],
+    };
+    expect(() => start(halfBuilt)).toThrow('Parallel "fork" needs at least two branches');
+    expect(started).toEqual([]);
+  });
+
   it('runs steps in order and records the run', async () => {
     script = [COMPLETED, COMPLETED];
     const automation = automationOf([
@@ -175,6 +190,9 @@ describe('startAutomationRun', () => {
       ['pause', 'completed'],
       ['second', 'completed'],
     ]);
+    const times = recorded?.steps.map(({ startedAt }) => startedAt ?? -1) ?? [];
+    expect(times.every((time) => time >= (recorded?.startedAt ?? Infinity))).toBe(true);
+    expect(times).toEqual([...times].sort((a, b) => a - b));
   });
 
   it('stops at a failed step by default, leaving later steps idle', async () => {
@@ -218,6 +236,9 @@ describe('startAutomationRun', () => {
     const flaky = stepOf(history.listAutomationRuns('work', 'flow')[0]?.steps, 'flaky');
     expect(flaky).toMatchObject({ state: 'completed', attempt: 3 });
     expect(flaky?.failure).toBeUndefined();
+    expect(flaky?.toolRunIds).toHaveLength(3);
+    expect(new Set(flaky?.toolRunIds).size).toBe(3);
+    expect(flaky?.toolRunIds?.at(-1)).toBe(flaky?.toolRunId);
   });
 
   it('stops once retries run out', async () => {
@@ -681,6 +702,8 @@ describe('startAutomationRun', () => {
       started[2]?.finish(COMPLETED);
       expect(await running.result).toMatchObject({ status: 'completed', failedSteps: [] });
       expect(stateOf(running, 'meet')).toBe('completed');
+      const steps = running.view().steps;
+      expect(steps.every(({ startedAt }) => startedAt !== undefined)).toBe(true);
     });
 
     it('ends the other branches when one fails, by default', async () => {

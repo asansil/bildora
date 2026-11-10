@@ -41,9 +41,12 @@ export type {
   AutomationRunSummary,
   AutomationStepRecord,
   AutomationTrigger,
+  HistoryEntry,
+  HistoryFilter,
   RecordedStatus,
   RemovedAutomationRun,
   RunFinish,
+  RunOrigin,
   RunRecord,
   RunStart,
   RunSummary,
@@ -157,6 +160,7 @@ export {
 export { findVisibleTool, listVisibleTools, workspaceScope } from './workspaces/visible-tools.js';
 export { removeWorkspace } from './workspaces/remove-workspace.js';
 export {
+  AUTOMATION_PANEL_LIMITS,
   DEFAULT_WORKSPACE_ID,
   DEFAULT_WORKSPACE_NAME,
   PANEL_WIDTH_MAX,
@@ -171,6 +175,8 @@ export {
   workspaceTabKey,
 } from './workspaces/workspace-store.js';
 export type {
+  AutomationCanvas,
+  AutomationPanels,
   LayoutChanges,
   TabChange,
   Workspace,

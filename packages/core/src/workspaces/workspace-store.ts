@@ -20,6 +20,12 @@ export const DEFAULT_WORKSPACE_NAME = 'Default';
 export const WORKSPACE_NAME_MAX_LENGTH = 80;
 export const PANEL_WIDTH_MIN = 180;
 export const PANEL_WIDTH_MAX = 480;
+/** The sizes an automation tab's side and lower panels may take, in pixels. */
+export const AUTOMATION_PANEL_LIMITS = {
+  libraryWidth: { min: 160, max: 400 },
+  settingsWidth: { min: 220, max: 560 },
+  lowerHeight: { min: 96, max: 600 },
+} as const;
 export const WORKSPACE_TABS_MAX = 100;
 
 const WORKSPACE_FILE = 'workspace.yaml';
@@ -61,6 +67,27 @@ const format: VersionedFormat = {
   migrations: [{ from: 1, migrate: tabsFromSelectedTool }],
 };
 
+/** How the panels around the automation canvas were left. Every automation tab shares it. */
+export interface AutomationPanels {
+  readonly libraryWidth?: number;
+  readonly settingsWidth?: number;
+  readonly lowerHeight?: number;
+  readonly libraryCollapsed?: boolean;
+  readonly settingsCollapsed?: boolean;
+  readonly lowerCollapsed?: boolean;
+}
+
+/**
+ * Options of the automation canvas, each on only when `true`. Every automation tab shares them. The
+ * grid and the navigator are shown by default, so what is stored is that they are hidden.
+ */
+export interface AutomationCanvas {
+  readonly snapToGrid?: true;
+  readonly rightAngles?: true;
+  readonly hideGrid?: true;
+  readonly hideNavigator?: true;
+}
+
 export interface WorkspaceLayout {
   /** Category keys in rail order. A key with no category now stays, for when one returns. */
   readonly categoryOrder: readonly string[];
@@ -73,8 +100,12 @@ export interface WorkspaceLayout {
   readonly activeTab?: string;
   /** The tool id the History tab is filtered by. */
   readonly historyFilter?: string;
+  /** The automation id the History tab is filtered by, when no tool is. */
+  readonly historyAutomation?: string;
   /** Ids of the tools whose form answers their console script, absent when there are none. */
   readonly scriptAnswers?: readonly string[];
+  readonly automationPanels?: AutomationPanels;
+  readonly automationCanvas?: AutomationCanvas;
 }
 
 export interface Workspace {
@@ -102,8 +133,15 @@ export interface LayoutChanges {
   readonly tabs?: readonly TabChange[] | undefined;
   readonly activeTab?: string | null | undefined;
   readonly historyFilter?: string | null | undefined;
+  readonly historyAutomation?: string | null | undefined;
   /** Replaces the list. An empty one clears it. */
   readonly scriptAnswers?: readonly string[] | undefined;
+  /** Replaces the panels. A size out of limits is dropped, and `null` clears them. */
+  readonly automationPanels?:
+    { readonly [K in keyof AutomationPanels]?: AutomationPanels[K] | undefined } | null | undefined;
+  /** Replaces the canvas options. Only `true` is kept, and `null` clears them. */
+  readonly automationCanvas?:
+    { readonly [K in keyof AutomationCanvas]?: boolean | undefined } | null | undefined;
 }
 
 export interface WorkspaceChanges {
@@ -148,6 +186,47 @@ function isPanelWidth(value: unknown): value is number {
     value >= PANEL_WIDTH_MIN &&
     value <= PANEL_WIDTH_MAX
   );
+}
+
+function isWithin(value: unknown, limits: { readonly min: number; readonly max: number }): boolean {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= limits.min &&
+    value <= limits.max
+  );
+}
+
+/** The panel sizes and states that make sense, or nothing when none do. */
+function automationPanelsOf(value: unknown): { automationPanels?: AutomationPanels } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const fields: Record<string, unknown> = { ...value };
+  const panels: Record<string, number | boolean> = {};
+  for (const [key, limits] of Object.entries(AUTOMATION_PANEL_LIMITS)) {
+    const size = fields[key];
+    if (typeof size === 'number' && isWithin(size, limits)) panels[key] = size;
+  }
+  for (const key of ['libraryCollapsed', 'settingsCollapsed', 'lowerCollapsed']) {
+    if (fields[key] === true) panels[key] = true;
+  }
+  return Object.keys(panels).length === 0 ? {} : { automationPanels: panels };
+}
+
+/** The canvas options that are on, or nothing when none is. */
+function automationCanvasOf(value: unknown): { automationCanvas?: AutomationCanvas } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const fields: Record<string, unknown> = { ...value };
+  const options = {
+    ...(fields['snapToGrid'] === true ? { snapToGrid: true as const } : {}),
+    ...(fields['rightAngles'] === true ? { rightAngles: true as const } : {}),
+    ...(fields['hideGrid'] === true ? { hideGrid: true as const } : {}),
+    ...(fields['hideNavigator'] === true ? { hideNavigator: true as const } : {}),
+  };
+  return Object.keys(options).length === 0 ? {} : { automationCanvas: options };
 }
 
 function tabOf(value: unknown): WorkspaceTab | undefined {
@@ -210,14 +289,17 @@ function layoutOf(value: unknown): WorkspaceLayout {
   }
   const fields: Record<string, unknown> = { ...value };
   const { categoryOrder, panelWidth, openCategory, tabs, activeTab, historyFilter } = fields;
-  const { scriptAnswers } = fields;
+  const { scriptAnswers, automationPanels, automationCanvas, historyAutomation } = fields;
   return withTabs(
     {
       categoryOrder: stringsIn(categoryOrder),
       ...(isPanelWidth(panelWidth) ? { panelWidth } : {}),
       ...(typeof openCategory === 'string' ? { openCategory } : {}),
       ...(typeof historyFilter === 'string' ? { historyFilter } : {}),
+      ...(typeof historyAutomation === 'string' ? { historyAutomation } : {}),
       ...scriptAnswersOf(stringsIn(scriptAnswers)),
+      ...automationPanelsOf(automationPanels),
+      ...automationCanvasOf(automationCanvas),
     },
     cleanTabs(Array.isArray(tabs) ? tabs : []),
     activeTab,
@@ -377,13 +459,17 @@ function changedLayout(layout: WorkspaceLayout, changes: LayoutChanges): Workspa
   const { categoryOrder = layout.categoryOrder, panelWidth = layout.panelWidth } = changes;
   const openCategory = merged(layout.openCategory, changes.openCategory);
   const historyFilter = merged(layout.historyFilter, changes.historyFilter);
+  const historyAutomation = merged(layout.historyAutomation, changes.historyAutomation);
   return withTabs(
     {
       categoryOrder,
       ...(panelWidth === undefined ? {} : { panelWidth }),
       ...(openCategory === undefined ? {} : { openCategory }),
       ...(historyFilter === undefined ? {} : { historyFilter }),
+      ...(historyAutomation === undefined ? {} : { historyAutomation }),
       ...scriptAnswersOf(changes.scriptAnswers ?? layout.scriptAnswers ?? []),
+      ...automationPanelsOf(merged(layout.automationPanels, changes.automationPanels)),
+      ...automationCanvasOf(merged<unknown>(layout.automationCanvas, changes.automationCanvas)),
     },
     changes.tabs === undefined ? layout.tabs : cleanTabs(changes.tabs),
     merged(layout.activeTab, changes.activeTab),

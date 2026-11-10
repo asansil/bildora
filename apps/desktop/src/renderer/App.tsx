@@ -5,6 +5,9 @@ import { t } from '../shared/i18n/translate.js';
 import type {
   AutomationDraft,
   AutomationListView,
+  AutomationView,
+  AutomationCanvasView,
+  AutomationPanelsView,
   AutomationRunStateView,
   DetectionView,
   LayoutUpdate,
@@ -23,10 +26,20 @@ import type {
   WorkspaceUpdate,
   WorkspaceView,
 } from '../shared/ipc-contract.js';
-import { PANEL_WIDTH_DEFAULT } from '../shared/ipc-contract.js';
+import { PANEL_WIDTH_DEFAULT, PANEL_WIDTH_MAX, PANEL_WIDTH_MIN } from '../shared/ipc-contract.js';
 import { AutomationTab } from './automations/AutomationTab.js';
+import { documentOf, draftOf } from './automations/canvas/flow-document.js';
+import {
+  commandItem,
+  optionsEntries,
+  scaleEntries,
+  selectionEntries,
+} from './automations/canvas/canvas-commands.js';
+import type { CanvasCommand, CanvasCommands } from './automations/canvas/canvas-commands.js';
 import { AutomationsPanel } from './automations/AutomationsPanel.js';
+import { LIBRARY_DRAG_TYPE } from './automations/canvas/Canvas.js';
 import { HistoryView } from './history/HistoryView.js';
+import type { HistoryFilter } from './history/HistoryView.js';
 import { ImportReview } from './import/ImportReview.js';
 import { CommandPalette } from './palette/CommandPalette.js';
 import type { Command } from './palette/CommandPalette.js';
@@ -94,6 +107,7 @@ type Modal =
   | { readonly kind: 'move'; readonly tool: ToolView }
   | { readonly kind: 'create-workspace' }
   | { readonly kind: 'review'; readonly detection: DetectionView }
+  | { readonly kind: 'remove-automation'; readonly automation: AutomationView }
   | { readonly kind: RailDialog };
 
 /** Why closing a tab has to ask first. */
@@ -105,8 +119,25 @@ function messageOf(error: unknown): string {
   return text.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
 }
 
+const NO_PANELS: AutomationPanelsView = {};
+const NO_CANVAS_OPTIONS: AutomationCanvasView = {};
+
 function layoutOf(list: WorkspaceListView): WorkspaceLayoutView | undefined {
   return list.workspaces.find(({ id }) => id === list.activeId)?.layout;
+}
+
+/** The History filter a Workspace stored. A tool wins, as only one is ever stored. */
+function historyFilterOf(layout: WorkspaceLayoutView | undefined): HistoryFilter {
+  if (layout?.historyFilter !== undefined) return { toolId: layout.historyFilter };
+  if (layout?.historyAutomation !== undefined) return { automationId: layout.historyAutomation };
+  return {};
+}
+
+function historyLayout(filter: HistoryFilter): LayoutUpdate {
+  return {
+    historyFilter: filter.toolId ?? null,
+    historyAutomation: filter.automationId ?? null,
+  };
 }
 
 export function App() {
@@ -119,10 +150,20 @@ export function App() {
   const [version, setVersion] = useState('');
   const [workspaces, setWorkspaces] = useState(NO_WORKSPACES);
   const [panelWidth, setPanelWidth] = useState(PANEL_WIDTH_DEFAULT);
+  const [automationPanels, setAutomationPanels] = useState<AutomationPanelsView>(NO_PANELS);
+  const [canvasOptions, setCanvasOptions] = useState<AutomationCanvasView>(NO_CANVAS_OPTIONS);
+  /** The commands of the automation tab on view, which the menus act on; none for other tabs. */
+  const [canvasCommands, setCanvasCommands] = useState<CanvasCommands | undefined>(undefined);
+  /** The automation whose name the sidebar asked to change, and how many times it was asked. */
+  const [renaming, setRenaming] = useState<{ id: string; count: number } | undefined>(undefined);
   const [historyRunLimit, setHistoryRunLimit] = useState(200);
   const [recent, setRecent] = useState(EMPTY_RECENT);
   const [tabs, setTabs] = useState<TabState>(NO_TABS);
-  const [historyFilter, setHistoryFilter] = useState<string | undefined>(undefined);
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>({});
+  /** Asks an automation tab to show one of its past runs; `count` repeats the same request. */
+  const [runShown, setRunShown] = useState<
+    { id: string; runId: string; count: number } | undefined
+  >(undefined);
   /** Tabs whose automation has edits that are not saved. */
   const [unsaved, setUnsaved] = useState<ReadonlySet<string>>(NO_KEYS);
   /** Tabs waiting to close, the first of which is asking the user. */
@@ -177,7 +218,7 @@ export function App() {
     const restored = fromLayout(layout);
     tabsNow.current = restored;
     setTabs(restored);
-    setHistoryFilter(layout?.historyFilter);
+    setHistoryFilter(historyFilterOf(layout));
     setUnsaved(NO_KEYS);
     setClosing([]);
   }
@@ -195,8 +236,10 @@ export function App() {
         const restored = fromLayout(layout);
         tabsNow.current = restored;
         setTabs(restored);
-        setHistoryFilter(layout?.historyFilter);
+        setHistoryFilter(historyFilterOf(layout));
         setPanelWidth(layout?.panelWidth ?? PANEL_WIDTH_DEFAULT);
+        setAutomationPanels(layout?.automationPanels ?? NO_PANELS);
+        setCanvasOptions(layout?.automationCanvas ?? NO_CANVAS_OPTIONS);
       })
       .catch(report);
     void api
@@ -255,7 +298,10 @@ export function App() {
   const historyShown = tabs.activeKey === tabKey(HISTORY_TAB);
   // History stays mounted behind other tabs, so coming back to it reads the runs again, which
   // may include some the command line made meanwhile.
-  const historyRevision = useMemo(() => ({ runs, historyShown }), [runs, historyShown]);
+  const historyRevision = useMemo(
+    () => ({ runs, automationRuns, historyShown }),
+    [runs, automationRuns, historyShown],
+  );
 
   function toolOf(tab: TabRef): ToolView | undefined {
     return tab.kind === 'tool' ? allTools.find((item) => item.id === tab.id) : undefined;
@@ -358,6 +404,8 @@ export function App() {
     restoreTabs(layout);
     setOpenCategory(layout?.openCategory);
     setPanelWidth(layout?.panelWidth ?? PANEL_WIDTH_DEFAULT);
+    setAutomationPanels(layout?.automationPanels ?? NO_PANELS);
+    setCanvasOptions(layout?.automationCanvas ?? NO_CANVAS_OPTIONS);
     setAutomations(NO_AUTOMATIONS);
     setAutomationsLoaded(false);
     setModal(undefined);
@@ -548,6 +596,19 @@ export function App() {
     void api.removeAutomation(id).then(reload).catch(report);
   }
 
+  /** Saves a copy of an automation as a new one, and opens it. */
+  function duplicateAutomation(id: string): void {
+    const automation = automations.automations.find((item) => item.id === id);
+    if (automation === undefined) return;
+    const copy = documentOf(automation);
+    const draft = draftOf({ ...copy, name: t('automation.copyName', { name: copy.name }) });
+    void saveAutomation(draft)
+      .then((saved) => {
+        openTab({ kind: 'automation', id: saved.id }, true);
+      })
+      .catch(report);
+  }
+
   function newAutomation(): void {
     drafts.current += 1;
     const id = `new-${String(drafts.current)}`;
@@ -569,11 +630,9 @@ export function App() {
     });
   }
 
-  function showHistory(toolId?: string): void {
-    setHistoryFilter(toolId);
-    changeTabs((state) => open(state, HISTORY_TAB, { pin: true }), {
-      historyFilter: toolId ?? null,
-    });
+  function showHistory(filter: HistoryFilter = {}): void {
+    setHistoryFilter(filter);
+    changeTabs((state) => open(state, HISTORY_TAB, { pin: true }), historyLayout(filter));
   }
 
   function questionFor(key: string, state: TabState): CloseQuestion | undefined {
@@ -581,7 +640,8 @@ export function App() {
     if (tab === undefined) {
       return undefined;
     }
-    if (unsaved.has(key)) {
+    // A tool's form is scratch work: only its profile's Save keeps it, so closing never asks.
+    if (unsaved.has(key) && tab.kind === 'automation') {
       return 'unsaved';
     }
     const tool = toolOf(tab);
@@ -599,6 +659,9 @@ export function App() {
     const asking = keys.findIndex((key) => questionFor(key, tabsNow.current) !== undefined);
     const quiet = asking === -1 ? keys : keys.slice(0, asking);
     if (quiet.length > 0) {
+      for (const key of quiet) {
+        markUnsaved(key, false);
+      }
       changeTabs((state) => quiet.reduce(close, state));
     }
     setClosing(asking === -1 ? [] : keys.slice(asking));
@@ -718,34 +781,89 @@ export function App() {
     }
   }
 
+  /**
+   * An Edit item that acts on the flow in an automation tab, unless a text field had the focus
+   * when the menu opened, and on the page elsewhere.
+   */
+  function editItem(
+    label: string,
+    shortcut: string,
+    edit: 'undo' | 'redo' | 'copy' | 'paste' | 'selectAll',
+    pick: (commands: CanvasCommands) => CanvasCommand,
+  ) {
+    return {
+      label,
+      shortcut,
+      run: () => {
+        // The menu has handed the focus back by now, to where it was before it opened.
+        const field = window.document.activeElement?.closest(
+          'input, textarea, select, [contenteditable="true"]',
+        );
+        if (canvasCommands === undefined || (field !== null && field !== undefined)) {
+          void api.edit(edit);
+          return;
+        }
+        const command = pick(canvasCommands);
+        if (command.enabled) command.run();
+      },
+    };
+  }
+
   const menus: readonly Menu[] = [
     {
       label: t('menu.file'),
       items: [
+        { label: t('menu.newAutomation'), run: newAutomation },
+        commandItem(t('canvas.save'), canvasCommands?.save, 'Ctrl+S'),
+        commandItem(t('canvas.saveAndRun'), canvasCommands?.saveAndRun, 'F5'),
+        'separator',
         { label: t('menu.addTool'), run: addTool },
         { label: t('menu.importFolder'), run: importFolder },
+        'separator',
         { label: t('menu.exit'), run: () => void api.quit() },
       ],
     },
     {
       label: t('menu.edit'),
       items: [
-        { label: t('menu.undo'), shortcut: 'Ctrl+Z', run: () => void api.edit('undo') },
-        { label: t('menu.redo'), shortcut: 'Ctrl+Y', run: () => void api.edit('redo') },
+        editItem(t('menu.undo'), 'Ctrl+Z', 'undo', (commands) => commands.undo),
+        editItem(t('menu.redo'), 'Ctrl+Y', 'redo', (commands) => commands.redo),
+        'separator',
         { label: t('menu.cut'), shortcut: 'Ctrl+X', run: () => void api.edit('cut') },
-        { label: t('menu.copy'), shortcut: 'Ctrl+C', run: () => void api.edit('copy') },
-        { label: t('menu.paste'), shortcut: 'Ctrl+V', run: () => void api.edit('paste') },
-        { label: t('menu.selectAll'), shortcut: 'Ctrl+A', run: () => void api.edit('selectAll') },
+        editItem(t('menu.copy'), 'Ctrl+C', 'copy', (commands) => commands.copy),
+        editItem(t('menu.paste'), 'Ctrl+V', 'paste', (commands) => commands.paste),
+        commandItem(t('menu.duplicate'), canvasCommands?.duplicate, 'Ctrl+D'),
+        commandItem(t('menu.delete'), canvasCommands?.delete, 'Del'),
+        'separator',
+        editItem(t('menu.selectAll'), 'Ctrl+A', 'selectAll', (commands) => commands.selectAll),
       ],
     },
+    { label: t('menu.selection'), items: selectionEntries(canvasCommands) },
     {
       label: t('menu.view'),
-      items: THEME_LABELS.map(({ value, label }) => ({
-        label: t('palette.theme', { theme: t(label) }),
-        run: () => {
-          changeTheme(value);
+      items: [
+        {
+          label: t('menu.scale'),
+          items: scaleEntries(canvasCommands),
+          ...(canvasCommands === undefined ? { disabled: true } : {}),
         },
-      })),
+        {
+          label: t('menu.options'),
+          items: optionsEntries(canvasCommands),
+          ...(canvasCommands === undefined ? { disabled: true } : {}),
+        },
+        'separator',
+        {
+          label: t('menu.theme'),
+          items: THEME_LABELS.map(({ value, label }) => ({
+            label: t(label),
+            checked: value === theme,
+            run: () => {
+              changeTheme(value);
+            },
+          })),
+        },
+      ],
     },
     {
       label: t('menu.tools'),
@@ -862,7 +980,14 @@ export function App() {
   function viewOf(tab: Tab): TabView | undefined {
     if (tab.kind === 'history') {
       const icon = <History className="icon" aria-hidden="true" />;
-      return { key: tab.key, label: t('nav.history'), icon, state: 'idle', preview: tab.preview };
+      return {
+        key: tab.key,
+        label: t('nav.history'),
+        icon,
+        state: 'idle',
+        preview: tab.preview,
+        unsaved: false,
+      };
     }
     if (tab.kind === 'automation') {
       const automation = automations.automations.find((item) => item.id === tab.id);
@@ -876,6 +1001,7 @@ export function App() {
         icon: <Workflow className="icon" aria-hidden="true" />,
         state,
         preview: tab.preview,
+        unsaved: unsaved.has(tab.key),
       };
     }
     const tool = toolOf(tab);
@@ -887,6 +1013,7 @@ export function App() {
           icon: <ProgramIcon tool={tool} />,
           state: summarizeRuns(runs, tool.key).state,
           preview: tab.preview,
+          unsaved: unsaved.has(tab.key),
         };
   }
 
@@ -895,11 +1022,19 @@ export function App() {
       return (
         <HistoryView
           tools={allTools}
-          toolId={historyFilter}
+          automations={automations.automations}
+          filter={historyFilter}
           revision={historyRevision}
-          onToolId={(toolId) => {
-            setHistoryFilter(toolId);
-            saveWorkspace({ layout: { historyFilter: toolId ?? null } });
+          onFilter={(filter) => {
+            setHistoryFilter(filter);
+            saveWorkspace({ layout: historyLayout(filter) });
+          }}
+          onOpenAutomation={(id) => {
+            openTab({ kind: 'automation', id }, true);
+          }}
+          onShowRun={(id, runId) => {
+            setRunShown((asked) => ({ id, runId, count: (asked?.count ?? 0) + 1 }));
+            openTab({ kind: 'automation', id }, true);
           }}
           onError={report}
         />
@@ -915,26 +1050,24 @@ export function App() {
           automation={automation}
           run={automationRunOf(tab.id)}
           tools={allTools}
+          active={tab.key === tabs.activeKey}
           revision={catalog}
+          panels={automationPanels}
+          onPanels={(panels, commit) => {
+            setAutomationPanels(panels);
+            if (commit) saveWorkspace({ layout: { automationPanels: panels } });
+          }}
+          canvasOptions={canvasOptions}
+          onCanvasOptions={(options) => {
+            setCanvasOptions(options);
+            saveWorkspace({ layout: { automationCanvas: options } });
+          }}
           onSave={saveAutomation}
           onSaved={(id) => {
             markUnsaved(tab.key, false);
             changeTabs((state) => rename(state, tab.key, { kind: 'automation', id }));
           }}
-          onDiscard={() => {
-            markUnsaved(tab.key, false);
-            changeTabs((state) => close(state, tab.key));
-          }}
-          onRun={() => {
-            if (automation !== undefined) {
-              runAutomation(automation.id);
-            }
-          }}
-          onRemove={() => {
-            if (automation !== undefined) {
-              removeAutomation(automation.id);
-            }
-          }}
+          onRun={(id) => api.startAutomation(id)}
           onShowTool={(id) => {
             showTool(id);
           }}
@@ -945,6 +1078,15 @@ export function App() {
             pinTab(tab.key);
           }}
           onError={report}
+          onCommands={tab.key === tabs.activeKey ? setCanvasCommands : undefined}
+          renameRequest={
+            renaming !== undefined && renaming.id === tab.id ? renaming.count : undefined
+          }
+          showRunRequest={
+            runShown !== undefined && runShown.id === tab.id
+              ? { runId: runShown.runId, count: runShown.count }
+              : undefined
+          }
         />
       );
     }
@@ -983,12 +1125,15 @@ export function App() {
           launch(tool, request);
         }}
         onHistory={() => {
-          showHistory(tool.id);
+          showHistory({ toolId: tool.id });
         }}
         onUsed={() => {
           pinTab(tab.key);
         }}
         answerWithScript={scriptAnswers.includes(tool.id)}
+        onDirty={(dirty) => {
+          markUnsaved(tab.key, dirty);
+        }}
         onAnswerWithScriptChange={(answer) => {
           const others = scriptAnswers.filter((id) => id !== tool.id);
           saveWorkspace({ layout: { scriptAnswers: answer ? [...others, tool.id] : others } });
@@ -1043,6 +1188,15 @@ export function App() {
           // Named by the tool alone, with its state said apart, as tabs do.
           aria-describedby={showsState ? stateId : undefined}
           aria-current={item.id === currentTool?.id ? 'true' : undefined}
+          // A tool dragged from here onto an automation's canvas becomes a block there.
+          draggable
+          onDragStart={(event) => {
+            event.dataTransfer.setData(
+              LIBRARY_DRAG_TYPE,
+              JSON.stringify({ kind: 'run', tool: item.id }),
+            );
+            event.dataTransfer.effectAllowed = 'copy';
+          }}
           onClick={() => {
             showTool(item.id, !live);
           }}
@@ -1130,6 +1284,15 @@ export function App() {
               openTab({ kind: 'automation', id }, pinned);
             }}
             onNew={newAutomation}
+            onRename={(id) => {
+              openTab({ kind: 'automation', id }, true);
+              setRenaming((current) => ({ id, count: (current?.count ?? 0) + 1 }));
+            }}
+            onDuplicate={duplicateAutomation}
+            onRemove={(id) => {
+              const automation = automations.automations.find((item) => item.id === id);
+              if (automation !== undefined) setModal({ kind: 'remove-automation', automation });
+            }}
           />
         ) : null}
         {panelGroup === undefined ? null : (
@@ -1164,7 +1327,11 @@ export function App() {
         )}
         {panelGroup === undefined && !automationsPanelOpen ? null : (
           <PanelResizer
-            width={panelWidth}
+            value={panelWidth}
+            min={PANEL_WIDTH_MIN}
+            max={PANEL_WIDTH_MAX}
+            initial={PANEL_WIDTH_DEFAULT}
+            label={t('nav.resizePanel')}
             onResize={setPanelWidth}
             onCommit={(width) => {
               saveWorkspace({ layout: { panelWidth: width } });
@@ -1478,7 +1645,7 @@ export function App() {
             </button>
             <button
               type="button"
-              className="primary"
+              className="danger filled"
               onClick={() => {
                 const { id } = modal.tool;
                 setModal(undefined);
@@ -1486,6 +1653,38 @@ export function App() {
               }}
             >
               {t('remove.confirm')}
+            </button>
+          </div>
+        </Dialog>
+      ) : null}
+      {modal?.kind === 'remove-automation' ? (
+        <Dialog
+          title={t('automation.removeTitle', { name: modal.automation.name })}
+          onClose={() => {
+            setModal(undefined);
+          }}
+        >
+          <p>{t('automation.removeBody')}</p>
+          <div className="dialog-actions">
+            <button
+              type="button"
+              autoFocus
+              onClick={() => {
+                setModal(undefined);
+              }}
+            >
+              {t('form.cancel')}
+            </button>
+            <button
+              type="button"
+              className="danger filled"
+              onClick={() => {
+                const { id } = modal.automation;
+                setModal(undefined);
+                removeAutomation(id);
+              }}
+            >
+              {t('automation.removeConfirm')}
             </button>
           </div>
         </Dialog>

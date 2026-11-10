@@ -22,15 +22,12 @@ import type {
 } from '@bildora/core';
 import {
   AUTOMATION_SCHEMA_VERSION,
-  automationSchema,
-  fromLinear,
-  linearOf,
-  linearStepSchema,
+  automationFileSchema,
+  problemsOfIssues,
 } from '@bildora/protocol';
-import type { Automation } from '@bildora/protocol';
-import { z } from 'zod';
+import type { Automation, AutomationProblem } from '@bildora/protocol';
 import type {
-  AutomationDraft,
+  ReceivedAutomationDraft,
   AutomationListView,
   AutomationProblemView,
   AutomationView,
@@ -62,33 +59,32 @@ interface ActiveAutomation {
   readonly answers: Map<string, (answer: ManualAnswer) => void>;
 }
 
-function issuesOf(error: {
-  readonly issues: readonly { readonly path: PropertyKey[]; readonly message: string }[];
-}) {
-  return error.issues.map((issue) => ({
-    path: issue.path.map(String).join('.'),
-    message: issue.message,
-  }));
-}
-
-function draftToAutomation(draft: AutomationDraft, id: string): Automation {
-  const { name, description } = draft;
-  const listed = z.array(linearStepSchema).safeParse(draft.steps);
-  if (!listed.success) {
-    throw new DefinitionError('The automation is not valid', issuesOf(listed.error));
-  }
-  const steps = listed.data;
-  const result = automationSchema.safeParse({
+/** What the canvas sent, as the file would hold it. Empty sections are left out of the file. */
+function fileOf(draft: ReceivedAutomationDraft, id: string): unknown {
+  const { name, description, blocks, connections, positions, notes, groups } = draft;
+  return {
     schemaVersion: AUTOMATION_SCHEMA_VERSION,
     id,
     name,
     ...(description === undefined ? {} : { description }),
-    ...fromLinear(steps),
-  });
-  if (!result.success) {
-    throw new DefinitionError('The automation is not valid', issuesOf(result.error));
-  }
-  return result.data;
+    blocks,
+    connections,
+    ...(positions === undefined || Object.keys(positions).length === 0 ? {} : { positions }),
+    ...(notes === undefined || notes.length === 0 ? {} : { notes }),
+    ...(groups === undefined || groups.length === 0 ? {} : { groups }),
+  };
+}
+
+type Parsed =
+  | { readonly ok: true; readonly automation: Automation }
+  | { readonly ok: false; readonly problems: AutomationProblem[] };
+
+function parseDraft(draft: ReceivedAutomationDraft, id: string): Parsed {
+  const file = fileOf(draft, id);
+  const result = automationFileSchema.safeParse(file);
+  return result.success
+    ? { ok: true, automation: result.data }
+    : { ok: false, problems: problemsOfIssues(result.error.issues, file) };
 }
 
 /**
@@ -107,15 +103,16 @@ export class AutomationService {
 
   private async viewOf(automation: Automation, workspaceId: string): Promise<AutomationView> {
     const { registry } = this.options;
-    const { id, name, description, blocks } = automation;
-    const steps = linearOf(automation);
+    const { id, name, description, blocks, connections } = automation;
     return {
       id,
       name,
       ...(description === undefined ? {} : { description }),
-      steps: steps ?? [],
-      editable: steps !== undefined,
       blocks,
+      connections,
+      positions: automation.positions ?? {},
+      notes: automation.notes ?? [],
+      groups: automation.groups ?? [],
       problems: await checkAutomation(automation, registry, workspaceId),
     };
   }
@@ -130,35 +127,34 @@ export class AutomationService {
     };
   }
 
-  /** Stores an automation, new when it has no id. Nothing here runs it. */
-  async save(draft: AutomationDraft): Promise<AutomationView> {
+  /**
+   * Stores an automation, new when it has no id. Nothing here runs it. A flow being built is stored
+   * with its problems, which keep it from running; only a draft no file could hold is refused.
+   */
+  async save(draft: ReceivedAutomationDraft): Promise<AutomationView> {
     const { dataDir, workspaceId } = this.options;
     const workspace = workspaceId();
     const { automations } = await listAutomations(dataDir, workspace);
     const taken = automations.map(({ id }) => id);
     const id = draft.id ?? newAutomationId(draft.name, taken);
-    const existing =
-      draft.id === undefined ? undefined : automations.find((item) => item.id === id);
-    if (existing !== undefined && linearOf(existing) === undefined) {
-      // The list cannot say what its branches do, so saving it would lose them.
-      throw new Error('This automation has branches, so it can only be changed in its file');
+    const parsed = parseDraft(draft, id);
+    if (!parsed.ok) {
+      throw new DefinitionError(
+        'The automation is not valid',
+        parsed.problems.map(({ message }) => ({ path: '', message })),
+      );
     }
-    const saved = await saveAutomation(dataDir, workspace, draftToAutomation(draft, id));
+    const saved = await saveAutomation(dataDir, workspace, parsed.automation);
     return this.viewOf(saved, workspace);
   }
 
-  /** What keeps a draft from running, for the editor. Nothing is stored. */
-  async check(draft: AutomationDraft): Promise<readonly AutomationProblemView[]> {
+  /** What keeps a draft from running, for the canvas. Nothing is stored. */
+  async check(draft: ReceivedAutomationDraft): Promise<readonly AutomationProblemView[]> {
     const { registry, workspaceId } = this.options;
-    try {
-      const automation = draftToAutomation(draft, draft.id ?? 'draft');
-      return await checkAutomation(automation, registry, workspaceId());
-    } catch (error) {
-      if (error instanceof DefinitionError) {
-        return error.issues.map(({ message }) => ({ stepId: '', message }));
-      }
-      throw error;
-    }
+    const parsed = parseDraft(draft, draft.id ?? 'draft');
+    return parsed.ok
+      ? await checkAutomation(parsed.automation, registry, workspaceId())
+      : parsed.problems;
   }
 
   async remove(id: string): Promise<void> {
@@ -192,7 +188,11 @@ export class AutomationService {
     }
     const [problem] = await checkAutomation(automation, registry, workspace);
     if (problem !== undefined) {
-      throw new Error(`Step "${problem.stepId}": ${problem.message}`);
+      throw new Error(
+        problem.blockId === undefined
+          ? problem.message
+          : `Block "${problem.blockId}": ${problem.message}`,
+      );
     }
 
     const pathVariables = await readPathVariables(dataDir).catch(() => undefined);

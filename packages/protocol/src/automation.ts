@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { graphIssues } from './automation-graph.js';
+import type { GraphIssue } from './automation-graph.js';
+import { automationProblem } from './automation-problems.js';
+import type { AutomationProblemCode, AutomationProblemParams } from './automation-problems.js';
 import { IDENTIFIER_MAX_LENGTH, IDENTIFIER_PATTERN, NAME_PATTERN } from './manifest.js';
 
 /** Automation format this build reads and writes: blocks and connections. */
@@ -14,6 +17,9 @@ export const AUTOMATION_BLOCK_LIMIT = 200;
 export const AUTOMATION_CONNECTION_LIMIT = 1000;
 export const CONDITION_RULES_MAX = 20;
 export const SWITCH_CASES_MAX = 20;
+export const AUTOMATION_NOTE_LIMIT = 100;
+export const AUTOMATION_GROUP_LIMIT = 50;
+export const NOTE_TEXT_MAX = 2000;
 
 /** Names an output cannot be given by a Switch case, because they mean something else. */
 const RESERVED_CASES = ['next', 'error', 'true', 'false', 'default'];
@@ -133,6 +139,23 @@ const connectionSchema = z.strictObject({
 /** Where a block sits on the canvas. Kept apart so that moving a block does not touch the logic. */
 const positionSchema = z.strictObject({ x: z.number(), y: z.number() });
 
+/** Text on the canvas. It changes nothing that runs. */
+const noteSchema = z.strictObject({
+  id: blockId,
+  text: z.string().max(NOTE_TEXT_MAX),
+  x: z.number(),
+  y: z.number(),
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+});
+
+/** A named frame around some blocks. It changes nothing that runs. */
+const groupSchema = z.strictObject({
+  id: blockId,
+  name: nonEmpty.max(200),
+  blocks: z.array(blockId).min(1).max(AUTOMATION_BLOCK_LIMIT),
+});
+
 const automationShape = z.strictObject({
   schemaVersion: z.literal(AUTOMATION_SCHEMA_VERSION),
   id: z.string().max(IDENTIFIER_MAX_LENGTH).regex(IDENTIFIER_PATTERN),
@@ -141,59 +164,93 @@ const automationShape = z.strictObject({
   blocks: z.array(blockSchema).min(1).max(AUTOMATION_BLOCK_LIMIT),
   connections: z.array(connectionSchema).max(AUTOMATION_CONNECTION_LIMIT),
   positions: z.record(blockId, positionSchema).optional(),
+  notes: z.array(noteSchema).max(AUTOMATION_NOTE_LIMIT).optional(),
+  groups: z.array(groupSchema).max(AUTOMATION_GROUP_LIMIT).optional(),
 });
 
-/** Adds the rules a JSON Schema cannot state, which the published schema therefore leaves out. */
-export const automationSchema = automationShape.superRefine((automation, context) => {
-  for (const { path, message } of graphIssues(automation)) {
-    context.addIssue({ code: 'custom', path: [...path], message });
-  }
+/**
+ * What an automation file must be to be read or stored at all. A flow being built can break the
+ * rules below and still be saved; it only cannot run, which `automationRuleIssues` tells.
+ */
+export const automationFileSchema = automationShape;
+
+/** The rules a JSON Schema cannot state, which the published schema therefore leaves out. */
+export function automationRuleIssues(automation: z.output<typeof automationShape>): GraphIssue[] {
+  const issues: GraphIssue[] = graphIssues(automation);
+  const report = (
+    path: (string | number)[],
+    code: AutomationProblemCode,
+    params: AutomationProblemParams,
+    blockId?: string,
+  ): void => {
+    issues.push({ path, ...automationProblem(code, params, blockId) });
+  };
   const ids = new Set(automation.blocks.map(({ id }) => id));
   const checkCondition = (
     condition: z.output<typeof conditionSchema>,
     path: (string | number)[],
+    owner: string,
   ) => {
     condition.rules.forEach(({ block }, index) => {
       if (!ids.has(block)) {
-        context.addIssue({
-          code: 'custom',
-          path: [...path, 'rules', index, 'block'],
-          message: `A rule reads block "${block}", which does not exist`,
-        });
+        report([...path, 'rules', index, 'block'], 'rule-block-missing', { block }, owner);
       }
     });
   };
   automation.blocks.forEach((block, index) => {
     const path: (string | number)[] = ['blocks', index];
-    if (block.type === 'if') checkCondition(block.condition, [...path, 'condition']);
+    if (block.type === 'if') checkCondition(block.condition, [...path, 'condition'], block.id);
     if (block.type !== 'switch') return;
     block.cases.forEach((branch, position) => {
       const casePath = [...path, 'cases', position];
       if (RESERVED_CASES.includes(branch.id)) {
-        context.addIssue({
-          code: 'custom',
-          path: [...casePath, 'id'],
-          message: `"${branch.id}" cannot name a case, because it is the name of another output`,
-        });
+        report([...casePath, 'id'], 'case-reserved', { case: branch.id }, block.id);
       }
       if (block.cases.findIndex(({ id }) => id === branch.id) !== position) {
-        context.addIssue({
-          code: 'custom',
-          path: [...casePath, 'id'],
-          message: `Case "${branch.id}" is declared more than once`,
-        });
+        report([...casePath, 'id'], 'case-duplicate', { case: branch.id }, block.id);
       }
-      checkCondition(branch.condition, [...casePath, 'condition']);
+      checkCondition(branch.condition, [...casePath, 'condition'], block.id);
     });
   });
   for (const id of Object.keys(automation.positions ?? {})) {
     if (!ids.has(id)) {
-      context.addIssue({
-        code: 'custom',
-        path: ['positions', id],
-        message: `A position is given for block "${id}", which does not exist`,
-      });
+      report(['positions', id], 'position-unknown', { block: id });
     }
+  }
+  // Notes and groups share the blocks' names, so that one id finds one thing on the canvas.
+  const named = new Set(ids);
+  const claim = (id: string, path: (string | number)[]): void => {
+    if (named.has(id)) report(path, 'duplicate-id', { id });
+    named.add(id);
+  };
+  automation.notes?.forEach(({ id }, index) => {
+    claim(id, ['notes', index, 'id']);
+  });
+  const grouped = new Set<string>();
+  automation.groups?.forEach((group, index) => {
+    claim(group.id, ['groups', index, 'id']);
+    group.blocks.forEach((block, position) => {
+      const path = ['groups', index, 'blocks', position];
+      if (!ids.has(block)) {
+        report(path, 'group-block-missing', { group: group.name, block });
+      } else if (grouped.has(block)) {
+        report(path, 'group-block-twice', { block }, block);
+      }
+      grouped.add(block);
+    });
+  });
+  return issues;
+}
+
+/** A file that breaks none of the rules, so that it can run once its tools are there. */
+export const automationSchema = automationShape.superRefine((automation, context) => {
+  for (const { path, ...problem } of automationRuleIssues(automation)) {
+    context.addIssue({
+      code: 'custom',
+      path: [...path],
+      message: problem.message,
+      params: { problem },
+    });
   }
 });
 
@@ -203,6 +260,10 @@ export type AutomationBlock = z.output<typeof blockSchema>;
 export type AutomationConnection = z.output<typeof connectionSchema>;
 export type AutomationCondition = z.output<typeof conditionSchema>;
 export type RunBlock = z.output<typeof runBlockSchema>;
+export type AutomationNote = z.output<typeof noteSchema>;
+export type AutomationGroup = z.output<typeof groupSchema>;
+export type AutomationPosition = z.output<typeof positionSchema>;
+export type AutomationRule = z.output<typeof ruleSchema>;
 
 /** Builds the JSON Schema published for automation authors. */
 export function buildAutomationJsonSchema(): Record<string, unknown> {

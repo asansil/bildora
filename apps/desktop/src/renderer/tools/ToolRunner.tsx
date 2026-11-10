@@ -15,7 +15,13 @@ import type { ConsoleSize } from './ConsolePane.js';
 import { ParameterForm } from './ParameterForm.js';
 import { ProfileBar } from './ProfileBar.js';
 import { FavoriteButton, RuntimeWarning, failureText } from './ToolDetails.js';
-import { formProblems, initialValues, shownParameters, submittedValues } from './parameter-form.js';
+import {
+  formDiffers,
+  formProblems,
+  initialValues,
+  shownParameters,
+  submittedValues,
+} from './parameter-form.js';
 import type { FormValue, FormValues } from './parameter-form.js';
 import { summarizeRuns } from './run-state.js';
 
@@ -40,6 +46,8 @@ interface ToolRunnerProps {
   /** Whether the form answers the tool's console script, as the Workspace remembers it. */
   readonly answerWithScript?: boolean;
   readonly onAnswerWithScriptChange?: (answer: boolean) => void;
+  /** Told whether the form differs from what its profile, or the defaults, would fill in. */
+  readonly onDirty?: (dirty: boolean) => void;
 }
 
 /** A level 1 tool in the work area: its generated form, saved profiles and live console. */
@@ -59,6 +67,7 @@ export function ToolRunner({
   onUsed,
   answerWithScript = false,
   onAnswerWithScriptChange,
+  onDirty,
 }: ToolRunnerProps) {
   const parameters = tool.parameters ?? NO_PARAMETERS;
   // Shown at once, while the Workspace stores it. A stored choice that arrives later wins.
@@ -106,6 +115,16 @@ export function ToolRunner({
   const hasProblems = Object.keys(problems).length > 0;
   const failure = summary.last === undefined ? undefined : failureText(summary.last, tool);
   const runnable = tool.runtime.status === 'ready' && !isRunning;
+  const dirty = formDiffers(parameters, values, profile, forgotten);
+
+  // Reported when it changes, so a new callback on every render of the parent is no news.
+  const reportDirty = useRef(onDirty);
+  useEffect(() => {
+    reportDirty.current = onDirty;
+  });
+  useEffect(() => {
+    reportDirty.current?.(dirty);
+  }, [dirty]);
 
   function chooseProfile(id: string | undefined): void {
     onUsed?.();
@@ -163,13 +182,17 @@ export function ToolRunner({
         secrets: { ...cleared, ...secrets },
       })
       .then(async (saved) => {
-        setProfiles(await api.listProfiles(tool.id));
+        const list = await api.listProfiles(tool.id);
+        setProfiles(list);
         setProfileId(saved.id);
         setForgotten([]);
-        setValues((current) => ({
-          ...current,
-          ...Object.fromEntries(Object.keys(secrets).map((name) => [name, ''])),
-        }));
+        // The form shows what the profile now fills in, so a cleared field gets its default back.
+        setValues(
+          initialValues(
+            parameters,
+            list.find((item) => item.id === saved.id),
+          ),
+        );
       })
       .catch(onError);
   }
@@ -281,7 +304,7 @@ export function ToolRunner({
         <button type="button" disabled={isRunning} onClick={onMove}>
           {t(tool.scope === 'global' ? 'tool.moveToWorkspace' : 'tool.moveToGlobal')}
         </button>
-        <button type="button" disabled={isRunning} onClick={onRemove}>
+        <button type="button" className="danger" disabled={isRunning} onClick={onRemove}>
           {t('tool.remove')}
         </button>
       </div>

@@ -1,5 +1,19 @@
 import { z } from 'zod';
-import type { AutomationBlock, LinearStep } from '@bildora/protocol';
+import {
+  AUTOMATION_BLOCK_LIMIT,
+  AUTOMATION_CONNECTION_LIMIT,
+  AUTOMATION_GROUP_LIMIT,
+  AUTOMATION_NOTE_LIMIT,
+} from '@bildora/protocol';
+import type {
+  AutomationBlock,
+  AutomationConnection,
+  AutomationGroup,
+  AutomationNote,
+  AutomationPosition,
+  AutomationProblemCode,
+  AutomationProblemParams,
+} from '@bildora/protocol';
 
 /** Longest path Windows accepts. */
 const PATH_MAX_LENGTH = 32_767;
@@ -17,12 +31,17 @@ const WORKSPACE_NAME_MAX_LENGTH = 80;
 const PATH_VARIABLE_NAME_MAX_LENGTH = 64;
 const FAVORITES_MAX = 1000;
 const SCRIPT_ANSWERS_MAX = 1000;
-const AUTOMATION_STEPS_MAX = 200;
 const CATEGORIES_MAX = 1000;
 const WORKSPACE_TABS_MAX = 100;
 export const PANEL_WIDTH_MIN = 180;
 export const PANEL_WIDTH_MAX = 480;
 export const PANEL_WIDTH_DEFAULT = 248;
+/** The sizes an automation tab's panels may take, as core keeps them, with their defaults. */
+export const AUTOMATION_PANEL_SIZES = {
+  libraryWidth: { min: 160, max: 400, default: 200 },
+  settingsWidth: { min: 220, max: 560, default: 300 },
+  lowerHeight: { min: 96, max: 600, default: 180 },
+} as const;
 
 const textSchema = z.string().max(TEXT_MAX_LENGTH);
 const pathSchema = z.string().min(1).max(PATH_MAX_LENGTH);
@@ -90,12 +109,16 @@ export const automationConfirmSchema = z.strictObject({
   /** The block to answer, when a run waits on several at once. */
   stepId: idSchema.optional(),
 });
-/** The steps are checked in main by `linearStepSchema`, whose messages the editor can show. */
+/** Blocks and the rest are checked in main by `automationSchema`, whose problems the canvas shows. */
 export const automationDraftSchema = z.strictObject({
   id: idSchema.optional(),
   name: textSchema.min(1),
   description: textSchema.min(1).optional(),
-  steps: z.array(z.unknown()).max(AUTOMATION_STEPS_MAX),
+  blocks: z.array(z.unknown()).max(AUTOMATION_BLOCK_LIMIT),
+  connections: z.array(z.unknown()).max(AUTOMATION_CONNECTION_LIMIT),
+  positions: z.record(idSchema, z.unknown()).optional(),
+  notes: z.array(z.unknown()).max(AUTOMATION_NOTE_LIMIT).optional(),
+  groups: z.array(z.unknown()).max(AUTOMATION_GROUP_LIMIT).optional(),
 });
 export const runInputSchema = z.strictObject({
   runId: idSchema,
@@ -114,13 +137,20 @@ export const saveProfileSchema = z.strictObject({
   secrets: secretsSchema.optional(),
 });
 export const removeProfileSchema = z.strictObject({ toolId: idSchema, id: idSchema });
-export const historyListSchema = z.strictObject({ toolId: idSchema.optional() });
+export const historyListSchema = z.strictObject({
+  toolId: idSchema.optional(),
+  automationId: idSchema.optional(),
+});
 export const preferencesSchema = z.strictObject({
   historyRunLimit: z.int().min(1).max(HISTORY_RUN_LIMIT_MAX).optional(),
 });
 export const workspaceIdSchema = z.strictObject({ id: idSchema });
 export const createWorkspaceSchema = z.strictObject({ name: workspaceNameSchema });
 export const renameWorkspaceSchema = z.strictObject({ id: idSchema, name: workspaceNameSchema });
+function panelSizeSchema(panel: keyof typeof AUTOMATION_PANEL_SIZES) {
+  const { min, max } = AUTOMATION_PANEL_SIZES[panel];
+  return z.int().min(min).max(max).optional();
+}
 /** History has a single tab, so only tools and automations name an item. */
 const workspaceTabSchema = z.discriminatedUnion('kind', [
   z.strictObject({
@@ -141,7 +171,28 @@ export const updateWorkspaceSchema = z.strictObject({
       tabs: z.array(workspaceTabSchema).max(WORKSPACE_TABS_MAX).optional(),
       activeTab: textSchema.nullable().optional(),
       historyFilter: idSchema.nullable().optional(),
+      historyAutomation: idSchema.nullable().optional(),
       scriptAnswers: z.array(idSchema).max(SCRIPT_ANSWERS_MAX).optional(),
+      automationPanels: z
+        .strictObject({
+          libraryWidth: panelSizeSchema('libraryWidth'),
+          settingsWidth: panelSizeSchema('settingsWidth'),
+          lowerHeight: panelSizeSchema('lowerHeight'),
+          libraryCollapsed: z.boolean().optional(),
+          settingsCollapsed: z.boolean().optional(),
+          lowerCollapsed: z.boolean().optional(),
+        })
+        .nullable()
+        .optional(),
+      automationCanvas: z
+        .strictObject({
+          snapToGrid: z.boolean().optional(),
+          rightAngles: z.boolean().optional(),
+          hideGrid: z.boolean().optional(),
+          hideNavigator: z.boolean().optional(),
+        })
+        .nullable()
+        .optional(),
     })
     .optional(),
 });
@@ -164,9 +215,19 @@ export type LayoutUpdate = NonNullable<WorkspaceUpdate['layout']>;
 export type StartRunInput = z.infer<typeof startRunSchema>;
 export type RunRequest = Omit<StartRunInput, 'id'>;
 export type SaveProfileInput = z.infer<typeof saveProfileSchema>;
-export type AutomationDraft = z.infer<typeof automationDraftSchema>;
-/** A step of the list editor. Automations with branches are shown but not edited as a list. */
-export type AutomationStep = LinearStep;
+/** A draft as main receives it, before `automationFileSchema` reads its contents. */
+export type ReceivedAutomationDraft = z.infer<typeof automationDraftSchema>;
+/** What the canvas edits, in the terms of the automation file. */
+export interface AutomationDraft {
+  readonly id?: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly blocks: readonly AutomationBlock[];
+  readonly connections: readonly AutomationConnection[];
+  readonly positions?: Readonly<Record<string, AutomationPosition>>;
+  readonly notes?: readonly AutomationNote[];
+  readonly groups?: readonly AutomationGroup[];
+}
 
 export interface ShellPreferences {
   readonly historyRunLimit: number;
@@ -183,8 +244,34 @@ export interface WorkspaceLayoutView {
   readonly activeTab?: string;
   /** The tool id the History tab is filtered by. */
   readonly historyFilter?: string;
+  /** The automation id the History tab is filtered by, when no tool is. */
+  readonly historyAutomation?: string;
   /** Ids of the tools whose form answers their console script. */
   readonly scriptAnswers?: readonly string[];
+  /** How the panels around the automation canvas were left, shared by every automation tab. */
+  readonly automationPanels?: AutomationPanelsView;
+  /** Options of the automation canvas, shared by every automation tab. */
+  readonly automationCanvas?: AutomationCanvasView;
+}
+
+export interface AutomationCanvasView {
+  /** Blocks land on the background's grid when moved, dropped or pasted. */
+  readonly snapToGrid?: boolean;
+  /** Connections are drawn with straight lines and right angles instead of curves. */
+  readonly rightAngles?: boolean;
+  /** The background's dots are not drawn. */
+  readonly hideGrid?: boolean;
+  /** The overview of the whole flow, in the corner, is not drawn. */
+  readonly hideNavigator?: boolean;
+}
+
+export interface AutomationPanelsView {
+  readonly libraryWidth?: number;
+  readonly settingsWidth?: number;
+  readonly lowerHeight?: number;
+  readonly libraryCollapsed?: boolean;
+  readonly settingsCollapsed?: boolean;
+  readonly lowerCollapsed?: boolean;
 }
 
 export interface WorkspaceTabView {
@@ -364,24 +451,31 @@ export interface HistorySummaryView {
   readonly exitCode?: number;
   readonly durationMs?: number;
   readonly failure?: { readonly kind: string; readonly message: string };
+  /**
+   * Set when the run was a step of an automation. `id` and `name` are left out once the record of
+   * that automation run has gone, because the automation was deleted or the run was pruned.
+   */
+  readonly automation?: {
+    readonly runId: string;
+    readonly id?: string;
+    /** The name it had when it ran. */
+    readonly name?: string;
+  };
 }
 
+/** Something that keeps an automation from running, worded by the shell from its code. */
 export interface AutomationProblemView {
-  /** Empty when the problem is with the automation as a whole. */
-  readonly stepId: string;
+  readonly code: AutomationProblemCode;
+  readonly params: AutomationProblemParams;
+  /** Left out when the problem is with the automation as a whole. */
+  readonly blockId?: string;
+  /** The problem in English, as the CLI words it. */
   readonly message: string;
 }
 
-export interface AutomationView {
+export interface AutomationView extends Required<Omit<AutomationDraft, 'id' | 'description'>> {
   readonly id: string;
-  readonly name: string;
   readonly description?: string;
-  /** The list of steps, when the automation is a straight line. Empty when it is not. */
-  readonly steps: readonly AutomationStep[];
-  /** False when the automation has branches or parallel work, which the list cannot show. */
-  readonly editable: boolean;
-  /** Every block, for showing an automation that is not a list. */
-  readonly blocks: readonly AutomationBlock[];
   /** What keeps it from running now. Empty means that it can run. */
   readonly problems: readonly AutomationProblemView[];
 }
@@ -396,8 +490,14 @@ export type StepStateView = 'idle' | 'running' | 'completed' | 'failed' | 'cance
 
 export interface StepRunView {
   readonly id: string;
+  /** The kind of block, as in the file. */
+  readonly type?: string;
   readonly state: StepStateView;
+  /** When the run reached it, in milliseconds since the epoch. */
+  readonly startedAt?: number;
   readonly toolRunId?: string;
+  /** The tool run of every attempt, in order. */
+  readonly toolRunIds?: readonly string[];
   readonly attempt?: number;
   readonly durationMs?: number;
   readonly failure?: { readonly kind: string; readonly message: string };
@@ -416,6 +516,14 @@ export interface AutomationRunStateView {
   readonly automationName: string;
   readonly status: 'running' | 'completed' | 'failed' | 'cancelled';
   readonly steps: readonly StepRunView[];
+  /** Connections the run went along, in order. */
+  readonly paths: readonly TakenPathView[];
+}
+
+export interface TakenPathView {
+  readonly from: string;
+  readonly output: string;
+  readonly to: string;
 }
 
 /** A past run of an automation, from the app or from the CLI. */
@@ -430,7 +538,27 @@ export interface AutomationRunRecordView {
     readonly kind: string;
     readonly message: string;
   };
+  /** Runs recorded before blocks have no paths. */
+  readonly format: 'steps' | 'blocks';
   readonly steps: readonly StepRunView[];
+  readonly paths: readonly TakenPathView[];
+}
+
+/** One row of Run history: a tool run, or an automation run standing for the tool runs it made. */
+export type HistoryEntryView =
+  | ({ readonly kind: 'tool' } & HistorySummaryView)
+  | ({
+      readonly kind: 'automation';
+      readonly automationId: string;
+      /** The name it had when it ran. */
+      readonly automationName: string;
+    } & AutomationRunRecordView);
+
+/** An automation run in Run history, with the tool runs it made, every retry included. */
+export interface HistoryAutomationRunView {
+  readonly run: Extract<HistoryEntryView, { kind: 'automation' }>;
+  /** In the order they started. */
+  readonly toolRuns: readonly HistorySummaryView[];
 }
 
 export interface HistoryRecordView extends HistorySummaryView {

@@ -3,6 +3,7 @@ import type { KeyboardEvent, ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { t } from '../../shared/i18n/translate.js';
 import type { MessageKey } from '../../shared/i18n/translate.js';
+import { ContextMenu } from '../shell/ContextMenu.js';
 import { RunStateIcon, runStateLabel } from '../shell/RunStateBadge.js';
 import type { ToolState } from '../tools/run-state.js';
 
@@ -16,6 +17,8 @@ export interface TabView {
   readonly icon: ReactNode;
   readonly state: ToolState;
   readonly preview: boolean;
+  /** Has changes that are not saved, which a dot in place of the close button shows. */
+  readonly unsaved: boolean;
 }
 
 /** The id of the region a tab shows, so the tab can say what it controls. */
@@ -27,14 +30,6 @@ export function tabId(key: string): string {
   return `tab-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 }
 
-interface TabMenuProps {
-  readonly x: number;
-  readonly y: number;
-  readonly preview: boolean;
-  readonly onAction: (action: TabAction) => void;
-  readonly onClose: () => void;
-}
-
 const MENU_ITEMS: readonly { readonly action: TabAction; readonly label: MessageKey }[] = [
   { action: 'pin', label: 'tabs.pin' },
   { action: 'close', label: 'tabs.close' },
@@ -42,63 +37,6 @@ const MENU_ITEMS: readonly { readonly action: TabAction; readonly label: Message
   { action: 'right', label: 'tabs.closeRight' },
   { action: 'all', label: 'tabs.closeAll' },
 ];
-
-/** A menu drawn in the page, so a tab needs no IPC channel for its context menu. */
-function TabMenu({ x, y, preview, onAction, onClose }: TabMenuProps) {
-  const menu = useRef<HTMLDivElement>(null);
-  const items = MENU_ITEMS.filter(({ action }) => action !== 'pin' || preview);
-
-  useEffect(() => {
-    menu.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-  }, []);
-
-  function onKeyDown(event: KeyboardEvent): void {
-    const entries = [...(menu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
-    const index = entries.indexOf(document.activeElement as HTMLElement);
-    if (event.key === 'Escape' || event.key === 'Tab') {
-      event.preventDefault();
-      onClose();
-    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      const step = event.key === 'ArrowDown' ? 1 : -1;
-      entries[(index + step + entries.length) % entries.length]?.focus();
-    } else if (event.key === 'Home' || event.key === 'End') {
-      event.preventDefault();
-      (event.key === 'Home' ? entries[0] : entries.at(-1))?.focus();
-    }
-  }
-
-  return (
-    <div
-      ref={menu}
-      className="menu-popup tab-menu"
-      role="menu"
-      aria-label={t('tabs.menu')}
-      style={{ left: x, top: y }}
-      onKeyDown={onKeyDown}
-      onBlur={(event) => {
-        if (!menu.current?.contains(event.relatedTarget)) {
-          onClose();
-        }
-      }}
-    >
-      {items.map(({ action, label }) => (
-        <button
-          key={action}
-          type="button"
-          role="menuitem"
-          className="menu-item"
-          tabIndex={-1}
-          onClick={() => {
-            onAction(action);
-          }}
-        >
-          {t(label)}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 interface TabBarProps {
   readonly tabs: readonly TabView[];
@@ -188,10 +126,12 @@ export function TabBar({ tabs, activeKey, onActivate, onPin, onMove, onAction }:
             className="tab"
             data-key={tab.key}
             data-preview={tab.preview ? 'true' : undefined}
+            data-unsaved={tab.unsaved ? 'true' : undefined}
             aria-selected={active}
             aria-controls={tabPanelId(tab.key)}
             // Named by its label alone, so the close button and the state stay out of the name.
-            aria-labelledby={`${tabId(tab.key)}-label`}
+            aria-labelledby={tab.unsaved ? undefined : `${tabId(tab.key)}-label`}
+            aria-label={tab.unsaved ? t('tabs.unsavedName', { name: tab.label }) : undefined}
             aria-describedby={tab.state === 'idle' ? undefined : `${tabId(tab.key)}-state`}
             tabIndex={active ? 0 : -1}
             title={tab.label}
@@ -252,6 +192,9 @@ export function TabBar({ tabs, activeKey, onActivate, onPin, onMove, onAction }:
                 </span>
               </span>
             )}
+            {tab.unsaved ? (
+              <span className="tab-unsaved" title={t('tabs.unsaved')} aria-hidden="true" />
+            ) : null}
             <button
               type="button"
               className="icon-button tab-close"
@@ -268,10 +211,14 @@ export function TabBar({ tabs, activeKey, onActivate, onPin, onMove, onAction }:
         );
       })}
       {menu === undefined ? null : (
-        <TabMenu
+        <ContextMenu
           x={menu.x}
           y={menu.y}
-          preview={tabs.find((tab) => tab.key === menu.key)?.preview === true}
+          label={t('tabs.menu')}
+          items={MENU_ITEMS.filter(
+            ({ action }) =>
+              action !== 'pin' || tabs.find((tab) => tab.key === menu.key)?.preview === true,
+          ).map(({ action, label }) => ({ action, label: t(label) }))}
           onAction={(action) => {
             const { key } = menu;
             setMenu(undefined);

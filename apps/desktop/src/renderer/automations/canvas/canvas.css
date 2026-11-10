@@ -1,0 +1,754 @@
+/* The automation canvas. Every color comes from the tokens; xyflow's own variables map onto them. */
+
+/* An automation tab fills the work area, edge to edge, rather than scrolling like a page. */
+.tab-panels:has(> .tab-panel:not([hidden]) > .flow-tab) {
+  padding: 0;
+  overflow: hidden;
+}
+
+.tab-panel:has(> .flow-tab) {
+  height: 100%;
+}
+
+.flow-tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.flow-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bildora-space-2);
+  padding: var(--bildora-space-2) var(--bildora-space-3);
+  border-bottom: 1px solid var(--bildora-border);
+  background: var(--bildora-surface-panel);
+}
+
+.flow-header .flow-name {
+  flex: 1 1 200px;
+  min-width: 0;
+  font-size: var(--bildora-text-lg);
+  font-weight: var(--bildora-weight-semibold);
+}
+
+.flow-header .flow-description {
+  flex: 2 1 240px;
+  min-width: 0;
+}
+
+.flow-header .actions {
+  display: flex;
+  gap: var(--bildora-space-2);
+  margin: 0;
+}
+
+.flow-waiting {
+  margin: var(--bildora-space-2) var(--bildora-space-3) 0;
+}
+
+/* The columns come from the tab, which knows how wide each panel was left. */
+.flow-body {
+  flex: 1;
+  display: grid;
+  min-height: 0;
+}
+
+/* What is left of a folded side panel: a button to open it again. */
+.flow-strip {
+  display: flex;
+  justify-content: center;
+  padding-top: var(--bildora-space-2);
+  background: var(--bildora-surface-panel);
+}
+
+.flow-strip-library {
+  border-right: 1px solid var(--bildora-border);
+}
+
+.flow-strip-settings {
+  border-left: 1px solid var(--bildora-border);
+}
+
+.flow-side-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--bildora-space-1);
+  margin-bottom: var(--bildora-space-3);
+}
+
+.flow-side-head .library-search {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+/* The settings panel's fold button sits in its corner, and the content flows around it. */
+.flow-settings > .panel-collapse {
+  float: right;
+  margin: calc(-1 * var(--bildora-space-1)) calc(-1 * var(--bildora-space-1)) 0
+    var(--bildora-space-1);
+}
+
+.flow-side {
+  overflow: auto;
+  padding: var(--bildora-space-3);
+  background: var(--bildora-surface-panel);
+}
+
+.flow-library {
+  border-right: 1px solid var(--bildora-border);
+}
+
+.flow-settings {
+  border-left: 1px solid var(--bildora-border);
+}
+
+.flow-side h2 {
+  margin: 0 0 var(--bildora-space-2);
+  font-size: var(--bildora-text-sm);
+  font-weight: var(--bildora-weight-semibold);
+  color: var(--bildora-text-muted);
+}
+
+.flow-side h2 + * {
+  margin-top: 0;
+}
+
+.library-list {
+  list-style: none;
+  margin: 0 0 var(--bildora-space-4);
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.library-item {
+  display: flex;
+  align-items: center;
+  gap: var(--bildora-space-2);
+  width: 100%;
+  min-height: var(--bildora-control-height);
+  padding: 0 var(--bildora-space-2);
+  border: 1px solid transparent;
+  border-radius: var(--bildora-radius-md);
+  background: transparent;
+  text-align: left;
+  cursor: grab;
+}
+
+.library-item:hover {
+  background: var(--bildora-surface-hover);
+}
+
+.library-search {
+  margin-bottom: var(--bildora-space-3);
+}
+
+.flow-canvas {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Scale to rectangle: the canvas waits for a box, drawn in accent dashes, and zooms to it. */
+.scale-rectangle {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  cursor: crosshair;
+}
+
+.scale-rectangle-box {
+  position: absolute;
+  border: 1px dashed var(--bildora-accent);
+  background: color-mix(in oklch, var(--bildora-accent) 8%, transparent);
+  pointer-events: none;
+}
+
+.flow-canvas:focus-visible {
+  outline: 2px solid var(--bildora-focus-ring);
+  outline-offset: -2px;
+}
+
+.flow-lower {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--bildora-border);
+  background: var(--bildora-surface-panel);
+}
+
+.flow-lower-tabs {
+  display: flex;
+  gap: var(--bildora-space-1);
+  padding: var(--bildora-space-1) var(--bildora-space-2) 0;
+  border-bottom: 1px solid var(--bildora-border);
+}
+
+.flow-lower-tabs button {
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+}
+
+.flow-lower.is-collapsed .flow-lower-tabs {
+  border-bottom: none;
+}
+
+.flow-lower-tabs .panel-collapse {
+  align-self: center;
+  margin-left: auto;
+}
+
+.flow-lower-tabs button[aria-selected='true'] {
+  border-bottom-color: var(--bildora-accent);
+  font-weight: var(--bildora-weight-medium);
+}
+
+.flow-lower-body {
+  flex: 1;
+  overflow: auto;
+  padding: var(--bildora-space-2) var(--bildora-space-3);
+}
+
+/* Why Run started nothing, between the header and the canvas. */
+.flow-refused {
+  align-items: center;
+  margin: var(--bildora-space-2) var(--bildora-space-3) 0;
+}
+
+.flow-refused > .icon {
+  margin-top: 0;
+  color: var(--bildora-status-failed);
+}
+
+.flow-refused p {
+  color: var(--bildora-text);
+}
+
+/* A block's output fills the lower panel, which scrolls it. */
+.block-output {
+  margin: 0;
+  max-height: none;
+}
+
+.block-output-console {
+  display: flex;
+  height: 100%;
+  min-height: 120px;
+}
+
+.block-output-console .console {
+  flex: 1;
+  height: auto;
+  min-width: 0;
+}
+
+.problem-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--bildora-space-1);
+}
+
+.problem-item {
+  display: flex;
+  gap: var(--bildora-space-2);
+  width: 100%;
+  padding: var(--bildora-space-1) var(--bildora-space-2);
+  border: none;
+  border-radius: var(--bildora-radius-md);
+  background: transparent;
+  text-align: left;
+}
+
+.problem-item:hover {
+  background: var(--bildora-surface-hover);
+}
+
+.problem-item .icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--bildora-status-warning);
+}
+
+.problem-text {
+  display: grid;
+}
+
+.problem-fix {
+  color: var(--bildora-text-muted);
+}
+
+.react-flow {
+  --xy-background-color: var(--bildora-surface-base);
+  --xy-background-pattern-color: var(--bildora-border);
+  --xy-edge-stroke: var(--bildora-border-strong);
+  --xy-edge-stroke-selected: var(--bildora-accent);
+  --xy-edge-stroke-width: 1.5;
+  --xy-connectionline-stroke: var(--bildora-accent);
+  --xy-handle-background-color: var(--bildora-surface-raised);
+  --xy-handle-border-color: var(--bildora-border-strong);
+  --xy-minimap-background-color: var(--bildora-surface-panel);
+  --xy-minimap-mask-background-color: light-dark(
+    oklch(0.3 0.01 235 / 0.12),
+    oklch(0.08 0.01 235 / 0.45)
+  );
+  --xy-minimap-node-background-color: var(--bildora-border);
+  --xy-minimap-node-stroke-color: var(--bildora-border-strong);
+  --xy-controls-button-background-color: var(--bildora-surface-raised);
+  --xy-controls-button-background-color-hover: var(--bildora-surface-hover);
+  --xy-controls-button-color: var(--bildora-text);
+  --xy-controls-button-color-hover: var(--bildora-text);
+  --xy-controls-button-border-color: var(--bildora-border);
+  --xy-controls-box-shadow: none;
+  --xy-node-boxshadow-selected: none;
+  --xy-selection-background-color: color-mix(in oklch, var(--bildora-accent) 12%, transparent);
+  --xy-selection-border: 1px dotted var(--bildora-accent);
+  --xy-attribution-background-color: transparent;
+}
+
+.react-flow__controls {
+  border: 1px solid var(--bildora-border);
+  border-radius: var(--bildora-radius-md);
+  overflow: hidden;
+}
+
+.react-flow__minimap svg {
+  width: 160px;
+  height: 100px;
+}
+
+.react-flow__minimap {
+  border: 1px solid var(--bildora-border);
+  border-radius: var(--bildora-radius-md);
+}
+
+.react-flow__node {
+  border-radius: var(--bildora-radius-lg);
+}
+
+.react-flow__node.is-focused .block,
+.react-flow__node:focus-visible .block {
+  outline: 2px solid var(--bildora-focus-ring);
+  outline-offset: 3px;
+}
+
+.react-flow__node:focus-visible {
+  outline: none;
+}
+
+.block {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--bildora-space-2);
+  padding: 0 var(--bildora-space-3);
+  background: var(--bildora-surface-raised);
+  border: 1px solid var(--bildora-border-strong);
+  border-radius: var(--bildora-radius-lg);
+  color: var(--bildora-text);
+}
+
+.block.is-selected {
+  border-color: var(--bildora-accent);
+  box-shadow: 0 0 0 1px var(--bildora-accent);
+}
+
+.block-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: var(--bildora-line-tight);
+}
+
+.block-name {
+  display: flex;
+  align-items: center;
+  gap: var(--bildora-space-1);
+  min-width: 0;
+  font-weight: var(--bildora-weight-medium);
+}
+
+.block-logo {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.block-kind {
+  color: var(--bildora-text-muted);
+  font-size: var(--bildora-text-xs);
+}
+
+/* A badge on the corner, so the state never pushes the name aside or hides under a shape. */
+.block-state {
+  position: absolute;
+  top: -9px;
+  left: -9px;
+  z-index: 3;
+  display: flex;
+  padding: 1px;
+  border-radius: 50%;
+  background: var(--bildora-surface-base);
+}
+
+.block-problem {
+  display: flex;
+  margin-left: auto;
+  color: var(--bildora-status-warning);
+}
+
+/* Control blocks differ by shape as well as by label. */
+.block--start {
+  border-radius: 999px;
+  padding-left: var(--bildora-space-4);
+}
+
+.block--if,
+.block--switch {
+  background: transparent;
+  border: none;
+  justify-content: center;
+  text-align: center;
+  padding: 0 28px;
+}
+
+.block--if::before,
+.block--if::after,
+.block--switch::before,
+.block--switch::after {
+  content: '';
+  position: absolute;
+  clip-path: polygon(14% 0, 86% 0, 100% 50%, 86% 100%, 14% 100%, 0 50%);
+}
+
+.block--if::before,
+.block--switch::before {
+  inset: 0;
+  background: var(--bildora-border-strong);
+}
+
+.block--if::after,
+.block--switch::after {
+  inset: 1px;
+  background: var(--bildora-surface-raised);
+}
+
+.block--if.is-selected,
+.block--switch.is-selected {
+  box-shadow: none;
+}
+
+.block--if.is-selected::before,
+.block--switch.is-selected::before {
+  background: var(--bildora-accent);
+}
+
+.block--if > *,
+.block--switch > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Handles stay where xyflow puts them, on the edges, above the shape. */
+.block--if > .react-flow__handle,
+.block--switch > .react-flow__handle {
+  position: absolute;
+  z-index: 2;
+}
+
+.block--if > .block-state,
+.block--switch > .block-state {
+  position: absolute;
+  left: 18px;
+}
+
+.block--if .block-text,
+.block--switch .block-text {
+  align-items: center;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.block-text .block-name {
+  max-width: 100%;
+}
+
+.block--parallel,
+.block--join {
+  justify-content: center;
+  padding: 0;
+  border-radius: var(--bildora-radius-md);
+  background: var(--bildora-surface-selected);
+}
+
+.block-glyph {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: var(--bildora-text-xs);
+  font-weight: var(--bildora-weight-semibold);
+  color: var(--bildora-text-muted);
+}
+
+/* Notes and groups are lighter than blocks, so they never read as steps. */
+.note {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: var(--bildora-space-2) var(--bildora-space-3);
+  background: var(--bildora-surface-raised);
+  border: 1px solid var(--bildora-border);
+  border-left: 3px solid var(--bildora-status-warning);
+  border-radius: var(--bildora-radius-md);
+}
+
+.note.is-selected {
+  border-color: var(--bildora-accent);
+}
+
+.note-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.note-input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--bildora-text);
+  font: inherit;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.note-text.is-empty {
+  color: var(--bildora-text-muted);
+  font-style: italic;
+}
+
+.react-flow__node-frame {
+  pointer-events: none;
+}
+
+.frame {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border: 1px dashed var(--bildora-border-strong);
+  border-radius: var(--bildora-radius-lg);
+  background: color-mix(in oklch, var(--bildora-surface-panel) 40%, transparent);
+}
+
+.frame.is-selected {
+  border-color: var(--bildora-accent);
+  border-style: solid;
+}
+
+.frame-header {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--bildora-space-3);
+  color: var(--bildora-text-muted);
+  font-size: var(--bildora-text-sm);
+  font-weight: var(--bildora-weight-medium);
+  pointer-events: all;
+  cursor: grab;
+}
+
+/* The run view: state by icon, Skipped blocks dimmed, the path taken drawn heavier. */
+.block.is-skipped {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
+.block.is-running {
+  border-color: var(--bildora-status-running);
+}
+
+.block.is-failed {
+  border-color: var(--bildora-status-failed);
+}
+
+.react-flow__edge.edge--taken .react-flow__edge-path {
+  stroke: var(--bildora-text);
+  stroke-width: 2.5;
+}
+
+.handle {
+  width: 12px;
+  height: 12px;
+  transition: transform var(--bildora-motion-fast) var(--bildora-ease);
+}
+
+/* Larger to the pointer than it is drawn, so an output is easy to grab. */
+.handle::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+}
+
+.flow-canvas:not(.is-readonly) .handle:hover {
+  transform: translate(50%, -50%) scale(1.35);
+  border-color: var(--bildora-accent);
+}
+
+.flow-canvas:not(.is-readonly) .handle--in:hover {
+  transform: translate(-50%, -50%) scale(1.35);
+}
+
+/* The arrowhead of a connection is drawn with it, in the same color. */
+.flow-canvas:not(.is-readonly) .react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--bildora-accent);
+}
+
+.handle-label {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: var(--bildora-text-xs);
+  color: var(--bildora-text-muted);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* A decision keeps its labels inside its shape, left of each output, clear of the connections. */
+.block--if,
+.block--switch {
+  padding-right: 64px;
+}
+
+.block--if .handle-label,
+.block--switch .handle-label {
+  right: 26px;
+}
+
+/* An input lets the pointer through to the end of the connection drawn under it, which can then
+   be dragged to another block. A connection still finds the input by where it is. */
+.flow-canvas:not(.is-readonly) .handle--in {
+  pointer-events: none;
+}
+
+.handle--error {
+  border-style: dashed;
+}
+
+/* Only valid targets highlight while a connection is dragged. */
+.react-flow__handle.connectingto.valid,
+.react-flow__node.is-target .handle--in {
+  background: var(--bildora-accent);
+  border-color: var(--bildora-accent);
+}
+
+.react-flow__node.is-target .block {
+  border-color: var(--bildora-accent);
+}
+
+.react-flow__edge.edge--error .react-flow__edge-path {
+  stroke-dasharray: 5 4;
+  stroke: var(--bildora-status-failed);
+}
+
+/* While a block is Shift-dragged: the connections that would join it, and the one it would go
+   into, kept faint so the pointer can stay on it. */
+.react-flow__edge.edge--pending .react-flow__edge-path {
+  stroke: var(--bildora-accent);
+  stroke-width: 2;
+}
+
+.react-flow__edge.edge--replaced .react-flow__edge-path {
+  stroke-dasharray: 3 4;
+  opacity: 0.35;
+}
+
+/* The connection a dragged block would go into if it were let go now. */
+.react-flow__edge.edge--splice .react-flow__edge-path {
+  stroke: var(--bildora-accent);
+  stroke-width: 3;
+}
+
+.react-flow__edge-textbg {
+  fill: var(--bildora-surface-base);
+}
+
+.react-flow__edge-text {
+  fill: var(--bildora-text-muted);
+  font-size: var(--bildora-text-xs);
+}
+
+.condition-rule {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--bildora-space-1);
+  padding: var(--bildora-space-2);
+  margin-bottom: var(--bildora-space-2);
+  border: 1px solid var(--bildora-border);
+  border-radius: var(--bildora-radius-md);
+}
+
+.condition-sentence {
+  color: var(--bildora-text-muted);
+}
+
+.choice-list {
+  list-style: none;
+  margin: 0 0 var(--bildora-space-3);
+  padding: 0;
+  display: grid;
+  gap: var(--bildora-space-1);
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.choice-list button {
+  justify-content: flex-start;
+  width: 100%;
+  text-align: left;
+}
+
+.outline-list {
+  list-style: none;
+  margin: 0;
+  padding-left: var(--bildora-space-3);
+}
+
+.outline > .outline-list {
+  padding-left: 0;
+}
+
+.outline button {
+  border: none;
+  background: transparent;
+  padding: 0 var(--bildora-space-1);
+  text-align: left;
+}
+
+.outline-links {
+  margin: 0 0 var(--bildora-space-1);
+  padding-left: var(--bildora-space-6);
+  color: var(--bildora-text-muted);
+  font-size: var(--bildora-text-sm);
+}
+
+.outline-group {
+  font-weight: var(--bildora-weight-medium);
+}

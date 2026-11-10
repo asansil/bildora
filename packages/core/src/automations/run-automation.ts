@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname, isAbsolute, normalize, resolve } from 'node:path';
 import {
   DEFAULT_CASE,
+  automationRuleIssues,
   connectionOutput,
   findStepOutputReferences,
   replaceRunReferences,
@@ -141,11 +142,13 @@ function waitFor(milliseconds: number, signal: AbortSignal): Promise<void> {
 
 /** A step without what only matters while it is going on. */
 function recordOf(step: StepView): AutomationStepRecord {
-  const { id, state, toolRunId, attempt, durationMs, failure } = step;
+  const { id, state, startedAt, toolRunId, toolRunIds, attempt, durationMs, failure } = step;
   return {
     id,
     state,
+    ...(startedAt === undefined ? {} : { startedAt }),
     ...(toolRunId === undefined ? {} : { toolRunId }),
+    ...(toolRunIds === undefined ? {} : { toolRunIds }),
     ...(attempt === undefined ? {} : { attempt }),
     ...(durationMs === undefined ? {} : { durationMs }),
     ...(failure === undefined ? {} : { failure }),
@@ -241,6 +244,11 @@ function cancelScope(scope: Scope): void {
 export function startAutomationRun(options: AutomationRunOptions): AutomationRun {
   const { workspaceId, trigger, dataDir, history, pathVariables } = options;
   const { automation } = options;
+  // Callers check first; a flow saved half built must never reach the scheduler.
+  const [broken] = automationRuleIssues(automation);
+  if (broken !== undefined) {
+    throw new Error(`The automation cannot run: ${broken.message}`);
+  }
   const variables: PathVariables = pathVariables ?? new Map<string, string>();
   const delay = options.delay ?? waitFor;
   const runId = options.runId ?? randomUUID();
@@ -312,6 +320,12 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     record(() => {
       history.updateAutomationSteps(runId, records(), taken);
     });
+  }
+
+  /** Notes when the run reached a block. The change that follows reports it. */
+  function reach(id: string): void {
+    reached.add(id);
+    steps.set(id, { ...stepView(id), startedAt: Date.now() });
   }
 
   /** A block that does nothing but direct the run, which is over as soon as it is reached. */
@@ -391,7 +405,10 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       return failed('not-started', error instanceof Error ? error.message : String(error));
     }
     scope.live.add(run);
-    setStep(step.id, { toolRunId: run.runId });
+    setStep(step.id, {
+      toolRunId: run.runId,
+      toolRunIds: [...(stepView(step.id).toolRunIds ?? []), run.runId],
+    });
     if (isCancelled()) {
       run.cancel();
     }
@@ -564,7 +581,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     if (scope.controller.signal.aborted) {
       return;
     }
-    reached.add(join.id);
+    reach(join.id);
     if (inner.failure !== undefined) {
       const { kind, message } = inner.failure;
       results.set(join.id, { result: 'failed' });
@@ -633,7 +650,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     if (reached.has(id)) {
       return;
     }
-    reached.add(id);
+    reach(id);
     try {
       await walk(block, scope, region);
     } catch (error) {

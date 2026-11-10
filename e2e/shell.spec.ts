@@ -391,6 +391,88 @@ test('the main menus work from the keyboard', async () => {
   await expect(window.getByRole('dialog')).toHaveCount(0);
 });
 
+test('a submenu opens from the keyboard and the pointer, and checks the current theme', async () => {
+  const { app, window } = await launchShell();
+  await expect(window.getByTestId('welcome')).toBeVisible();
+  const view = window.getByRole('menu', { name: 'View' });
+  const themes = window.getByRole('menu', { name: 'Theme' });
+  const themeItem = view.getByRole('menuitem', { name: 'Theme' });
+
+  // File, Edit, Selection, View.
+  await window.keyboard.press('Alt');
+  await window.keyboard.press('ArrowRight');
+  await window.keyboard.press('ArrowRight');
+  await window.keyboard.press('ArrowRight');
+  await expect(window.getByRole('menuitem', { name: 'View' })).toBeFocused();
+  await window.keyboard.press('Enter');
+  await expect(themeItem).toBeFocused();
+  await expect(themeItem).toHaveAttribute('aria-haspopup', 'menu');
+  await expect(themeItem).toHaveAttribute('aria-expanded', 'false');
+
+  await window.keyboard.press('ArrowRight');
+  await expect(themeItem).toHaveAttribute('aria-expanded', 'true');
+  const system = themes.getByRole('menuitemcheckbox', { name: 'Follow Windows' });
+  await expect(system).toBeFocused();
+  await expect(system).toHaveAttribute('aria-checked', 'true');
+  await expect(themes.getByRole('menuitemcheckbox', { name: 'Light' })).toHaveAttribute(
+    'aria-checked',
+    'false',
+  );
+
+  // Escape and ArrowLeft go back one level, and leave the menu above open.
+  await window.keyboard.press('Escape');
+  await expect(themes).toHaveCount(0);
+  await expect(themeItem).toBeFocused();
+  await window.keyboard.press('Enter');
+  await expect(system).toBeFocused();
+  await window.keyboard.press('ArrowLeft');
+  await expect(themes).toHaveCount(0);
+  await expect(themeItem).toBeFocused();
+
+  // The submenu sits beside its item, inside the window.
+  await window.keyboard.press('ArrowRight');
+  const item = await themeItem.boundingBox();
+  const submenu = await themes.boundingBox();
+  expect(item).not.toBeNull();
+  expect(submenu).not.toBeNull();
+  if (item !== null && submenu !== null) {
+    expect(submenu.x).toBeGreaterThanOrEqual(item.x + item.width - 4);
+    expect(Math.abs(submenu.y - item.y)).toBeLessThan(12);
+  }
+
+  await window.keyboard.press('ArrowDown');
+  await window.keyboard.press('ArrowDown');
+  await expect(themes.getByRole('menuitemcheckbox', { name: 'Dark' })).toBeFocused();
+  await window.keyboard.press('Enter');
+  await expect(view).toHaveCount(0);
+  await expect
+    .poll(() => app.evaluate(({ nativeTheme }) => nativeTheme.shouldUseDarkColors))
+    .toBe(true);
+
+  // With the pointer: hovering the item opens its submenu, which shows the new theme checked.
+  await window.getByRole('menuitem', { name: 'View' }).click();
+  await themeItem.hover();
+  await expect(themes.getByRole('menuitemcheckbox', { name: 'Dark' })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
+  await themes.getByRole('menuitemcheckbox', { name: 'Follow Windows' }).click();
+  await expect(view).toHaveCount(0);
+  await window.getByRole('menuitem', { name: 'View' }).click();
+  await themeItem.click();
+  await expect(themes.getByRole('menuitemcheckbox', { name: 'Follow Windows' })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
+  // A key then moves into the submenu the pointer opened.
+  await window.keyboard.press('ArrowRight');
+  await expect(themes.getByRole('menuitemcheckbox', { name: 'Follow Windows' })).toBeFocused();
+  await window.keyboard.press('Escape');
+  await window.keyboard.press('Escape');
+  await expect(view).toHaveCount(0);
+  await expect(window.getByRole('menuitem', { name: 'View' })).toBeFocused();
+});
+
 test('the theme changes, and is remembered', async () => {
   const first = await launchShell();
   await first.window.getByRole('button', { name: 'Settings' }).click();

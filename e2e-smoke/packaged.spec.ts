@@ -110,6 +110,7 @@ steps:
         .getByTestId('automations-panel')
         .getByRole('button', { name: 'Report', exact: true })
         .click();
+      await window.getByRole('tab', { name: 'Past runs' }).click();
       await expect(window.getByTestId('automation-runs')).toContainText('Command line');
       await expect(window.getByTestId('automation-runs')).toContainText('Completed');
     } finally {
@@ -180,6 +181,7 @@ steps:
       .getByTestId('automations-panel')
       .getByRole('button', { name: 'Signed', exact: true })
       .click();
+    await window.getByRole('tab', { name: 'Past runs' }).click();
     await expect(window.getByTestId('automation-runs')).toContainText('Command line');
     await window.getByRole('navigation').getByRole('button', { name: 'Run history' }).click();
     await expect(window.locator('.history-row')).toHaveCount(2);

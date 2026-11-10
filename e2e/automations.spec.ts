@@ -6,6 +6,12 @@ import { _electron as electron, expect, test } from '@playwright/test';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
 
 const FAKE_TOOL = resolve('examples/fixtures/fake-tool.mjs');
+/** A folder for screenshots, to look at what a test went through. */
+const SHOTS = process.env['BILDORA_SHOTS'];
+
+async function shot(window: Page, name: string): Promise<void> {
+  if (SHOTS !== undefined) await window.screenshot({ path: join(SHOTS, `${name}.png`) });
+}
 
 function electronEnvironment(extra: Record<string, string>): Record<string, string> {
   const inherited = Object.entries(process.env).filter(
@@ -60,12 +66,17 @@ function rail(window: Page, name: string): Locator {
   return window.getByRole('navigation').getByRole('button', { name, exact: true });
 }
 
+/** A block on the canvas. In the run view it carries its state in `data-state`. */
 function step(window: Page, id: string): Locator {
-  return window.locator(`[data-testid="automation-step"][data-step-id="${id}"]`);
+  return window.locator(`.react-flow__node[data-id="${id}"] [data-testid="canvas-block"]`);
 }
 
-function editorStep(window: Page, id: string): Locator {
-  return window.locator(`[data-testid="step-editor"][data-step-id="${id}"]`);
+function settings(window: Page): Locator {
+  return window.getByTestId('block-settings');
+}
+
+function runBadge(window: Page): Locator {
+  return window.locator('.flow-header .state-badge');
 }
 
 function automationsPanel(window: Page): Locator {
@@ -122,22 +133,35 @@ outputs:
   await expect(window.getByText('No automations in this Workspace yet.')).toBeVisible();
   await window.getByRole('button', { name: 'New automation' }).click();
   await window.getByLabel('Name', { exact: true }).fill('Hand over');
+  const library = window.getByTestId('block-library');
 
-  await window.getByRole('button', { name: 'Run a tool' }).click();
-  const first = editorStep(window, 'writer');
-  await first.getByLabel('Use a reference').nth(1).selectOption({ label: 'Folder of this run' });
-  await first.getByLabel('To', { exact: true }).fill('{{run.folder}}/one.txt');
+  // Pressing blocks in the library one after another builds a chain from Start.
+  await library.getByRole('button', { name: 'Writer' }).click();
+  await expect(settings(window)).toHaveAttribute('data-block-id', 'writer');
+  await settings(window)
+    .getByLabel('Use a reference')
+    .nth(1)
+    .selectOption({ label: 'Folder of this run' });
+  await settings(window).getByLabel('To', { exact: true }).fill('{{run.folder}}/one.txt');
 
-  await window.getByRole('button', { name: 'Run a tool' }).click();
-  const second = editorStep(window, 'writer-2');
-  await second.getByLabel('Use a reference').nth(0).selectOption({ label: 'writer: file' });
-  await second.getByLabel('To', { exact: true }).fill('{{run.folder}}/two.txt');
+  await library.getByRole('button', { name: 'Writer' }).click();
+  await expect(settings(window)).toHaveAttribute('data-block-id', 'writer-2');
+  await settings(window)
+    .getByLabel('Use a reference')
+    .nth(0)
+    .selectOption({ label: 'Writer: file' });
+  await settings(window).getByLabel('To', { exact: true }).fill('{{run.folder}}/two.txt');
 
-  await window.getByRole('button', { name: 'Wait for a person' }).click();
-  await window.getByRole('button', { name: 'Move step 3 up' }).click();
-  await expect(window.getByTestId('step-editor').nth(1)).toHaveAttribute('data-step-id', 'review');
-  await window.getByRole('button', { name: 'Save automation' }).click();
+  // A block added after one whose way on is taken goes in between.
+  await window.getByRole('button', { name: 'Fit View' }).click();
+  await step(window, 'writer').click();
+  await library.getByRole('button', { name: 'Wait for a person' }).click();
+  await expect(settings(window)).toHaveAttribute('data-block-id', 'review');
+  await window.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(window.getByRole('tab', { name: 'Hand over', selected: true })).toBeVisible();
+  await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
 
+  await window.locator('.react-flow__pane').click({ position: { x: 10, y: 10 } });
   await expect(window.getByTestId('automation-command')).toHaveText('bildora run hand-over');
   await window.getByRole('button', { name: 'Run', exact: true }).click();
 
@@ -147,14 +171,11 @@ outputs:
   await expect(step(window, 'review')).toContainText('Waiting for you');
   await expect(step(window, 'writer-2')).toHaveAttribute('data-state', 'idle');
   await expect(window.getByTestId('status')).toContainText('1 task');
-  await step(window, 'review').getByRole('button', { name: 'Continue' }).click();
+  await window.getByTestId('automation-waiting').getByRole('button', { name: 'Continue' }).click();
 
   await expect(step(window, 'writer-2')).toHaveAttribute('data-state', 'completed', toFinish);
-  await expect(window.locator('.tool-header .state-badge')).toHaveAttribute(
-    'data-state',
-    'completed',
-    toFinish,
-  );
+  await expect(runBadge(window)).toHaveAttribute('data-state', 'completed', toFinish);
+  await window.getByRole('tab', { name: 'Past runs' }).click();
   await expect(window.getByTestId('automation-runs')).toContainText('App');
   await expect(window.getByTestId('status')).toHaveText('Ready');
 
@@ -186,7 +207,8 @@ test('a failed step stops the automation and says why', async () => {
   await expect(step(window, 'first')).toHaveAttribute('data-state', 'failed');
   await expect(step(window, 'first')).toContainText('The tool exited with code 7');
   await expect(step(window, 'second')).toHaveAttribute('data-state', 'idle');
-  await expect(window.getByTestId('automation-runs')).toContainText('first:');
+  await window.getByRole('tab', { name: 'Past runs' }).click();
+  await expect(window.getByTestId('automation-runs')).toContainText('exited with code 7');
 
   await rail(window, 'Run history').click();
   await window.locator('.history-row').first().click();
@@ -228,7 +250,80 @@ stdin:
   await expect(step(window, 'ask')).toHaveAttribute('data-state', 'completed');
   await rail(window, 'Run history').click();
   await window.locator('.history-row').first().click();
+  await window.locator('.timeline-row[data-block="ask"]').click();
   await expect(window.getByTestId('history-output')).toContainText('HELLO Zoe');
+});
+
+test('history shows an automation run as one entry, with its blocks over time', async () => {
+  const flaky = join(folder, 'flaky.mjs');
+  const marker = join(folder, 'tried-once');
+  await writeFile(
+    flaky,
+    `import { existsSync, writeFileSync } from 'node:fs';
+const marker = ${JSON.stringify(marker)};
+if (existsSync(marker)) {
+  console.log('SECOND TRY');
+} else {
+  writeFileSync(marker, '');
+  console.log('FIRST TRY');
+  process.exitCode = 3;
+}`,
+  );
+  await writeTool(
+    'flaky',
+    'Flaky',
+    `run:
+  program: ${flaky}
+`,
+  );
+  await fakeTool('quick', 'Quick', ['exit', '0']);
+  await writeAutomation(
+    'nightly',
+    'Nightly',
+    `  - { id: first, type: run, tool: quick }
+  - { id: shaky, type: run, tool: flaky, onFailure: { retry: { attempts: 2, delaySeconds: 0 } } }
+`,
+  );
+
+  const { window } = await launchShell();
+  await openAutomation(window, 'Nightly');
+  await window.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(step(window, 'shaky')).toHaveAttribute('data-state', 'completed', {
+    timeout: 20_000,
+  });
+
+  await rail(window, 'Run history').click();
+  const rows = window.locator('.history-row');
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toHaveAttribute('data-kind', 'automation');
+  await expect(rows.first()).toContainText('Nightly');
+  await rows.first().click();
+
+  const timeline = window.getByTestId('history-timeline');
+  await expect(timeline.locator('.timeline-row')).toHaveCount(3);
+  await expect(timeline.locator('.timeline-row').nth(0)).toHaveAttribute('data-block', 'start');
+  const shaky = timeline.locator('.timeline-row[data-block="shaky"]');
+  await expect(shaky).toContainText('2 tries');
+  await expect(shaky.locator('.timeline-bar')).toHaveCount(2);
+  await shaky.click();
+  await expect(window.getByTestId('history-output')).toContainText('SECOND TRY');
+  await window.getByRole('button', { name: 'Try 1' }).click();
+  await expect(window.getByTestId('history-output')).toContainText('FIRST TRY');
+  await shot(window, 'history-automation-run');
+
+  await window.getByLabel('Show').selectOption({ label: 'Quick' });
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toHaveAttribute('data-kind', 'automation');
+  await rows.first().click();
+  await expect(window.locator('.timeline-row[data-block="first"]')).toHaveAttribute(
+    'aria-current',
+    'true',
+  );
+
+  await window.getByRole('button', { name: 'Show on canvas' }).click();
+  await expect(window.getByRole('tab', { name: /Nightly/, selected: true })).toBeVisible();
+  await expect(window.locator('.automation-run[aria-pressed="true"]')).toBeVisible();
+  await expect(step(window, 'shaky')).toHaveAttribute('data-state', 'completed');
 });
 
 test('a run that went on past a failed step says so', async () => {
@@ -245,8 +340,9 @@ test('a run that went on past a failed step says so', async () => {
   await openAutomation(window, 'Goes on');
   await window.getByRole('button', { name: 'Run', exact: true }).click();
 
-  await expect(window.locator('.tool-header .state-badge')).toHaveText('Completed, 1 step failed');
+  await expect(runBadge(window)).toHaveText('Completed, 1 step failed');
   await expect(step(window, 'first')).toHaveAttribute('data-state', 'failed');
+  await window.getByRole('tab', { name: 'Past runs' }).click();
   await expect(window.getByTestId('automation-runs')).toContainText('Completed, 1 step failed');
 });
 
@@ -261,12 +357,23 @@ test('a step whose tool has gone shows as broken, and nothing changes on its own
   const { window } = await launchShell();
   await openAutomation(window, 'Broken');
 
-  await expect(window.getByTestId('automation-broken')).toBeVisible();
-  await expect(window.getByTestId('step-broken')).toContainText('Tool "gone" is not installed');
-  await expect(window.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
-  await window.getByRole('button', { name: 'Edit', exact: true }).click();
-  await expect(window.getByTestId('step-problem')).toContainText('not installed');
-  await window.getByRole('button', { name: 'Cancel' }).click();
+  const problem = window.getByTestId('automation-problem');
+  await expect(problem).toContainText('The tool gone is not installed in this Workspace.');
+  await expect(problem).toContainText('Install the tool again');
+  await expect(step(window, 'first').locator('.block-problem')).toBeVisible();
+
+  // Run stays there to press, and says why nothing ran.
+  await window.getByRole('tab', { name: 'Past runs' }).click();
+  await window.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(window.getByTestId('run-refused')).toHaveText(
+    '1 problem stops this automation from running. It is listed below.',
+  );
+  await expect(window.getByRole('tab', { name: /Problems/, selected: true })).toBeVisible();
+  await expect(window.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);
+  await problem.click();
+  await expect(settings(window)).toHaveAttribute('data-block-id', 'first');
+  // Opening lays the converted blocks out, which is not an edit, so the file stays as it was.
+  await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
   expect(await readFile(file, 'utf8')).toBe(before);
 });
 
@@ -288,15 +395,15 @@ test('opening and closing a category panel leaves the automation in view', async
 
   const { window } = await launchShell();
   await openAutomation(window, 'Nightly');
-  await expect(window.getByTestId('automation-detail')).toBeVisible();
+  await expect(window.getByTestId('canvas')).toBeVisible();
 
   await rail(window, 'Uncategorized').click();
   await expect(window.locator('#tool-panel')).toBeVisible();
-  await expect(window.getByTestId('automation-detail')).toBeVisible();
+  await expect(window.getByTestId('canvas')).toBeVisible();
 
   await rail(window, 'Uncategorized').click();
   await expect(window.locator('#tool-panel')).toBeHidden();
-  await expect(window.getByTestId('automation-detail')).toBeVisible();
+  await expect(window.getByTestId('canvas')).toBeVisible();
 });
 
 test('a run keeps going across a Workspace switch, and can be stopped', async () => {
@@ -324,6 +431,52 @@ test('a run keeps going across a Workspace switch, and can be stopped', async ()
   await window.getByRole('button', { name: 'Stop', exact: true }).click();
   await expect(step(window, 'first')).toHaveAttribute('data-state', 'cancelled');
   await expect(window.getByTestId('status')).toHaveText('Ready');
+});
+
+test('Run saves the flow first, and Output shows what a tool wrote, live and later', async () => {
+  await fakeTool('hang', 'Hang', ['hang']);
+  await fakeTool('lines', 'Lines', ['lines', '3']);
+  const file = await writeAutomation(
+    'talks',
+    'Talks',
+    `  - { id: first, type: run, tool: lines }
+  - { id: second, type: run, tool: hang }
+`,
+  );
+
+  const { window } = await launchShell();
+  await openAutomation(window, 'Talks');
+  await window.getByLabel('Description').fill('Says a few lines');
+  await window.getByRole('button', { name: 'Save and run', exact: true }).click();
+  await expect(step(window, 'second')).toHaveAttribute('data-state', 'running', {
+    timeout: 15_000,
+  });
+  expect(await readFile(file, 'utf8')).toContain('Says a few lines');
+  await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+
+  // Choosing a block in a run shows what its tool wrote, as it writes it.
+  await step(window, 'second').click();
+  await expect(window.getByRole('tab', { name: 'Output', selected: true })).toBeVisible();
+  const output = window.getByTestId('block-output');
+  await expect(output).toHaveAttribute('data-live', 'true');
+  await expect(output.locator('.xterm-rows')).toContainText('READY');
+
+  await step(window, 'first').click();
+  await expect(output).toContainText('LINE 3');
+  await expect(output).toContainText('END');
+
+  await window.getByRole('button', { name: 'Stop', exact: true }).click();
+  await expect(step(window, 'second')).toHaveAttribute('data-state', 'cancelled');
+
+  // A past run keeps the output too, and a double click on it goes straight there.
+  await window.getByRole('button', { name: 'Back to editing' }).click();
+  await expect(window.getByRole('tab', { name: 'Output' })).toHaveCount(0);
+  await window.getByRole('tab', { name: 'Past runs' }).click();
+  await window.locator('.automation-run').first().dblclick();
+  await expect(window.getByRole('tab', { name: 'Output', selected: true })).toBeVisible();
+  await expect(output).toHaveCount(0);
+  await step(window, 'first').click();
+  await expect(output).toContainText('LINE 3');
 });
 
 test('closing asks while an automation only waits, and ends it', async () => {
@@ -360,6 +513,7 @@ test('closing asks while an automation only waits, and ends it', async () => {
 
   const second = await launchShell();
   await openAutomation(second.window, 'Waits');
+  await second.window.getByRole('tab', { name: 'Past runs' }).click();
   await expect(second.window.getByTestId('automation-runs')).toContainText('Cancelled');
 });
 
@@ -375,14 +529,11 @@ test('the command palette starts an automation', async () => {
   await window.getByRole('combobox', { name: 'Find a tool or action' }).fill('Quick One');
   await window.keyboard.press('Enter');
 
-  await expect(window.getByTestId('automation-detail')).toBeVisible();
-  await expect(window.locator('.tool-header .state-badge')).toHaveAttribute(
-    'data-state',
-    'completed',
-  );
+  await expect(window.getByTestId('canvas')).toBeVisible();
+  await expect(runBadge(window)).toHaveAttribute('data-state', 'completed');
 });
 
-test('an automation with branches runs, shows what it skipped, and cannot be edited as a list', async () => {
+test('an automation with branches runs on the canvas, and shows what it skipped', async () => {
   test.setTimeout(90_000);
   await fakeTool('bad', 'Bad', ['exit', '7']);
   await fakeTool('good', 'Good', ['exit', '0']);
@@ -406,13 +557,9 @@ connections:
 
   const { window } = await launchShell();
   await openAutomation(window, 'Branching');
-  await expect(window.getByTestId('automation-branched')).toBeVisible();
-  await expect(window.getByRole('button', { name: 'Edit', exact: true })).toBeDisabled();
 
   await window.getByRole('button', { name: 'Run', exact: true }).click();
-  await expect(window.locator('.tool-header .state-badge')).toHaveText('Completed, 1 step failed', {
-    timeout: 30_000,
-  });
+  await expect(runBadge(window)).toHaveText('Completed, 1 step failed', { timeout: 30_000 });
   await expect(step(window, 'check')).toHaveAttribute('data-state', 'failed');
   await expect(step(window, 'cleanup')).toHaveAttribute('data-state', 'completed');
   await expect(step(window, 'other')).toHaveAttribute('data-state', 'skipped');
@@ -434,19 +581,19 @@ test('a list of steps from before blocks still runs, and is rewritten only when 
 
   const { window } = await launchShell();
   await openAutomation(window, 'Old list');
-  await expect(window.getByTestId('automation-branched')).toHaveCount(0);
   await window.getByRole('button', { name: 'Run', exact: true }).click();
-  await expect(window.locator('.tool-header .state-badge')).toHaveText('Completed', {
-    timeout: 30_000,
-  });
+  await expect(runBadge(window)).toHaveText('Completed', { timeout: 30_000 });
   expect(await readFile(old, 'utf8')).toBe(before);
 
-  await window.getByRole('button', { name: 'Edit', exact: true }).click();
-  await window.getByRole('button', { name: 'Save automation' }).click();
-  await expect(window.getByTestId('automation-detail')).toBeVisible();
+  await window.getByRole('button', { name: 'Back to editing' }).click();
+  await window.getByLabel('Description', { exact: true }).fill('Converted');
+  await window.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+  // Save is also disabled while it writes, so the file is read once it has changed.
+  await expect.poll(() => readFile(old, 'utf8')).toContain('schemaVersion: 2');
   const saved = await readFile(old, 'utf8');
-  expect(saved).toContain('schemaVersion: 2');
   expect(saved).toContain('blocks:');
+  expect(saved).toContain('positions:');
 });
 
 test('a list of steps that cannot become blocks shows as a problem and stays as it is', async () => {

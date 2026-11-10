@@ -424,4 +424,52 @@ describe('RunHistory with several processes', () => {
     history.removeWorkspace('work');
     expect(history.listAutomationRuns('work', 'flow')).toEqual([]);
   });
+
+  it('names the automation a run was a step of, while its record lasts', () => {
+    history.startAutomationRun({ ...automationRun, runId: 'a' });
+    history.start({ ...run, runId: 'step', automationRunId: 'a' });
+    history.start({ ...run, runId: 'alone', startedAt: 0 });
+    const origin = { runId: 'a', id: 'flow', name: 'Flow' };
+    expect(history.list('work').map(({ runId, automation }) => ({ runId, automation }))).toEqual([
+      { runId: 'step', automation: origin },
+      { runId: 'alone', automation: undefined },
+    ]);
+    expect(history.get('work', 'step')?.automation).toEqual(origin);
+    expect(history.get('work', 'step')?.parameters).toEqual([]);
+    history.removeAutomation('work', 'flow');
+    expect(history.get('work', 'step')?.automation).toEqual({ runId: 'a' });
+    expect(history.list('work', 'sample')[0]?.automation).toEqual({ runId: 'a' });
+  });
+
+  it('lists an automation run in place of its steps, and keeps a step whose run is gone', () => {
+    history.startAutomationRun({ ...automationRun, runId: 'a', startedAt: 10 });
+    history.start({ ...run, runId: 'try-1', automationRunId: 'a', startedAt: 11 });
+    history.start({ ...run, runId: 'try-2', automationRunId: 'a', startedAt: 12 });
+    history.start({ ...run, runId: 'by-hand', toolId: 'other', startedAt: 20 });
+    history.startAutomationRun({
+      ...automationRun,
+      runId: 'b',
+      automationId: 'other-flow',
+      startedAt: 5,
+    });
+    history.start({ ...run, runId: 'orphan', automationRunId: 'gone', startedAt: 1 });
+    const summary = (entries: ReturnType<RunHistory['entries']>): string[] =>
+      entries.map((entry) => `${entry.kind}:${entry.runId}`);
+
+    expect(summary(history.entries('work'))).toEqual([
+      'tool:by-hand',
+      'automation:a',
+      'automation:b',
+      'tool:orphan',
+    ]);
+    expect(summary(history.entries('work', { toolId: 'sample' }))).toEqual([
+      'automation:a',
+      'tool:orphan',
+    ]);
+    expect(summary(history.entries('work', { automationId: 'flow' }))).toEqual(['automation:a']);
+    expect(history.entries('elsewhere')).toEqual([]);
+    expect(history.stepRuns('work', 'a').map(({ runId }) => runId)).toEqual(['try-1', 'try-2']);
+    expect(history.getAutomationRun('work', 'a')).toMatchObject({ automationName: 'Flow' });
+    expect(history.getAutomationRun('elsewhere', 'a')).toBeUndefined();
+  });
 });

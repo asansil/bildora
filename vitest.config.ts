@@ -29,6 +29,8 @@ export default defineConfig({
           include: ['src/**/*.test.ts'],
           // Without this, Vitest replaces CSS with nothing, and the token tests need the real file.
           css: true,
+          // MSAGL's build imports its files without extensions, which only a bundler resolves.
+          server: { deps: { inline: ['@msagl/core'] } },
         },
       },
     ],

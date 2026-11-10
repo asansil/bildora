@@ -113,7 +113,7 @@ test('a single click previews, the next replaces it, and a double click or use k
   await expect(tabNames(window)).toHaveText(['Beta', 'Gamma']);
 
   await window.getByRole('textbox', { name: 'Note' }).fill('typed');
-  await expect(tab(window, 'Gamma')).not.toHaveAttribute('data-preview', 'true');
+  await expect(tab(window, 'Gamma, unsaved')).not.toHaveAttribute('data-preview', 'true');
   await panelRow(window, 'Alpha').click();
   await expect(tabNames(window)).toHaveText(['Beta', 'Gamma', 'Alpha']);
 
@@ -129,7 +129,7 @@ test('a tab keeps what was typed while another is shown', async () => {
   await panelRow(window, 'Beta').dblclick();
   await expect(heading(window, 'Beta')).toBeVisible();
 
-  await tab(window, 'Alpha').click();
+  await tab(window, 'Alpha, unsaved').click();
   await expect(window.getByRole('tabpanel').getByLabel('Note')).toHaveValue('first draft');
 });
 
@@ -220,6 +220,48 @@ test('a new automation with changes asks before its tab closes', async () => {
   await expect(tabNames(window)).toHaveCount(0);
   const stored = await readFile(join(dataDir, 'workspaces', 'default', 'workspace.yaml'), 'utf8');
   expect(stored).not.toContain('new-');
+});
+
+test('a tab with unsaved changes shows a dot, which saving clears', async () => {
+  await writeAutomation('chain', 'Chain');
+  const { window } = await launchShell();
+  await rail(window, 'Automations').click();
+  await window.getByTestId('automations-panel').getByRole('button', { name: 'Chain' }).dblclick();
+  await expect(tab(window, 'Chain')).not.toHaveAttribute('data-unsaved', 'true');
+  await window.getByLabel('Name', { exact: true }).fill('Chain two');
+  const edited = tab(window, 'Chain, unsaved');
+  await expect(edited).toHaveAttribute('data-unsaved', 'true');
+  await expect(edited.locator('.tab-unsaved')).toBeVisible();
+  await expect(edited.getByRole('button', { name: 'Close Chain' })).toBeHidden();
+  // The close button takes the dot's place under the pointer.
+  await edited.hover();
+  await expect(edited.getByRole('button', { name: 'Close Chain' })).toBeVisible();
+  await expect(edited.locator('.tab-unsaved')).toBeHidden();
+
+  await window.getByLabel('Name', { exact: true }).click();
+  await window.keyboard.press('Control+S');
+  await expect(tab(window, 'Chain two')).not.toHaveAttribute('data-unsaved', 'true');
+
+  await rail(window, 'Work').click();
+  await panelRow(window, 'Alpha').dblclick();
+  await window.getByRole('textbox', { name: 'Note' }).fill('changed');
+  await expect(tab(window, 'Alpha, unsaved')).toHaveAttribute('data-unsaved', 'true');
+  await window.getByRole('textbox', { name: 'Note' }).fill('');
+  await expect(tab(window, 'Alpha')).not.toHaveAttribute('data-unsaved', 'true');
+
+  await window.getByRole('textbox', { name: 'Note' }).fill('kept');
+  await window.getByRole('button', { name: 'Save as…' }).click();
+  await window.getByRole('dialog').getByLabel('Name').fill('Mine');
+  await window.getByRole('dialog').getByRole('button', { name: 'Save' }).click();
+  await expect(tab(window, 'Alpha')).not.toHaveAttribute('data-unsaved', 'true');
+
+  // A tool's form is scratch work, so its tab closes without asking.
+  await window.getByRole('textbox', { name: 'Note' }).fill('scratch');
+  await expect(tab(window, 'Alpha, unsaved')).toBeVisible();
+  await window.keyboard.press('Control+W');
+  await expect(tab(window, 'Alpha, unsaved')).toHaveCount(0);
+  await expect(tab(window, 'Chain two')).toHaveAttribute('aria-selected', 'true');
+  await expect(window.getByRole('dialog')).toHaveCount(0);
 });
 
 test('the rail marks what owns the active tab, and an open panel moves nothing', async () => {

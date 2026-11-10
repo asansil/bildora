@@ -74,6 +74,7 @@ export function ProfileBar({
       {current === undefined ? null : (
         <button
           type="button"
+          className="danger"
           disabled={disabled}
           onClick={() => {
             setRemoving(true);
@@ -144,7 +145,7 @@ export function ProfileBar({
             </button>
             <button
               type="button"
-              className="primary"
+              className="danger filled"
               onClick={() => {
                 setRemoving(false);
                 onRemove();

@@ -36,6 +36,8 @@
   --bildora-status-failed: light-dark(oklch(0.5 0.17 27), oklch(0.76 0.13 25));
   --bildora-status-cancelled: var(--bildora-text-muted);
   --bildora-status-warning: light-dark(oklch(0.48 0.095 75), oklch(0.82 0.12 85));
+  /* Text on a filled dangerous action, such as a delete under the pointer. */
+  --bildora-on-danger: light-dark(oklch(0.995 0.002 25), oklch(0.2 0.02 25));
 
   /* Type. System faces, so the app sits naturally beside Windows 11 applications. */
   --bildora-font-ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;

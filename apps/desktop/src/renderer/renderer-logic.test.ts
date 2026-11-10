@@ -1,25 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import {
-  blockLabel,
-  failureChoice,
-  moveStep,
-  newStep,
-  newStepId,
-  referenceOptions,
-  stepLabel,
-  withFailureChoice,
-  without,
-} from './automations/automation-draft.js';
-import type { RunStep } from './automations/automation-draft.js';
+import { commandFor, without } from './automations/automation-draft.js';
 import { formatDuration, historyState } from './history/history-format.js';
 import {
+  formDiffers,
   formProblems,
   initialValues,
   parameterProblem,
   shownParameters,
   submittedValues,
 } from './tools/parameter-form.js';
-import type { AutomationStep, ParameterView, ToolView } from '../shared/ipc-contract.js';
+import type { ParameterView } from '../shared/ipc-contract.js';
 import { en } from '../shared/i18n/en.js';
 import { t } from '../shared/i18n/translate.js';
 import type { RunView } from '../shared/ipc-contract.js';
@@ -28,83 +18,12 @@ import { categoryInitial, placeCategory, toggleCategory } from './tools/category
 import { countRunning, summarizeRuns } from './tools/run-state.js';
 
 describe('automation drafts', () => {
-  const tool = (id: string, level: 0 | 1, outputs?: readonly string[]): ToolView => ({
-    key: `global/${id}`,
-    id,
-    scope: 'global',
-    name: id.toUpperCase(),
-    level,
-    program: `C:\tools\${id}.exe`,
-    permissions: [],
-    runtime: { status: 'ready' },
-    ...(outputs === undefined ? {} : { outputs }),
-  });
-  const tools = [tool('acme.report', 1, ['csv']), tool('plain', 0)];
-  const run: RunStep = { id: 'report', type: 'run', tool: 'acme.report' };
-  const pause: AutomationStep = { id: 'pause', type: 'wait-for-time', seconds: 5 };
-  const look: AutomationStep = { id: 'look', type: 'wait-for-manual-action', message: 'Look' };
-
-  it('makes ids a reference can hold, and never the same twice', () => {
-    expect(newStepId('acme.report', [])).toBe('report');
-    expect(newStepId('acme.report', [run])).toBe('report-2');
-    expect(newStepId('1-2-3', [])).toBe('step');
-  });
-
-  it('starts a step only when there is something for it to work with', () => {
-    expect(newStep('run', [], [])).toBeUndefined();
-    expect(newStep('run', [], tools)).toEqual(run);
-    expect(newStep('wait-for-time', [], tools)).toMatchObject({ seconds: 60 });
-    expect(newStep('wait-for-manual-action', [], tools)?.id).toBe('review');
-  });
-
-  it('moves steps, and does nothing past either end', () => {
-    const steps = [run, pause, look];
-    expect(moveStep(steps, 2, -1).map(({ id }) => id)).toEqual(['report', 'look', 'pause']);
-    expect(moveStep(steps, 0, 1).map(({ id }) => id)).toEqual(['pause', 'report', 'look']);
-    expect(moveStep(steps, 0, -1)).toBe(steps);
-    expect(moveStep(steps, 2, 1)).toBe(steps);
-  });
-
-  it('offers only what came before', () => {
-    expect(referenceOptions([run, pause], 0, tools).map(({ value }) => value)).toEqual([
-      '{{run.folder}}/',
-    ]);
-    expect(referenceOptions([run, pause], 2, tools)[1]).toEqual({
-      label: 'report: csv',
-      value: '{{steps.report.outputs.csv}}',
-    });
-  });
-
-  it('keeps stop out of the file, because it is the default', () => {
-    const retrying = withFailureChoice(run, 'retry');
-    expect(failureChoice(retrying)).toBe('retry');
-    expect(failureChoice(withFailureChoice(run, 'continue'))).toBe('continue');
-    expect(withFailureChoice(retrying, 'stop')).toEqual(run);
-    expect(failureChoice(pause)).toBe('stop');
-  });
-
   it('removes fields altogether', () => {
     expect(Object.keys(without({ a: 1, b: 2 }, 'a'))).toEqual(['b']);
   });
 
-  it('describes each kind of step', () => {
-    expect(stepLabel(run, tools)).toBe('Run ACME.REPORT');
-    expect(stepLabel({ ...run, tool: 'gone' }, tools)).toBe('Run gone');
-    expect(stepLabel({ ...pause, seconds: 1 }, tools)).toBe('Wait 1 second');
-    expect(stepLabel(look, tools)).toBe('Look');
-  });
-
-  it('describes the blocks that only a file can hold', () => {
-    expect(blockLabel({ id: 'start', type: 'start' }, tools)).toBe('Start');
-    expect(blockLabel({ id: 'fork', type: 'parallel' }, tools)).toBe(
-      'Start parallel branches (fork)',
-    );
-    expect(blockLabel({ id: 'meet', type: 'join', parallel: 'fork' }, tools)).toBe(
-      'Join the branches (meet)',
-    );
-    expect(blockLabel({ id: 'report', type: 'run', tool: 'acme.report' }, tools)).toBe(
-      'Run ACME.REPORT',
-    );
+  it('gives the command that runs an automation', () => {
+    expect(commandFor('nightly')).toBe('bildora run nightly');
   });
 });
 
@@ -348,6 +267,24 @@ describe('parameter form', () => {
 
     expect(plain).toEqual({ input: 'a.txt', count: 4, verbose: false, mode: 'b' });
     expect(secrets).toEqual({ token: 'typed' });
+  });
+
+  it('tells when the form differs from its profile or from the defaults', () => {
+    const defaults = initialValues(parameters);
+    expect(formDiffers(parameters, defaults, undefined, [])).toBe(false);
+    expect(formDiffers(parameters, { ...defaults, count: '3.0' }, undefined, [])).toBe(false);
+    expect(formDiffers(parameters, { ...defaults, count: '4' }, undefined, [])).toBe(true);
+    expect(formDiffers(parameters, { ...defaults, mode: '' }, undefined, [])).toBe(true);
+    expect(formDiffers(parameters, { ...defaults, token: 'typed' }, undefined, [])).toBe(true);
+    expect(formDiffers(parameters, defaults, undefined, ['token'])).toBe(true);
+
+    const profile = { id: 'p', name: 'P', values: { input: 'a.txt', count: 9 }, secrets: [] };
+    const filled = initialValues(parameters, profile);
+    expect(formDiffers(parameters, filled, profile, [])).toBe(false);
+    expect(formDiffers(parameters, { ...filled, verbose: false }, profile, [])).toBe(true);
+    expect(formDiffers(parameters, { ...filled, count: '' }, profile, [])).toBe(true);
+    // A field the profile leaves out shows its default, which is no change.
+    expect(filled['mode']).toBe('a');
   });
 });
 

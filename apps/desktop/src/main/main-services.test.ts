@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { AUTOMATION_PANEL_LIMITS } from '@bildora/core';
 import type { RegisteredTool, RunResult, ToolRun } from '@bildora/core';
 import {
+  AUTOMATION_PANEL_SIZES,
   automationDraftSchema,
   automationRunIdSchema,
   categoryMenuSchema,
@@ -94,6 +96,26 @@ describe('IPC schemas', () => {
     ['a panel too wide', updateWorkspaceSchema, { layout: { panelWidth: 5000 } }],
     ['the old selected tool', updateWorkspaceSchema, { layout: { selectedTool: 'a' } }],
     [
+      'a lower panel too tall',
+      updateWorkspaceSchema,
+      { layout: { automationPanels: { lowerHeight: 5000 } } },
+    ],
+    [
+      'an unknown automation panel',
+      updateWorkspaceSchema,
+      { layout: { automationPanels: { outlineWidth: 200 } } },
+    ],
+    [
+      'an unknown canvas option',
+      updateWorkspaceSchema,
+      { layout: { automationCanvas: { showMinimap: true } } },
+    ],
+    [
+      'a canvas option that is not on or off',
+      updateWorkspaceSchema,
+      { layout: { automationCanvas: { snapToGrid: 'yes' } } },
+    ],
+    [
       'a tab of an unknown kind',
       updateWorkspaceSchema,
       { layout: { tabs: [{ kind: 'x', id: 'a' }] } },
@@ -127,19 +149,34 @@ describe('IPC schemas', () => {
     ['a console far too wide', runResizeSchema, { runId: 'a', columns: 5000, rows: 10 }],
     ['console input too long', runInputSchema, { runId: 'a', data: 'x'.repeat(70_000) }],
     ['a nameless profile', saveProfileSchema, { toolId: 'a', name: '', values: {} }],
-    ['a nameless automation', automationDraftSchema, { name: '', steps: [] }],
-    ['an automation with no steps list', automationDraftSchema, { name: 'A' }],
-    ['an automation with a schema version', automationDraftSchema, { name: 'A', steps: [], x: 1 }],
+    ['a nameless automation', automationDraftSchema, { name: '', blocks: [], connections: [] }],
+    ['an automation with no blocks', automationDraftSchema, { name: 'A', connections: [] }],
     [
-      'an automation with too many steps',
+      'an automation with an unknown field',
       automationDraftSchema,
-      { name: 'A', steps: Array<unknown>(201).fill({}) },
+      { name: 'A', blocks: [], connections: [], x: 1 },
+    ],
+    [
+      'an automation with too many blocks',
+      automationDraftSchema,
+      { name: 'A', blocks: Array<unknown>(201).fill({}), connections: [] },
+    ],
+    [
+      'an automation with too many connections',
+      automationDraftSchema,
+      { name: 'A', blocks: [], connections: Array<unknown>(1001).fill({}) },
     ],
     ['an automation run with no id', automationRunIdSchema, { runId: '' }],
     ['a run limit of zero', preferencesSchema, { historyRunLimit: 0 }],
     ['a fractional run limit', preferencesSchema, { historyRunLimit: 1.5 }],
   ])('rejects %s', (_label, schema, input) => {
     expect(schema.safeParse(input).success).toBe(false);
+  });
+
+  it('allows the automation panel sizes that core keeps', () => {
+    for (const [panel, { min, max }] of Object.entries(AUTOMATION_PANEL_SIZES)) {
+      expect(AUTOMATION_PANEL_LIMITS).toHaveProperty(panel, { min, max });
+    }
   });
 
   it.each([

@@ -64,6 +64,7 @@ export function WorkspacesView({
               </button>
               <button
                 type="button"
+                className="danger"
                 disabled={last}
                 title={last ? t('workspace.removeLast') : undefined}
                 onClick={() => {
@@ -116,7 +117,7 @@ export function WorkspacesView({
             </button>
             <button
               type="button"
-              className="primary"
+              className="danger filled"
               onClick={() => {
                 close();
                 onRemove(pending.workspace.id);
