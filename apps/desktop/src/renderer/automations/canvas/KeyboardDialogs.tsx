@@ -3,8 +3,11 @@ import { t } from '../../../shared/i18n/translate.js';
 import { Dialog } from '../../shell/Dialog.js';
 import type { NewBlock } from './flow-document.js';
 
+/** What can be added: a block, or a note, which joins nothing. */
+export type AddChoice = NewBlock | { readonly kind: 'note' };
+
 export interface LibraryChoice {
-  readonly choice: NewBlock;
+  readonly choice: AddChoice;
   readonly label: string;
 }
 
@@ -36,26 +39,26 @@ function Search({
   );
 }
 
-function matches(text: string, filter: string): boolean {
+export function matches(text: string, filter: string): boolean {
   return text.toLowerCase().includes(filter.trim().toLowerCase());
 }
 
-/** The library from the keyboard: what to add after the focused block. */
+/** The library in a dialog: what to add after the focused block, or where the canvas was clicked. */
 export function AddDialog({
-  anchorName,
+  title,
   choices,
   onPick,
   onClose,
 }: {
-  readonly anchorName: string;
+  readonly title: string;
   readonly choices: readonly LibraryChoice[];
-  readonly onPick: (choice: NewBlock) => void;
+  readonly onPick: (choice: AddChoice) => void;
   readonly onClose: () => void;
 }) {
   const [filter, setFilter] = useState('');
   const shown = choices.filter(({ label }) => matches(label, filter));
   return (
-    <Dialog title={t('canvas.addTitle', { name: anchorName })} onClose={onClose}>
+    <Dialog title={title} onClose={onClose}>
       <Search value={filter} label={t('canvas.findBlock')} onChange={setFilter} />
       <p className="muted" aria-live="polite">
         {t('canvas.choiceCount', { count: shown.length })}

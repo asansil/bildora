@@ -49,15 +49,47 @@
   margin: var(--bildora-space-2) var(--bildora-space-3) 0;
 }
 
+/* The columns come from the tab, which knows how wide each panel was left. */
 .flow-body {
   flex: 1;
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr) 300px;
   min-height: 0;
 }
 
-.flow-body.is-run {
-  grid-template-columns: minmax(0, 1fr) 300px;
+/* What is left of a folded side panel: a button to open it again. */
+.flow-strip {
+  display: flex;
+  justify-content: center;
+  padding-top: var(--bildora-space-2);
+  background: var(--bildora-surface-panel);
+}
+
+.flow-strip-library {
+  border-right: 1px solid var(--bildora-border);
+}
+
+.flow-strip-settings {
+  border-left: 1px solid var(--bildora-border);
+}
+
+.flow-side-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--bildora-space-1);
+  margin-bottom: var(--bildora-space-3);
+}
+
+.flow-side-head .library-search {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+/* The settings panel's fold button sits in its corner, and the content flows around it. */
+.flow-settings > .panel-collapse {
+  float: right;
+  margin: calc(-1 * var(--bildora-space-1)) calc(-1 * var(--bildora-space-1)) 0
+    var(--bildora-space-1);
 }
 
 .flow-side {
@@ -111,6 +143,10 @@
   background: var(--bildora-surface-hover);
 }
 
+.library-search {
+  margin-bottom: var(--bildora-space-3);
+}
+
 .library-item img {
   width: 16px;
   height: 16px;
@@ -129,8 +165,8 @@
 
 .flow-lower {
   display: flex;
+  flex: none;
   flex-direction: column;
-  height: 180px;
   min-height: 0;
   border-top: 1px solid var(--bildora-border);
   background: var(--bildora-surface-panel);
@@ -150,6 +186,15 @@
   background: transparent;
 }
 
+.flow-lower.is-collapsed .flow-lower-tabs {
+  border-bottom: none;
+}
+
+.flow-lower-tabs .panel-collapse {
+  align-self: center;
+  margin-left: auto;
+}
+
 .flow-lower-tabs button[aria-selected='true'] {
   border-bottom-color: var(--bildora-accent);
   font-weight: var(--bildora-weight-medium);
@@ -159,6 +204,39 @@
   flex: 1;
   overflow: auto;
   padding: var(--bildora-space-2) var(--bildora-space-3);
+}
+
+/* Why Run started nothing, between the header and the canvas. */
+.flow-refused {
+  align-items: center;
+  margin: var(--bildora-space-2) var(--bildora-space-3) 0;
+}
+
+.flow-refused > .icon {
+  margin-top: 0;
+  color: var(--bildora-status-failed);
+}
+
+.flow-refused p {
+  color: var(--bildora-text);
+}
+
+/* A block's output fills the lower panel, which scrolls it. */
+.block-output {
+  margin: 0;
+  max-height: none;
+}
+
+.block-output-console {
+  display: flex;
+  height: 100%;
+  min-height: 120px;
+}
+
+.block-output-console .console {
+  flex: 1;
+  height: auto;
+  min-width: 0;
 }
 
 .problem-list {
@@ -230,6 +308,18 @@
   border: 1px solid var(--bildora-border);
   border-radius: var(--bildora-radius-md);
   overflow: hidden;
+}
+
+/* The controls fill their own icons; lucide's are drawn with lines. */
+.react-flow__controls-button svg.lucide {
+  fill: none;
+  max-width: 14px;
+  max-height: 14px;
+}
+
+.react-flow__controls-button.is-on {
+  background: color-mix(in oklch, var(--bildora-accent) 18%, transparent);
+  color: var(--bildora-accent);
 }
 
 .react-flow__minimap svg {
@@ -372,6 +462,13 @@
   z-index: 1;
 }
 
+/* Handles stay where xyflow puts them, on the edges, above the shape. */
+.block--if > .react-flow__handle,
+.block--switch > .react-flow__handle {
+  position: absolute;
+  z-index: 2;
+}
+
 .block--if > .block-state,
 .block--switch > .block-state {
   position: absolute;
@@ -426,6 +523,21 @@
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.note-input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--bildora-text);
+  font: inherit;
+  white-space: pre-wrap;
+  user-select: text;
 }
 
 .note-text.is-empty {
@@ -483,13 +595,36 @@
 }
 
 .handle {
-  width: 8px;
-  height: 8px;
+  width: 12px;
+  height: 12px;
+  transition: transform var(--bildora-motion-fast) var(--bildora-ease);
+}
+
+/* Larger to the pointer than it is drawn, so an output is easy to grab. */
+.handle::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+}
+
+.flow-canvas:not(.is-readonly) .handle:hover {
+  transform: translate(50%, -50%) scale(1.35);
+  border-color: var(--bildora-accent);
+}
+
+.flow-canvas:not(.is-readonly) .handle--in:hover {
+  transform: translate(-50%, -50%) scale(1.35);
+}
+
+/* The arrowhead of a connection is drawn with it, in the same color. */
+.flow-canvas:not(.is-readonly) .react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--bildora-accent);
 }
 
 .handle-label {
   position: absolute;
-  right: 10px;
+  right: 16px;
   top: 50%;
   transform: translateY(-50%);
   font-size: var(--bildora-text-xs);
@@ -498,16 +633,21 @@
   white-space: nowrap;
 }
 
-/* A decision's labels sit outside its shape, which would otherwise cover them. */
-.block--if .handle,
-.block--switch .handle {
-  z-index: 2;
+/* A decision keeps its labels inside its shape, left of each output, clear of the connections. */
+.block--if,
+.block--switch {
+  padding-right: 64px;
 }
 
 .block--if .handle-label,
 .block--switch .handle-label {
-  right: auto;
-  left: 10px;
+  right: 26px;
+}
+
+/* An input lets the pointer through to the end of the connection drawn under it, which can then
+   be dragged to another block. A connection still finds the input by where it is. */
+.flow-canvas:not(.is-readonly) .handle--in {
+  pointer-events: none;
 }
 
 .handle--error {
@@ -528,6 +668,24 @@
 .react-flow__edge.edge--error .react-flow__edge-path {
   stroke-dasharray: 5 4;
   stroke: var(--bildora-status-failed);
+}
+
+/* While a block is Shift-dragged: the connections that would join it, and the one it would go
+   into, kept faint so the pointer can stay on it. */
+.react-flow__edge.edge--pending .react-flow__edge-path {
+  stroke: var(--bildora-accent);
+  stroke-width: 2;
+}
+
+.react-flow__edge.edge--replaced .react-flow__edge-path {
+  stroke-dasharray: 3 4;
+  opacity: 0.35;
+}
+
+/* The connection a dragged block would go into if it were let go now. */
+.react-flow__edge.edge--splice .react-flow__edge-path {
+  stroke: var(--bildora-accent);
+  stroke-width: 3;
 }
 
 .react-flow__edge-textbg {

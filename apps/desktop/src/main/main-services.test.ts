@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { AUTOMATION_PANEL_LIMITS } from '@bildora/core';
 import type { RegisteredTool, RunResult, ToolRun } from '@bildora/core';
 import {
+  AUTOMATION_PANEL_SIZES,
   automationDraftSchema,
   automationRunIdSchema,
   categoryMenuSchema,
@@ -94,6 +96,26 @@ describe('IPC schemas', () => {
     ['a panel too wide', updateWorkspaceSchema, { layout: { panelWidth: 5000 } }],
     ['the old selected tool', updateWorkspaceSchema, { layout: { selectedTool: 'a' } }],
     [
+      'a lower panel too tall',
+      updateWorkspaceSchema,
+      { layout: { automationPanels: { lowerHeight: 5000 } } },
+    ],
+    [
+      'an unknown automation panel',
+      updateWorkspaceSchema,
+      { layout: { automationPanels: { outlineWidth: 200 } } },
+    ],
+    [
+      'an unknown canvas option',
+      updateWorkspaceSchema,
+      { layout: { automationCanvas: { showGrid: true } } },
+    ],
+    [
+      'a canvas option that is not on or off',
+      updateWorkspaceSchema,
+      { layout: { automationCanvas: { snapToGrid: 'yes' } } },
+    ],
+    [
       'a tab of an unknown kind',
       updateWorkspaceSchema,
       { layout: { tabs: [{ kind: 'x', id: 'a' }] } },
@@ -149,6 +171,12 @@ describe('IPC schemas', () => {
     ['a fractional run limit', preferencesSchema, { historyRunLimit: 1.5 }],
   ])('rejects %s', (_label, schema, input) => {
     expect(schema.safeParse(input).success).toBe(false);
+  });
+
+  it('allows the automation panel sizes that core keeps', () => {
+    for (const [panel, { min, max }] of Object.entries(AUTOMATION_PANEL_SIZES)) {
+      expect(AUTOMATION_PANEL_LIMITS).toHaveProperty(panel, { min, max });
+    }
   });
 
   it.each([

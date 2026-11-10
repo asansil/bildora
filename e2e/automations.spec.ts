@@ -282,7 +282,15 @@ test('a step whose tool has gone shows as broken, and nothing changes on its own
   await expect(problem).toContainText('The tool gone is not installed in this Workspace.');
   await expect(problem).toContainText('Install the tool again');
   await expect(step(window, 'first').locator('.block-problem')).toBeVisible();
-  await expect(window.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
+
+  // Run stays there to press, and says why nothing ran.
+  await window.getByRole('tab', { name: 'Past runs' }).click();
+  await window.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(window.getByTestId('run-refused')).toHaveText(
+    '1 problem stops this automation from running. It is listed below.',
+  );
+  await expect(window.getByRole('tab', { name: /Problems/, selected: true })).toBeVisible();
+  await expect(window.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);
   await problem.click();
   await expect(settings(window)).toHaveAttribute('data-block-id', 'first');
   // Opening lays the converted blocks out, which is not an edit, so the file stays as it was.
@@ -344,6 +352,52 @@ test('a run keeps going across a Workspace switch, and can be stopped', async ()
   await window.getByRole('button', { name: 'Stop', exact: true }).click();
   await expect(step(window, 'first')).toHaveAttribute('data-state', 'cancelled');
   await expect(window.getByTestId('status')).toHaveText('Ready');
+});
+
+test('Run saves the flow first, and Output shows what a tool wrote, live and later', async () => {
+  await fakeTool('hang', 'Hang', ['hang']);
+  await fakeTool('lines', 'Lines', ['lines', '3']);
+  const file = await writeAutomation(
+    'talks',
+    'Talks',
+    `  - { id: first, type: run, tool: lines }
+  - { id: second, type: run, tool: hang }
+`,
+  );
+
+  const { window } = await launchShell();
+  await openAutomation(window, 'Talks');
+  await window.getByLabel('Description').fill('Says a few lines');
+  await window.getByRole('button', { name: 'Save and run', exact: true }).click();
+  await expect(step(window, 'second')).toHaveAttribute('data-state', 'running', {
+    timeout: 15_000,
+  });
+  expect(await readFile(file, 'utf8')).toContain('Says a few lines');
+  await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+
+  // Choosing a block in a run shows what its tool wrote, as it writes it.
+  await step(window, 'second').click();
+  await expect(window.getByRole('tab', { name: 'Output', selected: true })).toBeVisible();
+  const output = window.getByTestId('block-output');
+  await expect(output).toHaveAttribute('data-live', 'true');
+  await expect(output.locator('.xterm-rows')).toContainText('READY');
+
+  await step(window, 'first').click();
+  await expect(output).toContainText('LINE 3');
+  await expect(output).toContainText('END');
+
+  await window.getByRole('button', { name: 'Stop', exact: true }).click();
+  await expect(step(window, 'second')).toHaveAttribute('data-state', 'cancelled');
+
+  // A past run keeps the output too, and a double click on it goes straight there.
+  await window.getByRole('button', { name: 'Back to editing' }).click();
+  await expect(window.getByRole('tab', { name: 'Output' })).toHaveCount(0);
+  await window.getByRole('tab', { name: 'Past runs' }).click();
+  await window.locator('.automation-run').first().dblclick();
+  await expect(window.getByRole('tab', { name: 'Output', selected: true })).toBeVisible();
+  await expect(output).toHaveCount(0);
+  await step(window, 'first').click();
+  await expect(output).toContainText('LINE 3');
 });
 
 test('closing asks while an automation only waits, and ends it', async () => {

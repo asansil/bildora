@@ -1,4 +1,15 @@
-import { DEFAULT_OUTPUT, ERROR_OUTPUT, connectionOutput, outputsOf } from '@bildora/protocol';
+import {
+  AUTOMATION_BLOCK_LIMIT,
+  AUTOMATION_CONNECTION_LIMIT,
+  AUTOMATION_NOTE_LIMIT,
+  DEFAULT_OUTPUT,
+  ERROR_OUTPUT,
+  connectionOutput,
+  findStepOutputReferences,
+  outputsOf,
+  stepOutputReference,
+  validTargets,
+} from '@bildora/protocol';
 import type {
   AutomationBlock,
   AutomationCondition,
@@ -283,6 +294,103 @@ export function disconnect(
   };
 }
 
+/** One connection, by the output it leaves from. */
+export interface ConnectionRef {
+  readonly from: string;
+  readonly output: string;
+  readonly to: string;
+}
+
+/** What moves into or out of a connection as one: a block, or a Parallel with its Join. */
+export interface BlockEnds {
+  /** Where the flow comes in. */
+  readonly first: string;
+  /** Where it goes on: the block itself, or a Parallel's Join. */
+  readonly tail: string;
+}
+
+function endsOf(document: FlowDocument, id: string): BlockEnds | undefined {
+  const block = blockOf(document, id);
+  if (block === undefined || block.type === 'start' || block.type === 'join') return undefined;
+  const tail =
+    block.type === 'parallel'
+      ? document.blocks.find((item) => item.type === 'join' && item.parallel === id)?.id
+      : id;
+  return tail === undefined ? undefined : { first: id, tail };
+}
+
+/** What ties a block into the flow: what leads into it, and where its tail leads. */
+function outerConnections(document: FlowDocument, ends: BlockEnds): AutomationConnection[] {
+  return document.connections.filter(({ from, to }) => to === ends.first || from === ends.tail);
+}
+
+/** The ends of a block that can go into a connection: one tied to nothing outside itself. */
+export function spliceEnds(document: FlowDocument, id: string): BlockEnds | undefined {
+  const ends = endsOf(document, id);
+  return ends !== undefined && outerConnections(document, ends).length === 0 ? ends : undefined;
+}
+
+/** True when a block, or a Parallel with its Join, is tied into the flow and can be taken out. */
+export function isInFlow(document: FlowDocument, id: string): boolean {
+  const ends = endsOf(document, id);
+  return ends !== undefined && outerConnections(document, ends).length > 0;
+}
+
+/**
+ * Takes a block out of the flow, with its Join for a Parallel, whose branches stay. What led to it
+ * now leads where its Next led, where that is allowed. A decision has no Next, so it only lets go.
+ */
+export function extractBlock(document: FlowDocument, id: string): FlowDocument {
+  const ends = endsOf(document, id);
+  if (ends === undefined) return document;
+  const outer = outerConnections(document, ends);
+  if (outer.length === 0) return document;
+  const next = outer.find(
+    (connection) =>
+      connection.from === ends.tail && connectionOutput(connection) === DEFAULT_OUTPUT,
+  )?.to;
+  let result: FlowDocument = {
+    ...document,
+    connections: document.connections.filter((connection) => !outer.includes(connection)),
+  };
+  if (next === undefined) return result;
+  for (const connection of outer.filter(({ to }) => to === ends.first)) {
+    const output = connectionOutput(connection);
+    if (validTargets(result, connection.from, output).includes(next)) {
+      result = connect(result, connection.from, output, next);
+    }
+  }
+  return result;
+}
+
+/**
+ * Puts blocks into a connection: what led to `to` now leads to `firstId`, and `tailId` goes on to
+ * `to` through Next. For a Parallel, the tail is its Join. Gives nothing when that cannot be done:
+ * the connection is gone, Start would move, the tail has no free Next, or a loop would form.
+ */
+export function spliceInto(
+  document: FlowDocument,
+  connection: ConnectionRef,
+  firstId: string,
+  tailId: string,
+): FlowDocument | undefined {
+  const { from, output, to } = connection;
+  const exists = document.connections.some(
+    (item) => item.from === from && item.to === to && connectionOutput(item) === output,
+  );
+  const first = blockOf(document, firstId);
+  const tail = blockOf(document, tailId);
+  if (!exists || first === undefined || tail === undefined) return undefined;
+  if ([firstId, tailId].some((id) => id === from || id === to)) return undefined;
+  if (first.type === 'start' || !outputsOf(tail).includes(DEFAULT_OUTPUT)) return undefined;
+  if (!freeOutputs(document, tailId).includes(DEFAULT_OUTPUT)) return undefined;
+  const opened = disconnect(document, from, output, to);
+  if (!validTargets(opened, from, output).includes(firstId)) return undefined;
+  const led = connect(opened, from, output, firstId);
+  if (!validTargets(led, tailId, DEFAULT_OUTPUT).includes(to)) return undefined;
+  return connect(led, tailId, DEFAULT_OUTPUT, to);
+}
+
 /** Adds a block after another, joined from the anchor's first free output that is not Error. */
 export function addAfter(
   document: FlowDocument,
@@ -443,4 +551,159 @@ export function updateGroup(document: FlowDocument, group: AutomationGroup): Flo
 /** Removes a group's frame and leaves its blocks where they are. */
 export function ungroup(document: FlowDocument, id: string): FlowDocument {
   return { ...document, groups: document.groups.filter((group) => group.id !== id) };
+}
+
+/** Blocks and notes copied from a flow, with the connections between them. */
+export interface FlowClip {
+  readonly blocks: readonly AutomationBlock[];
+  readonly connections: readonly AutomationConnection[];
+  readonly positions: Readonly<Record<string, AutomationPosition>>;
+  readonly notes: readonly AutomationNote[];
+}
+
+/**
+ * Copies blocks and notes. A Parallel and its Join go together, Start never goes, and only the
+ * connections between copied blocks are kept. Gives nothing when there is nothing to copy.
+ */
+export function copyItems(document: FlowDocument, ids: ReadonlySet<string>): FlowClip | undefined {
+  const chosen = new Set(ids);
+  for (const block of document.blocks) {
+    if (block.type === 'join' && (chosen.has(block.id) || chosen.has(block.parallel))) {
+      chosen.add(block.id);
+      chosen.add(block.parallel);
+    }
+  }
+  const blocks = document.blocks.filter(
+    ({ id, type }) => chosen.has(id) && type !== 'start' && document.positions[id] !== undefined,
+  );
+  const notes = document.notes.filter(({ id }) => chosen.has(id));
+  if (blocks.length === 0 && notes.length === 0) return undefined;
+  const copied = new Set(blocks.map(({ id }) => id));
+  return {
+    blocks,
+    connections: document.connections.filter(({ from, to }) => copied.has(from) && copied.has(to)),
+    positions: Object.fromEntries(
+      [...copied].flatMap((id) => {
+        const at = document.positions[id];
+        return at === undefined ? [] : [[id, at]];
+      }),
+    ),
+    notes,
+  };
+}
+
+/** The top-left corner of what was copied. */
+export function clipCorner(clip: FlowClip): AutomationPosition {
+  const corners = [...Object.values(clip.positions), ...clip.notes];
+  return { x: Math.min(...corners.map(({ x }) => x)), y: Math.min(...corners.map(({ y }) => y)) };
+}
+
+/** Gives a value its references to copied blocks, written with their new ids. */
+function renamedReferences(text: string, ids: ReadonlyMap<string, string>): string {
+  let result = text;
+  for (const reference of findStepOutputReferences(text)) {
+    const step = ids.get(reference.step);
+    if (step !== undefined) {
+      result = result.replaceAll(
+        stepOutputReference(reference),
+        stepOutputReference({ step, output: reference.output }),
+      );
+    }
+  }
+  return result;
+}
+
+function renamedCondition(
+  condition: AutomationCondition,
+  ids: ReadonlyMap<string, string>,
+): AutomationCondition {
+  return {
+    ...condition,
+    rules: condition.rules.map((rule) => ({ ...rule, block: ids.get(rule.block) ?? rule.block })),
+  };
+}
+
+/** A copied block under its new id, with what names other copied blocks renamed too. */
+function renamedBlock(block: AutomationBlock, ids: ReadonlyMap<string, string>): AutomationBlock {
+  const id = ids.get(block.id) ?? block.id;
+  switch (block.type) {
+    case 'run': {
+      if (block.values === undefined) return { ...block, id };
+      const values = Object.fromEntries(
+        Object.entries(block.values).map(([name, value]) => [
+          name,
+          typeof value === 'string' ? renamedReferences(value, ids) : value,
+        ]),
+      );
+      return { ...block, id, values };
+    }
+    case 'if':
+      return { ...block, id, condition: renamedCondition(block.condition, ids) };
+    case 'switch':
+      return {
+        ...block,
+        id,
+        cases: block.cases.map((item) => ({
+          ...item,
+          condition: renamedCondition(item.condition, ids),
+        })),
+      };
+    case 'join':
+      return { ...block, id, parallel: ids.get(block.parallel) ?? block.parallel };
+    default:
+      return { ...block, id };
+  }
+}
+
+/**
+ * Pastes a copy with its top-left corner at `at`. Every block and note gets a new id, and
+ * references between copied blocks follow them; references to blocks left behind stay. Gives
+ * nothing when the flow would hold more than a file allows.
+ */
+export function pasteItems(
+  document: FlowDocument,
+  clip: FlowClip,
+  at: AutomationPosition,
+): { readonly document: FlowDocument; readonly ids: readonly string[] } | undefined {
+  if (
+    document.blocks.length + clip.blocks.length > AUTOMATION_BLOCK_LIMIT ||
+    document.notes.length + clip.notes.length > AUTOMATION_NOTE_LIMIT ||
+    document.connections.length + clip.connections.length > AUTOMATION_CONNECTION_LIMIT
+  ) {
+    return undefined;
+  }
+  const { x: left, y: top } = clipCorner(clip);
+  const shift = (point: AutomationPosition): AutomationPosition => ({
+    x: point.x - left + at.x,
+    y: point.y - top + at.y,
+  });
+  const taken = takenIds(document);
+  const ids = new Map<string, string>();
+  for (const { id } of [...clip.blocks, ...clip.notes]) {
+    // A copy of convert-2 is convert-3, not convert-2-2.
+    const fresh = freeId(id.replace(/-\d+$/, ''), taken);
+    taken.add(fresh);
+    ids.set(id, fresh);
+  }
+  const newId = (id: string): string => ids.get(id) ?? id;
+  const blocks = clip.blocks.map((block) => renamedBlock(block, ids));
+  const connections = clip.connections.map((connection) => ({
+    ...connection,
+    from: newId(connection.from),
+    to: newId(connection.to),
+  }));
+  const positions = Object.fromEntries(
+    Object.entries(clip.positions).map(([id, point]) => [newId(id), shift(point)]),
+  );
+  const notes = clip.notes.map((note) => ({ ...note, id: newId(note.id), ...shift(note) }));
+  return {
+    document: {
+      ...document,
+      blocks: [...document.blocks, ...blocks],
+      connections: [...document.connections, ...connections],
+      positions: { ...document.positions, ...positions },
+      notes: [...document.notes, ...notes],
+    },
+    ids: [...blocks.map(({ id }) => id), ...notes.map(({ id }) => id)],
+  };
 }

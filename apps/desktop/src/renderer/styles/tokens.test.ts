@@ -108,6 +108,12 @@ describe('theme tokens', () => {
       }
     });
 
+    it('keeps text readable on a dangerous action', () => {
+      expect(
+        contrast(colorOf('on-danger', scheme), colorOf('status-failed', scheme)),
+      ).toBeGreaterThanOrEqual(4.5);
+    });
+
     it('makes the focus ring and control borders visible', () => {
       for (const surface of SURFACES) {
         expect(

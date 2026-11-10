@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useEffectEvent, useMemo, useState } from 'react';
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import {
   ArrowLeft,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
   Hand,
   LayoutGrid,
   Play,
@@ -11,21 +15,28 @@ import {
   Trash2,
   TriangleAlert,
   Undo2,
+  X,
 } from 'lucide-react';
 import type { AutomationBlock, AutomationPosition } from '@bildora/protocol';
 import { t } from '../../shared/i18n/translate.js';
 import type {
   AutomationDraft,
+  AutomationCanvasView,
+  AutomationPanelsView,
   AutomationProblemView,
   AutomationRunRecordView,
   AutomationRunStateView,
   AutomationView,
+  HistoryRecordView,
   StepRunView,
   ToolView,
 } from '../../shared/ipc-contract.js';
+import { AUTOMATION_PANEL_SIZES } from '../../shared/ipc-contract.js';
 import { formatDuration, formatTime, historyState } from '../history/history-format.js';
 import { Dialog } from '../shell/Dialog.js';
+import { PanelResizer } from '../shell/PanelResizer.js';
 import { RunStateBadge } from '../shell/RunStateBadge.js';
+import { ConsolePane } from '../tools/ConsolePane.js';
 import { commandFor } from './automation-draft.js';
 import { BlockLibrary } from './canvas/BlockLibrary.js';
 import { BlockSettings } from './canvas/BlockSettings.js';
@@ -42,6 +53,7 @@ import {
   addNote,
   groupBlocks,
   sizeOf,
+  spliceInto,
   ungroup,
   unplaced,
   updateBlock,
@@ -53,7 +65,7 @@ import type { LibraryChoice } from './canvas/KeyboardDialogs.js';
 import { Outline } from './canvas/Outline.js';
 import { record, redo, replace, startHistory, undo } from './canvas/undo.js';
 import { layoutBlocks, placeMissing } from './canvas/layout.js';
-import type { FlowDocument, NewBlock } from './canvas/flow-document.js';
+import type { ConnectionRef, FlowDocument, NewBlock } from './canvas/flow-document.js';
 import { referenceOptionsFor } from './canvas/references.js';
 import { problemText } from './problem-text.js';
 
@@ -61,6 +73,8 @@ const api = window.bildora;
 
 /** How long editing has to pause before the flow is checked. */
 const CHECK_DELAY_MS = 200;
+/** How wide a folded side panel stays, as a column of the canvas grid. */
+const STRIP = '36px';
 
 /** A run that went on past a failed block finished, but saying only that would hide the failure. */
 function finishedLabel(status: string, steps: readonly StepRunView[]): { readonly label?: string } {
@@ -80,9 +94,11 @@ interface PastRunsProps {
   readonly runs: readonly AutomationRunRecordView[];
   readonly shown: string | undefined;
   readonly onOpen: (record: AutomationRunRecordView) => void;
+  /** A double click opens the run and shows the output of its blocks. */
+  readonly onOpenOutput: (record: AutomationRunRecordView) => void;
 }
 
-function PastRuns({ runs, shown, onOpen }: PastRunsProps) {
+function PastRuns({ runs, shown, onOpen, onOpenOutput }: PastRunsProps) {
   if (runs.length === 0) {
     return <p className="muted">{t('automation.noRuns')}</p>;
   }
@@ -96,6 +112,9 @@ function PastRuns({ runs, shown, onOpen }: PastRunsProps) {
             aria-pressed={shown === run.runId}
             onClick={() => {
               onOpen(run);
+            }}
+            onDoubleClick={() => {
+              onOpenOutput(run);
             }}
           >
             <RunStateBadge
@@ -210,6 +229,97 @@ function RunDetails({ block, step, name, live, tools, onContinue, onShowTool }: 
   );
 }
 
+/** Why pressing Run started nothing. */
+type Refusal =
+  | { readonly kind: 'unnamed' }
+  | { readonly kind: 'problems'; readonly count: number }
+  | { readonly kind: 'error'; readonly message: string };
+
+/**
+ * Saving a new automation reopens its tab under its id, so a refusal found while saving is
+ * handed to the new tab here.
+ */
+const refusalsForNewTabs = new Map<string, Refusal>();
+
+function messageOf(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  // Electron wraps what a handler throws with the name of the channel.
+  return text.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+}
+
+function refusalText(refusal: Refusal): string {
+  switch (refusal.kind) {
+    case 'unnamed':
+      return t('canvas.runUnnamed');
+    case 'problems':
+      return t('canvas.runRefused', { count: refusal.count });
+    case 'error':
+      return refusal.message;
+  }
+}
+
+function refusalOf(problems: readonly AutomationProblemView[]): Refusal {
+  return { kind: 'problems', count: problems.length };
+}
+
+/** A step's run keeps the size it started with: its output is only watched here. */
+function keepSize(): void {
+  // Nothing to resize.
+}
+
+interface BlockOutputProps {
+  readonly block: AutomationBlock | undefined;
+  readonly step: StepRunView | undefined;
+  readonly onError: (error: unknown) => void;
+}
+
+/** What the tool run of one block wrote: live while it runs, then as History kept it. */
+function BlockOutput({ block, step, onError }: BlockOutputProps) {
+  const toolRunId = step?.toolRunId;
+  const live = step?.state === 'running';
+  const [record, setRecord] = useState<HistoryRecordView | undefined>(undefined);
+
+  useEffect(() => {
+    if (toolRunId === undefined || live) return undefined;
+    let current = true;
+    void api
+      .getHistoryRun(toolRunId)
+      .then((found) => {
+        if (current) setRecord(found);
+      })
+      .catch(onError);
+    return () => {
+      current = false;
+    };
+  }, [toolRunId, live, onError]);
+
+  if (block === undefined) {
+    return <p className="muted">{t('canvas.outputPick')}</p>;
+  }
+  if (block.type !== 'run') {
+    return <p className="muted">{t('canvas.outputNone')}</p>;
+  }
+  if (toolRunId === undefined) {
+    return <p className="muted">{t('canvas.outputNotRun')}</p>;
+  }
+  if (live) {
+    return (
+      <div className="block-output-console" data-testid="block-output" data-live="true">
+        <ConsolePane runId={toolRunId} running={false} onSize={keepSize} />
+      </div>
+    );
+  }
+  if (record?.runId !== toolRunId) return null;
+  return (
+    <div data-testid="block-output">
+      {record.outputTruncated ? <p className="muted">{t('history.truncated')}</p> : null}
+      <pre className="history-output block-output">
+        {record.output === '' ? t('history.noOutput') : record.output}
+      </pre>
+    </div>
+  );
+}
+
 interface AutomationTabProps {
   /** Absent for a new automation, which has no file yet. */
   readonly automation: AutomationView | undefined;
@@ -221,10 +331,18 @@ interface AutomationTabProps {
   readonly active: boolean;
   /** Changes when a past run may have appeared, such as one from the CLI. */
   readonly revision: unknown;
+  /** How the panels around the canvas are laid out, shared by every automation tab. */
+  readonly panels: AutomationPanelsView;
+  /** A panel changed. `commit` is false while a drag is still going, so it is stored only after. */
+  readonly onPanels: (panels: AutomationPanelsView, commit: boolean) => void;
+  /** Canvas options, shared by every automation tab. */
+  readonly canvasOptions: AutomationCanvasView;
+  readonly onCanvasOptions: (options: AutomationCanvasView) => void;
   readonly onSave: (draft: AutomationDraft) => Promise<AutomationView>;
   /** A new automation was saved, and its tab now shows it. */
   readonly onSaved: (id: string) => void;
-  readonly onRun: () => void;
+  /** Starts the saved automation with this id. Rejects when it cannot start. */
+  readonly onRun: (id: string) => Promise<unknown>;
   readonly onRemove: () => void;
   readonly onShowTool: (id: string) => void;
   readonly onDirty: (dirty: boolean) => void;
@@ -248,6 +366,10 @@ function FlowEditor({
   logos,
   active,
   revision,
+  panels,
+  onPanels,
+  canvasOptions,
+  onCanvasOptions,
   onSave,
   onSaved,
   onRun,
@@ -279,7 +401,22 @@ function FlowEditor({
   const [view, setView] = useState<View>(
     run?.status === 'running' ? { kind: 'live' } : { kind: 'edit' },
   );
-  const [lower, setLower] = useState<'problems' | 'runs' | 'outline'>('problems');
+  const [refusal, setRefusal] = useState<Refusal | undefined>(() => {
+    if (automation === undefined) return undefined;
+    const handed = refusalsForNewTabs.get(automation.id);
+    refusalsForNewTabs.delete(automation.id);
+    return handed;
+  });
+  const [lower, setLower] = useState<'problems' | 'runs' | 'outline' | 'output'>('problems');
+  const nameField = useRef<HTMLInputElement>(null);
+  /** False once the tab has gone, such as after a new automation is saved under its id. */
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [reveal, setReveal] = useState<{ id: string; count: number; center?: boolean } | undefined>(
     undefined,
   );
@@ -404,9 +541,15 @@ function FlowEditor({
     setUndoCount((current) => current + 1);
   }
 
-  const select = useCallback((ids: ReadonlySet<string>) => {
-    setSelected(ids);
-  }, []);
+  const watching = view.kind !== 'edit';
+  const select = useCallback(
+    (ids: ReadonlySet<string>) => {
+      setSelected(ids);
+      // In a run, choosing a block is asking what it did.
+      if (watching && ids.size === 1) setLower('output');
+    },
+    [watching],
+  );
 
   const [only] = selected.size === 1 ? [...selected] : [];
   const selectedBlock = document.blocks.find(({ id }) => id === only);
@@ -427,12 +570,12 @@ function FlowEditor({
     if (result.id !== undefined) setSelected(new Set([result.id]));
   }
 
-  /** A note goes under the selected block, or under Start. */
-  function note(): void {
+  /** A note goes where it was dropped, else under the selected block, or under Start. */
+  function note(where?: AutomationPosition): void {
     const below = [only, 'start'].find((id) => id !== undefined && document.positions[id]);
     const at = below === undefined ? undefined : document.positions[below];
     const block = below === undefined ? undefined : document.blocks.find(({ id }) => id === below);
-    const spot = {
+    const spot = where ?? {
       x: at?.x ?? 0,
       y: (at?.y ?? 0) + (block === undefined ? 0 : sizeOf(block).height) + GAP_X,
     };
@@ -446,7 +589,12 @@ function FlowEditor({
    * Adds a block where it was dropped, or after a block: the selected one, else the last one
    * added, else Start. Pressing blocks in the library one after another builds a chain.
    */
-  function add(choice: NewBlock, at?: AutomationPosition, after?: string): string | undefined {
+  function add(
+    choice: NewBlock,
+    at?: AutomationPosition,
+    after?: string,
+    into?: ConnectionRef,
+  ): string | undefined {
     const anchor = [after, only, lastAdded, 'start'].find(
       (id) => id !== undefined && document.positions[id] !== undefined,
     );
@@ -456,6 +604,9 @@ function FlowEditor({
     let next: FlowDocument;
     if (at !== undefined) {
       next = addBlocks(document, blocks, at);
+      // Dropped onto a connection, it goes into it, unless it has no way on from there.
+      const tail = blocks.find(({ type }) => type === 'join') ?? first;
+      if (into !== undefined) next = spliceInto(next, into, first.id, tail.id) ?? next;
     } else if (anchor !== undefined) {
       next = addAfter(document, anchor, blocks).document;
     } else {
@@ -493,22 +644,85 @@ function FlowEditor({
     undefined,
   );
 
-  function save(): void {
+  /** Saves the draft, and gives back what was saved. */
+  async function store(): Promise<AutomationView> {
     setSaving(true);
-    void onSave(draft)
-      .then((view) => {
-        const next = documentOf(view);
-        setSaved(next);
-        setDocument(next);
-        if (automation === undefined) onSaved(view.id);
+    try {
+      const stored = await onSave(draft);
+      const next = documentOf(stored);
+      setSaved(next);
+      setDocument(next);
+      setChecked(stored.problems);
+      return stored;
+    } finally {
+      if (mounted.current) setSaving(false);
+    }
+  }
+
+  function save(): void {
+    void store()
+      .then((stored) => {
+        if (automation === undefined) onSaved(stored.id);
       })
-      .catch(onError)
-      .finally(() => {
-        setSaving(false);
-      });
+      .catch(onError);
+  }
+
+  function changePanels(change: AutomationPanelsView, commit = true): void {
+    onPanels({ ...panels, ...change }, commit);
+  }
+
+  /** Shows a tab of the lower panel, opening the panel if it was folded away. */
+  function showLower(tab: typeof lower): void {
+    setLower(tab);
+    if (panels.lowerCollapsed === true) changePanels({ lowerCollapsed: false });
+  }
+
+  /** Shows why nothing ran, beside the problems that say what to fix. */
+  function refuse(reason: Refusal): void {
+    setRefusal(reason);
+    showLower('problems');
+    setView({ kind: 'edit' });
+  }
+
+  /** Run saves the flow first, so what runs is what is on the canvas. */
+  async function saveAndRun(): Promise<void> {
+    onUsed();
+    setRefusal(undefined);
+    if (!named) {
+      refuse({ kind: 'unnamed' });
+      nameField.current?.focus();
+      return;
+    }
+    let id: string;
+    let problems: readonly AutomationProblemView[];
+    if (dirty || automation === undefined) {
+      const stored = await store();
+      id = stored.id;
+      problems = stored.problems;
+      if (automation === undefined) {
+        // The tab reopens under the new id, so the refusal is handed to it.
+        if (problems.length > 0) refusalsForNewTabs.set(id, refusalOf(problems));
+        onSaved(id);
+      } else if (problems.length > 0) {
+        refuse(refusalOf(problems));
+      }
+    } else {
+      id = automation.id;
+      problems = await api.checkAutomation(draft);
+      setChecked(problems);
+      if (problems.length > 0) refuse(refusalOf(problems));
+    }
+    if (problems.length > 0) return;
+    await onRun(id).catch((error: unknown) => {
+      const message = messageOf(error);
+      // A new automation's tab has reopened by now, so the shell shows why.
+      if (mounted.current) refuse({ kind: 'error', message });
+      else onError(error);
+    });
   }
 
   function pick(blockId: string): void {
+    if (panels.settingsCollapsed === true) changePanels({ settingsCollapsed: false });
     setView({ kind: 'edit' });
     setSelected(new Set([blockId]));
     setReveal((current) => ({ id: blockId, count: (current?.count ?? 0) + 1, center: true }));
@@ -520,11 +734,23 @@ function FlowEditor({
       : view.kind === 'past'
         ? view.record
         : undefined;
-  const runReason = dirty
-    ? t('canvas.runUnsaved')
-    : checked.length > 0
-      ? t('canvas.runProblems')
-      : undefined;
+  // Fixing what stopped the run answers the notice about it.
+  if (refusal?.kind === 'problems' && checked.length === 0) setRefusal(undefined);
+  if (refusal?.kind === 'unnamed' && named) setRefusal(undefined);
+  const libraryCollapsed = panels.libraryCollapsed === true;
+  const settingsCollapsed = panels.settingsCollapsed === true;
+  const lowerCollapsed = panels.lowerCollapsed === true;
+  const libraryWidth = panels.libraryWidth ?? AUTOMATION_PANEL_SIZES.libraryWidth.default;
+  const settingsWidth = panels.settingsWidth ?? AUTOMATION_PANEL_SIZES.settingsWidth.default;
+  const lowerHeight = panels.lowerHeight ?? AUTOMATION_PANEL_SIZES.lowerHeight.default;
+  // A resizer takes no room of its own: its column is as wide as nothing.
+  const columns = [
+    runOnView === undefined ? (libraryCollapsed ? STRIP : `${String(libraryWidth)}px auto`) : '',
+    'minmax(0, 1fr)',
+    settingsCollapsed ? STRIP : `auto ${String(settingsWidth)}px`,
+  ].join(' ');
+  // The Output tab belongs to a run, and editing has none.
+  if (lower === 'output' && runOnView === undefined) setLower('problems');
 
   return (
     <section
@@ -557,6 +783,7 @@ function FlowEditor({
     >
       <header className="flow-header">
         <input
+          ref={nameField}
           className="flow-name"
           aria-label={t('automation.name')}
           placeholder={t('canvas.namePlaceholder')}
@@ -646,7 +873,6 @@ function FlowEditor({
           ) : null}
           <button
             type="button"
-            className={dirty ? 'primary' : ''}
             disabled={!dirty || !named || saving}
             title={named ? undefined : t('canvas.nameFirst')}
             onClick={save}
@@ -667,21 +893,20 @@ function FlowEditor({
           ) : (
             <button
               type="button"
-              className={dirty ? '' : 'primary'}
-              disabled={automation === undefined || runReason !== undefined}
-              title={runReason}
+              className="primary"
+              disabled={saving}
               onClick={() => {
-                onUsed();
-                onRun();
+                saveAndRun().catch(onError);
               }}
             >
               <Play className="icon" aria-hidden="true" />
-              {t('automation.run')}
+              {dirty || automation === undefined ? t('canvas.saveAndRun') : t('automation.run')}
             </button>
           )}
           {automation === undefined ? null : (
             <button
               type="button"
+              className="danger"
               disabled={running}
               onClick={() => {
                 setRemoving(true);
@@ -719,17 +944,65 @@ function FlowEditor({
               </div>
             ))
         : null}
-      <div className={`flow-body${runOnView === undefined ? '' : ' is-run'}`}>
-        {runOnView === undefined ? (
-          <BlockLibrary
-            tools={tools}
-            logos={logos}
-            onAdd={(choice) => {
-              add(choice);
+      {refusal === undefined ? null : (
+        <div className="notice notice-failed flow-refused" role="alert" data-testid="run-refused">
+          <TriangleAlert className="icon" aria-hidden="true" />
+          <p>{refusalText(refusal)}</p>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={t('banner.dismiss')}
+            onClick={() => {
+              setRefusal(undefined);
             }}
-            onAddNote={note}
-          />
-        ) : null}
+          >
+            <X className="icon" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+      <div className="flow-body" style={{ gridTemplateColumns: columns }}>
+        {runOnView !== undefined ? null : libraryCollapsed ? (
+          <div className="flow-strip flow-strip-library">
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={t('canvas.showLibrary')}
+              title={t('canvas.showLibrary')}
+              aria-expanded="false"
+              onClick={() => {
+                changePanels({ libraryCollapsed: false });
+              }}
+            >
+              <ChevronRight className="icon" aria-hidden="true" />
+            </button>
+          </div>
+        ) : (
+          <>
+            <BlockLibrary
+              tools={tools}
+              logos={logos}
+              onAdd={(choice) => {
+                if (choice.kind === 'note') note();
+                else add(choice);
+              }}
+              onCollapse={() => {
+                changePanels({ libraryCollapsed: true });
+              }}
+            />
+            <PanelResizer
+              value={libraryWidth}
+              {...AUTOMATION_PANEL_SIZES.libraryWidth}
+              initial={AUTOMATION_PANEL_SIZES.libraryWidth.default}
+              label={t('canvas.resizeLibrary')}
+              onResize={(size) => {
+                changePanels({ libraryWidth: size }, false);
+              }}
+              onCommit={(size) => {
+                changePanels({ libraryWidth: size });
+              }}
+            />
+          </>
+        )}
         <Canvas
           document={document}
           names={names}
@@ -741,14 +1014,66 @@ function FlowEditor({
           {...(reveal === undefined ? {} : { reveal })}
           onChange={change}
           onSelect={select}
-          onDrop={(choice, at) => {
-            add(choice, at);
+          onAddAt={(choice, at, into) => {
+            if (choice.kind === 'note') note(at);
+            else add(choice, at, undefined, into);
           }}
           library={library}
+          onOpenBlock={(id) => {
+            pick(id);
+          }}
           onAddAfter={(anchor, choice) => add(choice, undefined, anchor)}
           {...(focusRequest === undefined ? {} : { focusRequest })}
+          options={canvasOptions}
+          onOptions={onCanvasOptions}
         />
-        <aside className="flow-side flow-settings" aria-label={t('canvas.settings')}>
+        {settingsCollapsed ? (
+          <div className="flow-strip flow-strip-settings">
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={t('canvas.showSettings')}
+              title={t('canvas.showSettings')}
+              aria-expanded="false"
+              onClick={() => {
+                changePanels({ settingsCollapsed: false });
+              }}
+            >
+              <ChevronLeft className="icon" aria-hidden="true" />
+            </button>
+          </div>
+        ) : (
+          <PanelResizer
+            value={settingsWidth}
+            {...AUTOMATION_PANEL_SIZES.settingsWidth}
+            initial={AUTOMATION_PANEL_SIZES.settingsWidth.default}
+            invert
+            label={t('canvas.resizeSettings')}
+            onResize={(size) => {
+              changePanels({ settingsWidth: size }, false);
+            }}
+            onCommit={(size) => {
+              changePanels({ settingsWidth: size });
+            }}
+          />
+        )}
+        <aside
+          className="flow-side flow-settings"
+          aria-label={t('canvas.settings')}
+          hidden={settingsCollapsed}
+        >
+          <button
+            type="button"
+            className="icon-button panel-collapse"
+            aria-label={t('canvas.hideSettings')}
+            title={t('canvas.hideSettings')}
+            aria-expanded="true"
+            onClick={() => {
+              changePanels({ settingsCollapsed: true });
+            }}
+          >
+            <ChevronRight className="icon" aria-hidden="true" />
+          </button>
           {runOnView !== undefined ? (
             <RunDetails
               block={selectedBlock}
@@ -816,14 +1141,33 @@ function FlowEditor({
           )}
         </aside>
       </div>
-      <div className="flow-lower">
+      {lowerCollapsed ? null : (
+        <PanelResizer
+          value={lowerHeight}
+          {...AUTOMATION_PANEL_SIZES.lowerHeight}
+          initial={AUTOMATION_PANEL_SIZES.lowerHeight.default}
+          orientation="horizontal"
+          invert
+          label={t('canvas.resizeLower')}
+          onResize={(size) => {
+            changePanels({ lowerHeight: size }, false);
+          }}
+          onCommit={(size) => {
+            changePanels({ lowerHeight: size });
+          }}
+        />
+      )}
+      <div
+        className={`flow-lower${lowerCollapsed ? ' is-collapsed' : ''}`}
+        style={lowerCollapsed ? undefined : { height: lowerHeight }}
+      >
         <div className="flow-lower-tabs" role="tablist">
           <button
             type="button"
             role="tab"
             aria-selected={lower === 'problems'}
             onClick={() => {
-              setLower('problems');
+              showLower('problems');
             }}
           >
             {t('canvas.problems', { count: named ? checked.length : checked.length + 1 })}
@@ -833,7 +1177,7 @@ function FlowEditor({
             role="tab"
             aria-selected={lower === 'runs'}
             onClick={() => {
-              setLower('runs');
+              showLower('runs');
             }}
           >
             {t('automation.pastRuns')}
@@ -843,14 +1187,48 @@ function FlowEditor({
             role="tab"
             aria-selected={lower === 'outline'}
             onClick={() => {
-              setLower('outline');
+              showLower('outline');
             }}
           >
             {t('canvas.outline')}
           </button>
+          {runOnView === undefined ? null : (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={lower === 'output'}
+              onClick={() => {
+                showLower('output');
+              }}
+            >
+              {t('canvas.output')}
+            </button>
+          )}
+          <button
+            type="button"
+            className="icon-button panel-collapse"
+            aria-label={t(lowerCollapsed ? 'canvas.showLower' : 'canvas.hideLower')}
+            title={t(lowerCollapsed ? 'canvas.showLower' : 'canvas.hideLower')}
+            aria-expanded={!lowerCollapsed}
+            onClick={() => {
+              changePanels({ lowerCollapsed: !lowerCollapsed });
+            }}
+          >
+            {lowerCollapsed ? (
+              <ChevronUp className="icon" aria-hidden="true" />
+            ) : (
+              <ChevronDown className="icon" aria-hidden="true" />
+            )}
+          </button>
         </div>
-        <div className="flow-lower-body" role="tabpanel">
-          {lower === 'outline' ? (
+        <div className="flow-lower-body" role="tabpanel" hidden={lowerCollapsed}>
+          {lower === 'output' && runOnView !== undefined ? (
+            <BlockOutput
+              block={selectedBlock}
+              step={runOnView.steps.find(({ id }) => id === only)}
+              onError={onError}
+            />
+          ) : lower === 'outline' ? (
             <Outline
               document={document}
               names={names}
@@ -872,6 +1250,11 @@ function FlowEditor({
               onOpen={(record) => {
                 setView({ kind: 'past', record });
                 setSelected(new Set());
+                setRefusal(undefined);
+              }}
+              onOpenOutput={(record) => {
+                setView({ kind: 'past', record });
+                showLower('output');
               }}
             />
           )}
@@ -897,7 +1280,7 @@ function FlowEditor({
             </button>
             <button
               type="button"
-              className="primary"
+              className="danger filled"
               onClick={() => {
                 setRemoving(false);
                 onRemove();

@@ -5,6 +5,8 @@ import { t } from '../shared/i18n/translate.js';
 import type {
   AutomationDraft,
   AutomationListView,
+  AutomationCanvasView,
+  AutomationPanelsView,
   AutomationRunStateView,
   DetectionView,
   LayoutUpdate,
@@ -23,9 +25,10 @@ import type {
   WorkspaceUpdate,
   WorkspaceView,
 } from '../shared/ipc-contract.js';
-import { PANEL_WIDTH_DEFAULT } from '../shared/ipc-contract.js';
+import { PANEL_WIDTH_DEFAULT, PANEL_WIDTH_MAX, PANEL_WIDTH_MIN } from '../shared/ipc-contract.js';
 import { AutomationTab } from './automations/AutomationTab.js';
 import { AutomationsPanel } from './automations/AutomationsPanel.js';
+import { LIBRARY_DRAG_TYPE } from './automations/canvas/Canvas.js';
 import { HistoryView } from './history/HistoryView.js';
 import { ImportReview } from './import/ImportReview.js';
 import { CommandPalette } from './palette/CommandPalette.js';
@@ -105,6 +108,9 @@ function messageOf(error: unknown): string {
   return text.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
 }
 
+const NO_PANELS: AutomationPanelsView = {};
+const NO_CANVAS_OPTIONS: AutomationCanvasView = {};
+
 function layoutOf(list: WorkspaceListView): WorkspaceLayoutView | undefined {
   return list.workspaces.find(({ id }) => id === list.activeId)?.layout;
 }
@@ -119,6 +125,8 @@ export function App() {
   const [version, setVersion] = useState('');
   const [workspaces, setWorkspaces] = useState(NO_WORKSPACES);
   const [panelWidth, setPanelWidth] = useState(PANEL_WIDTH_DEFAULT);
+  const [automationPanels, setAutomationPanels] = useState<AutomationPanelsView>(NO_PANELS);
+  const [canvasOptions, setCanvasOptions] = useState<AutomationCanvasView>(NO_CANVAS_OPTIONS);
   const [historyRunLimit, setHistoryRunLimit] = useState(200);
   const [recent, setRecent] = useState(EMPTY_RECENT);
   const [tabs, setTabs] = useState<TabState>(NO_TABS);
@@ -197,6 +205,8 @@ export function App() {
         setTabs(restored);
         setHistoryFilter(layout?.historyFilter);
         setPanelWidth(layout?.panelWidth ?? PANEL_WIDTH_DEFAULT);
+        setAutomationPanels(layout?.automationPanels ?? NO_PANELS);
+        setCanvasOptions(layout?.automationCanvas ?? NO_CANVAS_OPTIONS);
       })
       .catch(report);
     void api
@@ -368,6 +378,8 @@ export function App() {
     restoreTabs(layout);
     setOpenCategory(layout?.openCategory);
     setPanelWidth(layout?.panelWidth ?? PANEL_WIDTH_DEFAULT);
+    setAutomationPanels(layout?.automationPanels ?? NO_PANELS);
+    setCanvasOptions(layout?.automationCanvas ?? NO_CANVAS_OPTIONS);
     setAutomations(NO_AUTOMATIONS);
     setAutomationsLoaded(false);
     setModal(undefined);
@@ -928,16 +940,22 @@ export function App() {
           logos={toolLogos}
           active={tab.key === tabs.activeKey}
           revision={catalog}
+          panels={automationPanels}
+          onPanels={(panels, commit) => {
+            setAutomationPanels(panels);
+            if (commit) saveWorkspace({ layout: { automationPanels: panels } });
+          }}
+          canvasOptions={canvasOptions}
+          onCanvasOptions={(options) => {
+            setCanvasOptions(options);
+            saveWorkspace({ layout: { automationCanvas: options } });
+          }}
           onSave={saveAutomation}
           onSaved={(id) => {
             markUnsaved(tab.key, false);
             changeTabs((state) => rename(state, tab.key, { kind: 'automation', id }));
           }}
-          onRun={() => {
-            if (automation !== undefined) {
-              runAutomation(automation.id);
-            }
-          }}
+          onRun={(id) => api.startAutomation(id)}
           onRemove={() => {
             if (automation !== undefined) {
               removeAutomation(automation.id);
@@ -1051,6 +1069,15 @@ export function App() {
           // Named by the tool alone, with its state said apart, as tabs do.
           aria-describedby={showsState ? stateId : undefined}
           aria-current={item.id === currentTool?.id ? 'true' : undefined}
+          // A tool dragged from here onto an automation's canvas becomes a block there.
+          draggable
+          onDragStart={(event) => {
+            event.dataTransfer.setData(
+              LIBRARY_DRAG_TYPE,
+              JSON.stringify({ kind: 'run', tool: item.id }),
+            );
+            event.dataTransfer.effectAllowed = 'copy';
+          }}
           onClick={() => {
             showTool(item.id, !live);
           }}
@@ -1172,7 +1199,11 @@ export function App() {
         )}
         {panelGroup === undefined && !automationsPanelOpen ? null : (
           <PanelResizer
-            width={panelWidth}
+            value={panelWidth}
+            min={PANEL_WIDTH_MIN}
+            max={PANEL_WIDTH_MAX}
+            initial={PANEL_WIDTH_DEFAULT}
+            label={t('nav.resizePanel')}
             onResize={setPanelWidth}
             onCommit={(width) => {
               saveWorkspace({ layout: { panelWidth: width } });
@@ -1486,7 +1517,7 @@ export function App() {
             </button>
             <button
               type="button"
-              className="primary"
+              className="danger filled"
               onClick={() => {
                 const { id } = modal.tool;
                 setModal(undefined);

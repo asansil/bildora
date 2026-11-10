@@ -1,11 +1,12 @@
-import { memo } from 'react';
+import { memo, useContext } from 'react';
 import { Handle, NodeResizer, Position } from '@xyflow/react';
 import type { Node, NodeProps } from '@xyflow/react';
 import { TriangleAlert } from 'lucide-react';
-import { ERROR_OUTPUT } from '@bildora/protocol';
+import { ERROR_OUTPUT, NOTE_TEXT_MAX } from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
 import type { StepStateView } from '../../../shared/ipc-contract.js';
 import { RunStateIcon } from '../../shell/RunStateBadge.js';
+import { CanvasActionsContext } from './canvas-actions.js';
 import type { BlockKind } from './flow-document.js';
 
 export interface OutputView {
@@ -117,14 +118,49 @@ export interface NoteNodeData extends Record<string, unknown> {
 
 export type NoteNode = Node<NoteNodeData, 'note'>;
 
-/** Text on the canvas. It is written in the settings panel, so the keyboard reaches it too. */
-export const NoteNodeView = memo(function NoteNodeView({ data, selected }: NodeProps<NoteNode>) {
+/**
+ * Text on the canvas. A double-click writes it in place; the settings panel holds the same text,
+ * so the keyboard reaches it too.
+ */
+export const NoteNodeView = memo(function NoteNodeView({
+  id,
+  data,
+  selected,
+}: NodeProps<NoteNode>) {
+  const actions = useContext(CanvasActionsContext);
+  const editing = actions !== undefined && actions.editingNote === id;
   return (
     <div className={`note${selected ? ' is-selected' : ''}`} data-testid="canvas-note">
       {data.readOnly ? null : <NodeResizer isVisible={selected} minWidth={120} minHeight={48} />}
-      <p className={data.text === '' ? 'note-text is-empty' : 'note-text'}>
-        {data.text === '' ? data.placeholder : data.text}
-      </p>
+      {editing ? (
+        <textarea
+          className="note-input nodrag nowheel nopan"
+          data-testid="note-input"
+          aria-label={t('canvas.noteText')}
+          autoFocus
+          defaultValue={data.text}
+          maxLength={NOTE_TEXT_MAX}
+          onFocus={(event) => {
+            const end = event.currentTarget.value.length;
+            event.currentTarget.setSelectionRange(end, end);
+          }}
+          onBlur={(event) => {
+            actions.finishNote(id, event.currentTarget.value);
+          }}
+          onKeyDown={(event) => {
+            // Keys typed here belong to the text, not to the canvas around it.
+            event.stopPropagation();
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              event.currentTarget.blur();
+            }
+          }}
+        />
+      ) : (
+        <p className={data.text === '' ? 'note-text is-empty' : 'note-text'}>
+          {data.text === '' ? data.placeholder : data.text}
+        </p>
+      )}
     </div>
   );
 });

@@ -110,6 +110,79 @@ describe('Workspaces', () => {
       expect(cleared.layout).not.toHaveProperty('scriptAnswers');
     });
 
+    it('keeps the automation panels, dropping sizes out of limits', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const updated = await updateWorkspace(dataDir, 'work', {
+        layout: {
+          automationPanels: { libraryWidth: 240, settingsWidth: 9000, lowerCollapsed: true },
+        },
+      });
+      expect(updated.layout.automationPanels).toEqual({ libraryWidth: 240, lowerCollapsed: true });
+      const kept = await updateWorkspace(dataDir, 'work', { layout: { panelWidth: 300 } });
+      expect(kept.layout.automationPanels).toEqual({ libraryWidth: 240, lowerCollapsed: true });
+      expect((await getWorkspace(dataDir, 'work'))?.layout.automationPanels).toEqual({
+        libraryWidth: 240,
+        lowerCollapsed: true,
+      });
+
+      const cleared = await updateWorkspace(dataDir, 'work', {
+        layout: { automationPanels: null },
+      });
+      expect(cleared.layout).not.toHaveProperty('automationPanels');
+    });
+
+    it('keeps only the canvas options that are on, and null clears them', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const updated = await updateWorkspace(dataDir, 'work', {
+        layout: { automationCanvas: { snapToGrid: true, rightAngles: false } },
+      });
+      expect(updated.layout.automationCanvas).toEqual({ snapToGrid: true });
+      const kept = await updateWorkspace(dataDir, 'work', { layout: { panelWidth: 300 } });
+      expect(kept.layout.automationCanvas).toEqual({ snapToGrid: true });
+      expect((await getWorkspace(dataDir, 'work'))?.layout.automationCanvas).toEqual({
+        snapToGrid: true,
+      });
+      const off = await updateWorkspace(dataDir, 'work', {
+        layout: { automationCanvas: { snapToGrid: false } },
+      });
+      expect(off.layout).not.toHaveProperty('automationCanvas');
+      await updateWorkspace(dataDir, 'work', {
+        layout: { automationCanvas: { rightAngles: true } },
+      });
+      const cleared = await updateWorkspace(dataDir, 'work', {
+        layout: { automationCanvas: null },
+      });
+      expect(cleared.layout).not.toHaveProperty('automationCanvas');
+    });
+
+    it('ignores stored canvas options that are not true', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const file = join(dataDir, 'workspaces', 'work', 'workspace.yaml');
+      await writeFile(
+        file,
+        'formatVersion: 2\nname: Work\nlayout:\n  automationCanvas:\n' +
+          '    snapToGrid: "yes"\n    rightAngles: 1\n',
+      );
+      expect((await getWorkspace(dataDir, 'work'))?.layout).toEqual({
+        categoryOrder: [],
+        tabs: [],
+      });
+    });
+
+    it('ignores stored automation panels that make no sense', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const file = join(dataDir, 'workspaces', 'work', 'workspace.yaml');
+      await writeFile(
+        file,
+        'formatVersion: 2\nname: Work\nlayout:\n  automationPanels:\n' +
+          '    lowerHeight: 10\n    libraryWidth: 200.5\n    settingsCollapsed: "yes"\n',
+      );
+      expect((await getWorkspace(dataDir, 'work'))?.layout).toEqual({
+        categoryOrder: [],
+        tabs: [],
+      });
+    });
+
     it('drops a stored panel width out of limits', async () => {
       await createWorkspace(dataDir, 'Work', 'light');
       const file = join(dataDir, 'workspaces', 'work', 'workspace.yaml');

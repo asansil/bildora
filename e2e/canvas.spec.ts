@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -454,14 +455,18 @@ test('Enter picks a block up, arrow keys move it, and the move undoes as one', a
   await window.keyboard.press('ArrowRight');
   await expect(canvas).toHaveAttribute('data-focused', 'extract');
 
-  /** Where Extract is from Start, which holds still however the view pans. */
+  /**
+   * Where Extract is from Start, which holds still however the view pans. Both are read at once,
+   * since the view may move to show the next block between two reads.
+   */
   async function offset(): Promise<{ x: number; y: number }> {
-    const from = await block(window, 'start').boundingBox();
-    const at = await block(window, 'extract').boundingBox();
-    return {
-      x: Math.round((at?.x ?? 0) - (from?.x ?? 0)),
-      y: Math.round((at?.y ?? 0) - (from?.y ?? 0)),
-    };
+    const read: unknown = await window.evaluate(`(() => {
+      const box = (id) => document.querySelector('.react-flow__node[data-id="' + id + '"]').getBoundingClientRect();
+      const from = box('start');
+      const at = box('extract');
+      return { x: Math.round(at.x - from.x), y: Math.round(at.y - from.y) };
+    })()`);
+    return read as { x: number; y: number };
   }
   const before = await offset();
   await window.keyboard.press('Enter');
@@ -469,8 +474,9 @@ test('Enter picks a block up, arrow keys move it, and the move undoes as one', a
   for (let press = 0; press < 3; press += 1) await window.keyboard.press('ArrowDown');
   await window.keyboard.press('Escape');
   await expect(announcer).toHaveText('Extract stays here.');
+  // Each press adds its step, however fast they come.
+  await expect.poll(async () => (await offset()).y - before.y).toBeGreaterThan(40);
   const moved = await offset();
-  expect(moved.y - before.y).toBeGreaterThan(20);
   expect(moved.x).toBe(before.x);
 
   // Out of moving, arrows go back to choosing blocks, and the block stays put.
@@ -481,7 +487,7 @@ test('Enter picks a block up, arrow keys move it, and the move undoes as one', a
   await expect.poll(offset).toEqual(before);
 });
 
-test('a flow of 200 blocks opens laid out, pans, and shows a far block on request', async () => {
+test('a flow of 200 blocks opens laid out, pans with the middle button, and shows a far block', async () => {
   test.setTimeout(90_000);
   const waits = Array.from({ length: 199 }, (_item, index) => `w${String(index + 1)}`);
   const blocks = waits.map(
@@ -502,9 +508,9 @@ test('a flow of 200 blocks opens laid out, pans, and shows a far block on reques
   const pane = await window.locator('.react-flow__pane').boundingBox();
   if (pane === null) throw new Error('No canvas');
   await window.mouse.move(pane.x + pane.width / 2, pane.y + 20);
-  await window.mouse.down();
+  await window.mouse.down({ button: 'middle' });
   await window.mouse.move(pane.x + pane.width / 2 - 400, pane.y + 20, { steps: 8 });
-  await window.mouse.up();
+  await window.mouse.up({ button: 'middle' });
   await expect(viewport).not.toHaveAttribute('style', transform);
 
   await window.getByRole('tab', { name: 'Blocks list' }).click();
@@ -514,4 +520,788 @@ test('a flow of 200 blocks opens laid out, pans, and shows a far block on reques
     .click();
   await expect(block(window, 'w199')).toBeInViewport();
   await shot(window, 'long');
+});
+
+/** A connection, by the words a screen reader says for it. */
+function connection(window: Page, from: string, output: string, to: string): Locator {
+  return window.locator(`.react-flow__edge[aria-label="From ${from}, ${output}, to ${to}"]`);
+}
+
+/** Clicks a connection's line, wherever its curve runs. */
+async function clickConnection(
+  target: Locator,
+  kind: 'click' | 'dblclick' = 'click',
+): Promise<void> {
+  await target.locator('.react-flow__edge-interaction').dispatchEvent(kind);
+}
+
+test('a selected connection is deleted alone, by Delete or a double-click', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('branched', BRANCHED);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Branched');
+  await expect(block(window, 'extract')).toBeVisible();
+  const edges = window.locator('.react-flow__edge');
+  await expect(edges).toHaveCount(5);
+  await expect(window.locator('marker.react-flow__arrowhead').first()).toBeAttached();
+
+  // A block clicked first keeps keyboard focus, which Delete must not fall back to.
+  await block(window, 'extract').click();
+  await clickConnection(connection(window, 'Start', 'Next', 'Extract'));
+  await expect(connection(window, 'Start', 'Next', 'Extract')).toHaveClass(/selected/);
+  await shot(window, 'edge-selected');
+  await window.keyboard.press('Delete');
+  await expect(edges).toHaveCount(4);
+  await expect(window.getByTestId('canvas-block')).toHaveCount(5);
+
+  await clickConnection(connection(window, 'Extract', 'Next', 'If the exit code of Extract is 0'));
+  await window.keyboard.press('Delete');
+  await expect(edges).toHaveCount(3);
+  await clickConnection(connection(window, 'Extract', 'Error', 'Report'), 'dblclick');
+  await expect(edges).toHaveCount(2);
+  await expect(window.getByTestId('canvas-block')).toHaveCount(5);
+
+  // A click on the empty canvas lets go of the block too, so Delete then removes nothing.
+  await window.locator('.react-flow__pane').click({ position: { x: 10, y: 10 } });
+  await expect(window.getByTestId('canvas')).not.toHaveAttribute('data-focused');
+  await window.getByTestId('canvas').press('Delete');
+  await expect(window.getByTestId('canvas-block')).toHaveCount(5);
+});
+
+test('a note is written in place, and the writing undoes as one', async () => {
+  const { window } = await launchShell();
+  await rail(window, 'Automations').click();
+  await window.getByRole('button', { name: 'New automation' }).click();
+  await window.getByLabel('Name', { exact: true }).fill('Noted');
+  await window.getByTestId('block-library').getByRole('button', { name: 'Note' }).click();
+  const note = window.getByTestId('canvas-note');
+  await expect(note).toHaveText('Double-click to write a note');
+
+  await note.dblclick();
+  const input = window.getByTestId('note-input');
+  await expect(input).toBeFocused();
+  await window.keyboard.type('Runs every morning');
+  // Keys typed in the note never reach the canvas, where Delete would remove the note.
+  await window.keyboard.press('Backspace');
+  await window.keyboard.press('Escape');
+  await expect(note).toHaveText('Runs every mornin');
+  await expect(window.getByTestId('note-settings').getByLabel('Text')).toHaveValue(
+    'Runs every mornin',
+  );
+
+  await window.locator('.react-flow__pane').click({ position: { x: 10, y: 10 } });
+  await window.keyboard.press('Control+z');
+  await expect(note).toHaveText('Double-click to write a note');
+});
+
+test('a right-click adds a block where it was asked, and a block has a menu', async () => {
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  const { window } = await launchShell();
+  await rail(window, 'Automations').click();
+  await window.getByRole('button', { name: 'New automation' }).click();
+  await window.getByLabel('Name', { exact: true }).fill('Menus');
+  await expect(window.getByTestId('canvas-block')).toHaveCount(1);
+
+  // Start can be added after and connected, never deleted.
+  await block(window, 'start').click({ button: 'right' });
+  const menu = window.getByRole('menu', { name: 'Actions for Start' });
+  await expect(menu.getByRole('menuitem')).toHaveText([
+    'Add a block after this one…',
+    'Connect an output…',
+  ]);
+  await window.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+
+  await window
+    .locator('.react-flow__pane')
+    .click({ button: 'right', position: { x: 500, y: 300 } });
+  const dialog = window.getByRole('dialog', { name: 'Add here' });
+  await expect(dialog.getByRole('button', { name: 'Note' })).toBeVisible();
+  await window.keyboard.type('Rep');
+  await expect(dialog.getByRole('button')).toHaveText(['Report', 'Cancel']);
+  await dialog.getByRole('button', { name: 'Report' }).click();
+  await expect(window.getByTestId('canvas-block')).toHaveCount(2);
+  await expect(window.locator('.react-flow__edge')).toHaveCount(0);
+
+  await block(window, 'report').click({ button: 'right' });
+  await window.getByRole('menuitem', { name: 'Delete' }).click();
+  await expect(window.getByTestId('canvas-block')).toHaveCount(1);
+});
+
+test('a tool dragged from the side panel becomes a block, and the library finds by name', async () => {
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  const { window } = await launchShell();
+  await rail(window, 'Automations').click();
+  await window.getByRole('button', { name: 'New automation' }).click();
+  await window.getByLabel('Name', { exact: true }).fill('Dragged');
+
+  const library = window.getByTestId('block-library');
+  await library.getByRole('searchbox').fill('rep');
+  await expect(library.getByTestId('library-item')).toHaveText(['Report']);
+  await library.getByRole('searchbox').fill('');
+
+  await rail(window, 'Uncategorized').click();
+  const row = window.locator('#tool-panel').getByRole('button', { name: 'Extract', exact: true });
+  await row.first().dragTo(window.locator('.react-flow__pane'), {
+    targetPosition: { x: 400, y: 300 },
+  });
+  await expect(block(window, 'extract')).toBeVisible();
+});
+
+test('a double-click on a block in a run goes back to editing it', async () => {
+  test.setTimeout(60_000);
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('branched', BRANCHED);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Branched');
+  await expect(block(window, 'extract')).toBeVisible();
+  await window.getByRole('button', { name: 'Run', exact: true }).click();
+  const state = (id: string) => block(window, id).getByTestId('canvas-block');
+  await expect(state('report')).toHaveAttribute('data-state', 'completed', { timeout: 30_000 });
+
+  await block(window, 'report').dblclick();
+  await expect(window.getByRole('button', { name: 'Back to editing' })).toBeHidden();
+  await expect(window.getByTestId('block-settings')).toHaveAttribute('data-block-id', 'report');
+});
+
+test('Save and run on a new automation asks for a name, then saves it and says what stops it', async () => {
+  const { window } = await launchShell();
+  await rail(window, 'Automations').click();
+  await window.getByRole('button', { name: 'New automation' }).click();
+  const refused = window.getByTestId('run-refused');
+
+  await window.getByRole('button', { name: 'Save and run', exact: true }).click();
+  await expect(refused).toHaveText('Give the automation a name before running it.');
+  await expect(window.getByLabel('Name', { exact: true })).toBeFocused();
+  await window.getByLabel('Name', { exact: true }).fill('Fresh');
+  await expect(refused).toBeHidden();
+
+  await window
+    .getByTestId('block-library')
+    .getByRole('button', { name: 'Parallel', exact: true })
+    .click();
+  await window.getByRole('button', { name: 'Save and run', exact: true }).click();
+  await expect(window.getByRole('tab', { name: 'Fresh', selected: true })).toBeVisible();
+  await expect(refused).toContainText(/problems? stops? this automation from running/);
+  await expect(window.getByRole('tab', { name: /Problems/, selected: true })).toBeVisible();
+  await expect(window.getByRole('button', { name: 'Run', exact: true })).toBeEnabled();
+  expect(existsSync(automationFile('fresh'))).toBe(true);
+});
+
+test('the panels around the canvas resize and fold, and come back after a relaunch', async () => {
+  test.setTimeout(60_000);
+  await writeAutomation('branched', BRANCHED);
+  const first = await launchShell();
+  await openAutomation(first.window, 'Branched');
+  const separator = (window: Page, name: string) => window.getByRole('separator', { name });
+  const settings = (window: Page) => window.getByRole('complementary', { name: 'Block settings' });
+
+  await drag(first.window, separator(first.window, 'Resize the blocks panel'), { x: 60, y: 0 });
+  await expect(separator(first.window, 'Resize the blocks panel')).toHaveAttribute(
+    'aria-valuenow',
+    '260',
+  );
+  await separator(first.window, 'Resize the settings panel').focus();
+  await first.window.keyboard.press('ArrowLeft');
+  await first.window.keyboard.press('ArrowLeft');
+  await expect(separator(first.window, 'Resize the settings panel')).toHaveAttribute(
+    'aria-valuenow',
+    '332',
+  );
+  await drag(first.window, separator(first.window, 'Resize the lower panel'), { x: 0, y: -100 });
+  await expect(separator(first.window, 'Resize the lower panel')).toHaveAttribute(
+    'aria-valuenow',
+    '280',
+  );
+
+  await shot(first.window, 'canvas-panels-resized');
+  await first.window.getByRole('button', { name: 'Hide settings' }).click();
+  await expect(settings(first.window)).toBeHidden();
+  await first.window.getByRole('button', { name: 'Hide the lower panel' }).click();
+  await expect(first.window.locator('.flow-lower-body')).toBeHidden();
+  await expect(separator(first.window, 'Resize the lower panel')).toHaveCount(0);
+  await shot(first.window, 'canvas-panels-folded');
+  const layout = join(dataDir, 'workspaces', 'default', 'workspace.yaml');
+  await expect.poll(() => readFile(layout, 'utf8')).toContain('lowerCollapsed: true');
+  await first.app.close();
+
+  const { window } = await launchShell();
+  await openAutomation(window, 'Branched');
+  await expect(separator(window, 'Resize the blocks panel')).toHaveAttribute(
+    'aria-valuenow',
+    '260',
+  );
+  await expect(settings(window)).toBeHidden();
+  await expect(window.locator('.flow-lower-body')).toBeHidden();
+
+  // Choosing a tab of the folded lower panel opens it again, at the height it was left.
+  await window.getByRole('tab', { name: 'Blocks list' }).click();
+  await expect(window.locator('.flow-lower-body')).toBeVisible();
+  await expect(separator(window, 'Resize the lower panel')).toHaveAttribute('aria-valuenow', '280');
+  await window.getByRole('button', { name: 'Show settings' }).click();
+  await expect(settings(window)).toBeVisible();
+  await expect(separator(window, 'Resize the settings panel')).toHaveAttribute(
+    'aria-valuenow',
+    '332',
+  );
+  await window.getByRole('button', { name: 'Hide blocks' }).click();
+  await expect(window.getByTestId('block-library')).toBeHidden();
+  await window.getByRole('button', { name: 'Show blocks' }).click();
+  await expect(window.getByTestId('block-library')).toBeVisible();
+});
+
+/** The connections drawn, each as "from output to". */
+async function connectionsShown(window: Page): Promise<string[]> {
+  const edges = await window.locator('.react-flow__edge').all();
+  const ids = await Promise.all(edges.map((edge) => edge.getAttribute('data-id')));
+  return ids.map((id) => (id ?? '').split('\u0000').join(' ')).sort();
+}
+
+/** Where on the screen the middle of a connection's line is, along the curve itself. */
+async function connectionMiddle(
+  window: Page,
+  from: string,
+  output: string,
+  to: string,
+): Promise<{ x: number; y: number }> {
+  const selector = `.react-flow__edge[aria-label="From ${from}, ${output}, to ${to}"] .react-flow__edge-path`;
+  // The point half way along the path, in the path's own units, is placed on the screen through
+  // the path's box there: the view only moves and scales it.
+  const script = `(() => {
+    const line = document.querySelector(${JSON.stringify(selector)});
+    if (line === null) return null;
+    const point = line.getPointAtLength(line.getTotalLength() / 2);
+    const own = line.getBBox();
+    const shown = line.getBoundingClientRect();
+    const scale = shown.width / (own.width || 1);
+    return { x: shown.left + (point.x - own.x) * scale, y: shown.top + (point.y - own.y) * scale };
+  })()`;
+  let last = '';
+  let middle = { x: 0, y: 0 };
+  // A canvas just opened is still settling: connections appear once their blocks are measured,
+  // and the view fits them. Two readings in a row that agree mean it has settled.
+  await expect
+    .poll(
+      async () => {
+        const found: unknown = await window.evaluate(script);
+        if (typeof found !== 'object' || found === null || !('x' in found) || !('y' in found)) {
+          last = '';
+          return false;
+        }
+        const { x, y } = found as { x: number; y: number };
+        const now = `${String(x)},${String(y)}`;
+        const settled = now === last;
+        last = now;
+        middle = { x, y };
+        return settled;
+      },
+      { intervals: [100] },
+    )
+    .toBe(true);
+  return middle;
+}
+
+const SPACED = `name: Spaced
+blocks:
+  - { id: start, type: start }
+  - { id: extract, type: run, tool: acme.extract }
+  - { id: report, type: run, tool: acme.report }
+connections:
+  - { from: start, to: extract }
+positions:
+  start: { x: 0, y: 0 }
+  extract: { x: 700, y: 0 }
+  report: { x: 300, y: 160 }
+`;
+
+/**
+ * Drops a block from the library onto the canvas with Shift held. A drag the test drives does not
+ * carry Shift into its drag events, so this sends them as the library would.
+ */
+async function dropWithShift(
+  window: Page,
+  choice: Record<string, string>,
+  at: { x: number; y: number },
+): Promise<void> {
+  const dataTransfer = await window.evaluateHandle(
+    `(() => { const data = new DataTransfer(); data.setData('application/x-bildora-block', ${JSON.stringify(JSON.stringify(choice))}); return data; })()`,
+  );
+  const canvas = window.getByTestId('canvas');
+  const init = { dataTransfer, shiftKey: true, clientX: at.x, clientY: at.y, bubbles: true };
+  await canvas.dispatchEvent('dragover', init);
+  await canvas.dispatchEvent('drop', init);
+}
+
+/** Drags with the mouse from a block's middle to a point of the screen, in steps. */
+async function dragTo(window: Page, target: Locator, to: { x: number; y: number }): Promise<void> {
+  const box = await target.boundingBox();
+  if (box === null) throw new Error('Nothing to drag');
+  await window.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await window.mouse.down();
+  await window.mouse.move(to.x, to.y - 40, { steps: 5 });
+  await window.mouse.move(to.x, to.y, { steps: 5 });
+}
+
+test('a block goes into a connection only with Shift, and that undoes as one', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('spaced', SPACED);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Spaced');
+  await expect(block(window, 'report')).toBeVisible();
+  const splice = window.locator('.react-flow__edge.edge--pending');
+  const middle = await connectionMiddle(window, 'Start', 'Next', 'Extract');
+
+  // Without Shift, a block let go over a connection only moves, so none goes in by accident.
+  await dragTo(window, block(window, 'report'), middle);
+  await expect(splice).toHaveCount(0);
+  await window.mouse.up();
+  await expect.poll(() => connectionsShown(window)).toEqual(['start next extract']);
+  await window.getByRole('button', { name: 'Undo', exact: true }).click();
+
+  await window.keyboard.down('Shift');
+  await dragTo(window, block(window, 'report'), middle);
+  await expect(splice).toHaveCount(2);
+  await shot(window, 'splice-preview');
+  await window.mouse.up();
+  await window.keyboard.up('Shift');
+  await expect(splice).toHaveCount(0);
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['report next extract', 'start next report']);
+
+  await window.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect.poll(() => connectionsShown(window)).toEqual(['start next extract']);
+});
+
+test('a block dropped with Shift from the library or the side panel goes into a connection', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('spaced', SPACED);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Spaced');
+  await expect(block(window, 'report')).toBeVisible();
+  const pane = window.locator('.react-flow__pane');
+  const at = async (from: string, output: string, to: string) => {
+    const middle = await connectionMiddle(window, from, output, to);
+    const area = await pane.boundingBox();
+    if (area === null) throw new Error('The canvas is not drawn');
+    return { x: middle.x - area.x, y: middle.y - area.y };
+  };
+  const library = window.getByTestId('block-library');
+  const wait = library.getByRole('button', { name: 'Wait for time', exact: true });
+
+  // Without Shift, the new block is only placed where it was dropped.
+  await wait.dragTo(pane, { targetPosition: await at('Start', 'Next', 'Extract') });
+  await expect(block(window, 'pause')).toBeVisible();
+  expect(await connectionsShown(window)).toEqual(['start next extract']);
+  await window.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(block(window, 'pause')).toHaveCount(0);
+
+  const middle = (from: string, output: string, to: string) =>
+    connectionMiddle(window, from, output, to);
+  await dropWithShift(window, { kind: 'wait-for-time' }, await middle('Start', 'Next', 'Extract'));
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['pause next extract', 'start next pause']);
+
+  // An If goes on through True or False, so it is only placed where it was dropped.
+  const before = await connectionsShown(window);
+  await dropWithShift(window, { kind: 'if' }, await middle('Start', 'Next', 'Wait 60 seconds'));
+  await expect(block(window, 'decide')).toBeVisible();
+  expect(await connectionsShown(window)).toEqual(before);
+  await window.getByRole('button', { name: 'Undo', exact: true }).click();
+
+  // A tool from the side panel is offered the same way, as a Run tool block.
+  await dropWithShift(
+    window,
+    { kind: 'run', tool: 'acme.report' },
+    await middle('Wait 60 seconds', 'Next', 'Extract'),
+  );
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['pause next report-2', 'report-2 next extract', 'start next pause']);
+});
+
+const CHAIN = `name: Chain
+blocks:
+  - { id: start, type: start }
+  - { id: extract, type: run, tool: acme.extract }
+  - { id: report, type: run, tool: acme.report }
+  - { id: send, type: run, tool: acme.report }
+connections:
+  - { from: start, to: extract }
+  - { from: extract, to: report }
+  - { from: report, to: send }
+positions:
+  start: { x: 0, y: 0 }
+  extract: { x: 280, y: 0 }
+  report: { x: 0, y: -220 }
+  send: { x: 380, y: -200 }
+`;
+
+test('Shift takes a block out of the flow, joining its neighbours, or moves it elsewhere', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Chain');
+  await expect(block(window, 'send')).toBeVisible();
+  const all = ['extract next report', 'report next send', 'start next extract'];
+  await expect.poll(() => connectionsShown(window)).toEqual(all);
+
+  const box = await block(window, 'extract').boundingBox();
+  if (box === null) throw new Error('Extract is not drawn');
+  await window.keyboard.down('Shift');
+  await dragTo(window, block(window, 'extract'), {
+    x: box.x + box.width / 2,
+    y: box.y + box.height / 2 + 160,
+  });
+  // Held with Shift, the block is already out, and what came before it leads past it.
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['report next send', 'start next report']);
+  await shot(window, 'block-taken-out');
+  await window.mouse.up();
+  await window.keyboard.up('Shift');
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['report next send', 'start next report']);
+
+  await window.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect.poll(() => connectionsShown(window)).toEqual(all);
+
+  const middle = await connectionMiddle(window, 'Report', 'Next', 'Report');
+  await window.keyboard.down('Shift');
+  await dragTo(window, block(window, 'extract'), middle);
+  // Over another connection, the block is drawn in it, with the connection it replaces faint.
+  await expect(window.locator('.react-flow__edge.edge--pending')).toHaveCount(2);
+  await expect(window.locator('.react-flow__edge.edge--replaced')).toHaveCount(1);
+  await shot(window, 'block-moving-in');
+  await window.mouse.up();
+  await window.keyboard.up('Shift');
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['extract next send', 'report next extract', 'start next report']);
+});
+
+/** The middle of an element on the screen, once two readings in a row agree. */
+async function middleOf(target: Locator): Promise<{ x: number; y: number }> {
+  let last = '';
+  let middle = { x: 0, y: 0 };
+  await expect
+    .poll(
+      async () => {
+        const box = await target.boundingBox();
+        const now = box === null ? '' : JSON.stringify(box);
+        const settled = now !== '' && now === last;
+        last = now;
+        if (box !== null) middle = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+        return settled;
+      },
+      { intervals: [100] },
+    )
+    .toBe(true);
+  return middle;
+}
+
+/** Presses the left button at one point and lets go at another, in steps. */
+async function pull(
+  window: Page,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+): Promise<void> {
+  await window.mouse.move(from.x, from.y);
+  await window.mouse.down();
+  await window.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 5 });
+  await window.mouse.move(to.x, to.y, { steps: 5 });
+  await window.mouse.up();
+}
+
+test('a left drag on the canvas selects blocks, and the middle button pans', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Chain');
+  await expect(block(window, 'send')).toBeVisible();
+  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+  const viewport = window.locator('.react-flow__viewport');
+  const transform = (await viewport.getAttribute('style')) ?? '';
+
+  // From the empty canvas below Start to the middle of Extract: both are touched.
+  const start = await middleOf(block(window, 'start'));
+  const extract = await middleOf(block(window, 'extract'));
+  await pull(window, { x: start.x - 60, y: start.y + 80 }, extract);
+  await expect(window.locator('.react-flow__node-block.selected')).toHaveCount(2);
+  await expect(viewport).toHaveAttribute('style', transform);
+  await shot(window, 'box-selection');
+
+  await window.mouse.move(start.x - 60, start.y + 120);
+  await window.mouse.down({ button: 'middle' });
+  await window.mouse.move(start.x + 40, start.y + 120, { steps: 5 });
+  await window.mouse.up({ button: 'middle' });
+  await expect(viewport).not.toHaveAttribute('style', transform);
+});
+
+test('either end of a connection moves to another block, and let go on nothing it goes', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Chain');
+  await expect(block(window, 'send')).toBeVisible();
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['extract next report', 'report next send', 'start next extract']);
+  const end = (from: string, to: string, side: 'source' | 'target') =>
+    connection(window, from, 'Next', to).locator(`.react-flow__edgeupdater-${side}`);
+
+  // The input end is taken straight from the block it points to, and let go on another one.
+  await connectionMiddle(window, 'Extract', 'Next', 'Report');
+  await pull(
+    window,
+    await middleOf(end('Extract', 'Report', 'target')),
+    await middleOf(block(window, 'send')),
+  );
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['extract next send', 'report next send', 'start next extract']);
+
+  // Let go on the empty canvas, the connection is removed, and that undoes.
+  const box = await block(window, 'start').boundingBox();
+  if (box === null) throw new Error('Start is not drawn');
+  await pull(window, await middleOf(end('Start', 'Extract', 'target')), {
+    x: box.x + box.width / 2,
+    y: box.y + 160,
+  });
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['extract next send', 'report next send']);
+  await window.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['extract next send', 'report next send', 'start next extract']);
+
+  // A chosen connection's output end moves to another block's output, which then leads there.
+  await clickConnection(connection(window, 'Report', 'Next', 'Report'));
+  const next = block(window, 'start').locator('[data-output="next"]');
+  await pull(window, await middleOf(end('Report', 'Report', 'source')), await middleOf(next));
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['extract next send', 'start next send']);
+});
+
+const NEAR = `name: Near
+blocks:
+  - { id: start, type: start }
+  - { id: extract, type: run, tool: acme.extract }
+  - { id: report, type: run, tool: acme.report }
+connections:
+  - { from: start, to: extract }
+positions:
+  start: { x: 0, y: 0 }
+  extract: { x: 280, y: 0 }
+  report: { x: 0, y: 180 }
+`;
+
+test('a connection let go on a block joins it, and Shift+Space adds a block at the pointer', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('near', NEAR);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Near');
+  await expect(block(window, 'report')).toBeVisible();
+  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+
+  const output = block(window, 'report').locator('[data-output="next"]');
+  await pull(window, await middleOf(output), await middleOf(block(window, 'extract')));
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['report next extract', 'start next extract']);
+
+  const start = await middleOf(block(window, 'start'));
+  const at = { x: start.x, y: start.y - 150 };
+  await window.locator('.react-flow__pane').click({ position: { x: 10, y: 10 } });
+  await window.mouse.move(at.x, at.y);
+  await window.keyboard.press('Shift+Space');
+  const dialog = window.getByRole('dialog', { name: 'Add here' });
+  await expect(dialog).toBeVisible();
+  await window.keyboard.type('Rep');
+  await dialog.getByRole('button', { name: 'Report' }).click();
+  await expect(block(window, 'report-2')).toBeVisible();
+  const added = await block(window, 'report-2').boundingBox();
+  if (added === null) throw new Error('The new block is not drawn');
+  expect(Math.abs(added.x - at.x)).toBeLessThan(40);
+  expect(Math.abs(added.y - at.y)).toBeLessThan(40);
+});
+
+const PAIR = `name: Pair
+blocks:
+  - { id: start, type: start }
+  - { id: extract, type: run, tool: acme.extract }
+  - { id: report, type: run, tool: acme.report }
+  - { id: send, type: run, tool: acme.report }
+connections:
+  - { from: start, to: extract }
+  - { from: report, to: send }
+positions:
+  start: { x: 0, y: 0 }
+  extract: { x: 280, y: 0 }
+  report: { x: 0, y: -150 }
+  send: { x: 300, y: -150 }
+`;
+
+/** Opens Pair and draws a box from left of Report to the middle of Send, which takes both. */
+async function boxReportAndSend(window: Page): Promise<void> {
+  await openAutomation(window, 'Pair');
+  await expect(block(window, 'send')).toBeVisible();
+  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+  const report = await middleOf(block(window, 'report'));
+  const send = await middleOf(block(window, 'send'));
+  await pull(window, { x: report.x - 140, y: report.y - 60 }, send);
+  await expect(window.locator('.react-flow__node-block.selected')).toHaveCount(2);
+}
+
+test('copied blocks paste at the pointer with their connection, selected, and undo as one', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('pair', PAIR);
+  const { window } = await launchShell();
+  await boxReportAndSend(window);
+  await window.keyboard.press('Control+c');
+
+  const start = await middleOf(block(window, 'start'));
+  const at = { x: start.x - 60, y: start.y + 140 };
+  await window.mouse.move(at.x, at.y);
+  await window.keyboard.press('Control+v');
+  await expect(block(window, 'report-2')).toBeVisible();
+  await expect(block(window, 'send-2')).toBeVisible();
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual(['report next send', 'report-2 next send-2', 'start next extract']);
+  await expect(window.locator('.react-flow__node-block.selected')).toHaveCount(2);
+  await expect(window.locator('.react-flow__node-block.selected[data-id="report-2"]')).toHaveCount(
+    1,
+  );
+  // The copy's top-left corner, Report's, lands where the pointer was.
+  const pasted = await block(window, 'report-2').boundingBox();
+  if (pasted === null) throw new Error('The pasted block is not drawn');
+  expect(Math.abs(pasted.x - at.x)).toBeLessThan(4);
+  expect(Math.abs(pasted.y - at.y)).toBeLessThan(4);
+  await shot(window, 'pasted');
+
+  await window.keyboard.press('Control+z');
+  await expect(block(window, 'report-2')).toHaveCount(0);
+  await expect(block(window, 'send-2')).toHaveCount(0);
+});
+
+/** Where a block is on the canvas, from the transform the canvas gives it. */
+async function placeOf(window: Page, id: string): Promise<{ x: number; y: number }> {
+  const style = (await block(window, id).getAttribute('style')) ?? '';
+  const match = /translate\(([-\d.]+)px, ?([-\d.]+)px\)/.exec(style);
+  if (match === null) throw new Error(`${id} has no position`);
+  return { x: Number(match[1]), y: Number(match[2]) };
+}
+
+test('blocks snap to the grid and connections turn at right angles, after a relaunch too', async () => {
+  test.setTimeout(60_000);
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const first = await launchShell();
+  await openAutomation(first.window, 'Chain');
+  await expect(block(first.window, 'send')).toBeVisible();
+  const path = (window: Page) =>
+    window
+      .locator(
+        '.react-flow__edge[aria-label="From Start, Next, to Extract"] .react-flow__edge-path',
+      )
+      .getAttribute('d');
+  const snap = (window: Page) => window.getByRole('button', { name: 'Snap to grid' });
+  const angles = (window: Page) => window.getByRole('button', { name: 'Right-angle connections' });
+  await connectionMiddle(first.window, 'Start', 'Next', 'Extract');
+  expect(await path(first.window)).toContain('C');
+
+  await snap(first.window).click();
+  await angles(first.window).click();
+  await expect(snap(first.window)).toHaveAttribute('aria-pressed', 'true');
+  await expect(angles(first.window)).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => path(first.window)).not.toContain('C');
+
+  await drag(first.window, block(first.window, 'report'), { x: 37, y: 23 });
+  await expect
+    .poll(async () => {
+      const { x, y } = await placeOf(first.window, 'report');
+      return x % 16 === 0 && y % 16 === 0 && x !== 0;
+    })
+    .toBe(true);
+  await shot(first.window, 'canvas-grid-right-angles');
+  const layout = join(dataDir, 'workspaces', 'default', 'workspace.yaml');
+  await expect.poll(() => readFile(layout, 'utf8')).toContain('rightAngles: true');
+  await first.app.close();
+
+  const { window } = await launchShell();
+  await openAutomation(window, 'Chain');
+  await expect(block(window, 'send')).toBeVisible();
+  await expect(snap(window)).toHaveAttribute('aria-pressed', 'true');
+  await expect(angles(window)).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => path(window)).not.toContain('C');
+
+  await angles(window).click();
+  await expect(angles(window)).toHaveAttribute('aria-pressed', 'false');
+  await expect.poll(() => path(window)).toContain('C');
+});
+
+test('Delete removes every block a selection box took', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('pair', PAIR);
+  const { window } = await launchShell();
+  await boxReportAndSend(window);
+  await window.keyboard.press('Delete');
+  await expect(block(window, 'report')).toHaveCount(0);
+  await expect(block(window, 'send')).toHaveCount(0);
+  await expect(block(window, 'extract')).toBeVisible();
+});
+
+/** The view's pan and zoom, from the transform the canvas gives its viewport. */
+async function viewOf(window: Page): Promise<{ x: number; y: number; zoom: number }> {
+  const style = (await window.locator('.react-flow__viewport').getAttribute('style')) ?? '';
+  const match = /translate\(([-\d.]+)px, ?([-\d.]+)px\) scale\(([\d.]+)\)/.exec(style);
+  if (match === null) throw new Error('The view has no transform');
+  return { x: Number(match[1]), y: Number(match[2]), zoom: Number(match[3]) };
+}
+
+test('the wheel moves the view, Shift+wheel moves it sideways, and Ctrl+wheel zooms', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Chain');
+  await expect(block(window, 'send')).toBeVisible();
+  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+  const start = await middleOf(block(window, 'start'));
+  await window.mouse.move(start.x - 60, start.y + 120);
+
+  const before = await viewOf(window);
+  await window.mouse.wheel(0, 100);
+  await expect.poll(async () => (await viewOf(window)).y).toBeLessThan(before.y - 20);
+  const scrolled = await viewOf(window);
+  expect(scrolled.zoom).toBe(before.zoom);
+  expect(scrolled.x).toBe(before.x);
+
+  await window.keyboard.down('Shift');
+  await window.mouse.wheel(0, 100);
+  await window.keyboard.up('Shift');
+  await expect.poll(async () => (await viewOf(window)).x).toBeLessThan(scrolled.x - 20);
+  expect((await viewOf(window)).zoom).toBe(before.zoom);
+
+  await window.keyboard.down('Control');
+  await window.mouse.wheel(0, -100);
+  await window.keyboard.up('Control');
+  await expect.poll(async () => (await viewOf(window)).zoom).toBeGreaterThan(before.zoom);
 });

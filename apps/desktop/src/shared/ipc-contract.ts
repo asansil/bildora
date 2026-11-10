@@ -36,6 +36,12 @@ const WORKSPACE_TABS_MAX = 100;
 export const PANEL_WIDTH_MIN = 180;
 export const PANEL_WIDTH_MAX = 480;
 export const PANEL_WIDTH_DEFAULT = 248;
+/** The sizes an automation tab's panels may take, as core keeps them, with their defaults. */
+export const AUTOMATION_PANEL_SIZES = {
+  libraryWidth: { min: 160, max: 400, default: 200 },
+  settingsWidth: { min: 220, max: 560, default: 300 },
+  lowerHeight: { min: 96, max: 600, default: 180 },
+} as const;
 
 const textSchema = z.string().max(TEXT_MAX_LENGTH);
 const pathSchema = z.string().min(1).max(PATH_MAX_LENGTH);
@@ -138,6 +144,10 @@ export const preferencesSchema = z.strictObject({
 export const workspaceIdSchema = z.strictObject({ id: idSchema });
 export const createWorkspaceSchema = z.strictObject({ name: workspaceNameSchema });
 export const renameWorkspaceSchema = z.strictObject({ id: idSchema, name: workspaceNameSchema });
+function panelSizeSchema(panel: keyof typeof AUTOMATION_PANEL_SIZES) {
+  const { min, max } = AUTOMATION_PANEL_SIZES[panel];
+  return z.int().min(min).max(max).optional();
+}
 /** History has a single tab, so only tools and automations name an item. */
 const workspaceTabSchema = z.discriminatedUnion('kind', [
   z.strictObject({
@@ -159,6 +169,21 @@ export const updateWorkspaceSchema = z.strictObject({
       activeTab: textSchema.nullable().optional(),
       historyFilter: idSchema.nullable().optional(),
       scriptAnswers: z.array(idSchema).max(SCRIPT_ANSWERS_MAX).optional(),
+      automationPanels: z
+        .strictObject({
+          libraryWidth: panelSizeSchema('libraryWidth'),
+          settingsWidth: panelSizeSchema('settingsWidth'),
+          lowerHeight: panelSizeSchema('lowerHeight'),
+          libraryCollapsed: z.boolean().optional(),
+          settingsCollapsed: z.boolean().optional(),
+          lowerCollapsed: z.boolean().optional(),
+        })
+        .nullable()
+        .optional(),
+      automationCanvas: z
+        .strictObject({ snapToGrid: z.boolean().optional(), rightAngles: z.boolean().optional() })
+        .nullable()
+        .optional(),
     })
     .optional(),
 });
@@ -212,6 +237,26 @@ export interface WorkspaceLayoutView {
   readonly historyFilter?: string;
   /** Ids of the tools whose form answers their console script. */
   readonly scriptAnswers?: readonly string[];
+  /** How the panels around the automation canvas were left, shared by every automation tab. */
+  readonly automationPanels?: AutomationPanelsView;
+  /** Options of the automation canvas, shared by every automation tab. */
+  readonly automationCanvas?: AutomationCanvasView;
+}
+
+export interface AutomationCanvasView {
+  /** Blocks land on the background's grid when moved, dropped or pasted. */
+  readonly snapToGrid?: boolean;
+  /** Connections are drawn with straight lines and right angles instead of curves. */
+  readonly rightAngles?: boolean;
+}
+
+export interface AutomationPanelsView {
+  readonly libraryWidth?: number;
+  readonly settingsWidth?: number;
+  readonly lowerHeight?: number;
+  readonly libraryCollapsed?: boolean;
+  readonly settingsCollapsed?: boolean;
+  readonly lowerCollapsed?: boolean;
 }
 
 export interface WorkspaceTabView {

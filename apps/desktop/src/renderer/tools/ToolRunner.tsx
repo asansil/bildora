@@ -281,7 +281,7 @@ export function ToolRunner({
         <button type="button" disabled={isRunning} onClick={onMove}>
           {t(tool.scope === 'global' ? 'tool.moveToWorkspace' : 'tool.moveToGlobal')}
         </button>
-        <button type="button" disabled={isRunning} onClick={onRemove}>
+        <button type="button" className="danger" disabled={isRunning} onClick={onRemove}>
           {t('tool.remove')}
         </button>
       </div>

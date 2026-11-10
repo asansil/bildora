@@ -115,6 +115,15 @@ button.primary:hover:not(:disabled) {
   border-color: var(--bildora-accent-hover);
 }
 
+/* A dangerous action fills red under the pointer or the keyboard, and always in a confirmation. */
+button.danger:hover:not(:disabled),
+button.danger:focus-visible,
+button.danger.filled {
+  color: var(--bildora-on-danger);
+  background: var(--bildora-status-failed);
+  border-color: var(--bildora-status-failed);
+}
+
 .icon-button {
   width: var(--bildora-control-height);
   padding: 0;
@@ -125,6 +134,7 @@ button.primary:hover:not(:disabled) {
 input:not([type]),
 input[type='number'],
 input[type='password'],
+input[type='search'],
 select {
   width: 100%;
   height: var(--bildora-control-height);
@@ -471,7 +481,7 @@ input[type='radio'] {
   visibility: visible;
 }
 
-.tab-menu {
+.context-menu {
   position: fixed;
   top: auto;
   margin-top: 0;
@@ -1169,6 +1179,13 @@ input[type='radio'] {
   z-index: 1;
   cursor: col-resize;
   touch-action: none;
+}
+
+.panel-resizer[aria-orientation='horizontal'] {
+  width: auto;
+  height: 4px;
+  margin: -2px 0;
+  cursor: row-resize;
 }
 
 .panel-resizer:hover,
