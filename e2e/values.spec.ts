@@ -150,11 +150,22 @@ test('typing = links a value, which shows what it resolves to and follows a rena
   await shot(window, 'linked-field');
 
   // Renaming the source keeps the link pointing at it.
+  // The panel shows the name as text; its menu opens the Rename dialog, which says why a name
+  // cannot be used.
   await choose(window, 'first');
-  const name = settings(window).getByLabel('Name in links');
+  await settings(window).getByTestId('block-settings-name').click({ button: 'right' });
+  await window.locator('.context-menu-root').getByRole('menuitem', { name: 'Rename…' }).click();
+  const rename = window.getByTestId('rename-dialog');
+  const name = rename.getByLabel('Name in links');
+  await expect(name).toBeFocused();
+  await name.fill('second');
+  await expect(rename).toContainText('Another block, note or group already has this name.');
+  await expect(rename.getByRole('button', { name: 'OK' })).toBeDisabled();
   await name.fill('source');
   await name.press('Enter');
+  await expect(rename).toHaveCount(0);
   await expect(settings(window)).toHaveAttribute('data-block-id', 'source');
+  await expect(settings(window).getByTestId('block-settings-name')).toHaveText('source');
   await choose(window, 'second');
   await expect(settings(window).getByLabel('File', { exact: true })).toHaveValue('source.file');
 
@@ -191,7 +202,7 @@ test('a field links from its menu, and from a pick-whip dropped on a block', asy
   const menu = window.locator('.context-menu-root');
   await menu.getByRole('menuitem', { name: 'Link to' }).click();
   await menu.getByRole('menuitem', { name: 'Settings of other blocks' }).click();
-  await menu.getByRole('menuitem', { name: 'Writer' }).click();
+  await menu.getByRole('menuitem', { name: 'first' }).click();
   // A whole number does not fit a path, so it is shown but cannot be chosen.
   await expect(menu.getByRole('menuitem', { name: /^Width/ })).toBeDisabled();
   await menu.getByRole('menuitem', { name: 'File', exact: true }).click();
@@ -255,7 +266,7 @@ positions:
 
   await choose(window, 'check');
   await expect(window.getByTestId('condition-sentence')).toHaveText(
-    'If Writer › result › count is greater than 3',
+    'If count › result › count is greater than 3',
   );
 
   await window.getByRole('button', { name: 'Run', exact: true }).click();
@@ -348,4 +359,121 @@ positions:
   await choose(window, 'third');
   await settings(window).getByLabel('Width', { exact: true }).fill('= inputs.size + 1');
   await expect(valueField(window, 'width').getByTestId('expression-shown')).toHaveText('Now: 13');
+});
+
+test('Enter hands the keyboard back, F2 renames, Replace starts a block afresh, and the find stays', async () => {
+  await writerTool();
+  await writeAutomation('pair', PAIR);
+  const window = await launchShell();
+  await openAutomation(window, 'Pair');
+  const canvas = window.getByTestId('canvas');
+
+  // Enter applies a field of the panel and gives focus back to the canvas.
+  await choose(window, 'second');
+  await settings(window)
+    .getByLabel('Text', { exact: true })
+    .fill('= steps.first.outputs.result.count');
+  await settings(window).getByLabel('Text', { exact: true }).press('Escape');
+  await settings(window).getByLabel('Text', { exact: true }).press('Enter');
+  await expect(canvas).toBeFocused();
+  // Reading a block's results counts as using its values, as the find does.
+  await expect(block(window, 'first').getByTestId('block-used-by')).toHaveText('1');
+
+  // The suggestions open below the field, never over it.
+  const file = settings(window).getByLabel('File', { exact: true });
+  await file.fill('= f');
+  // Typing opens the suggestions, as it would for a person.
+  const expression = settings(window).getByRole('combobox', { name: 'File', exact: true });
+  await expression.pressSequentially('i');
+  const list = settings(window).getByRole('listbox');
+  await expect(list).toBeVisible();
+  const fieldBox = await expression.boundingBox();
+  const listBox = await list.boundingBox();
+  if (fieldBox === null || listBox === null) throw new Error('Nothing shown');
+  expect(listBox.y).toBeGreaterThanOrEqual(fieldBox.y + fieldBox.height - 1);
+  await expression.press('Escape');
+  await expression.fill('');
+
+  // F2 opens the Rename dialog with the name selected; Escape leaves the name as it was.
+  await choose(window, 'second');
+  await canvas.press('F2');
+  const rename = window.getByTestId('rename-dialog');
+  await expect(rename.getByLabel('Name in links')).toBeFocused();
+  await expect(rename.getByLabel('Name in links')).toHaveValue('second');
+  await window.keyboard.press('Escape');
+  await expect(rename).toHaveCount(0);
+  await expect(settings(window)).toHaveAttribute('data-block-id', 'second');
+  await expect(settings(window).getByLabel('Tool')).toHaveCount(0);
+
+  // The pick-whip lights up a block only when one of its values fits the field.
+  const whip = valueField(window, 'width').getByRole('button', { name: /Drag onto a block/ });
+  const from = await whip.boundingBox();
+  const first = await block(window, 'first').boundingBox();
+  const start = await block(window, 'start').boundingBox();
+  if (from === null || first === null || start === null) throw new Error('Nothing to drag');
+  await window.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await window.mouse.down();
+  await window.mouse.move(first.x + first.width / 2, first.y + first.height / 2, { steps: 8 });
+  await expect(block(window, 'first')).toHaveClass(/is-whip-target/);
+  await window.mouse.move(start.x + start.width / 2, start.y + start.height / 2, { steps: 8 });
+  await expect(block(window, 'start')).not.toHaveClass(/is-whip-target/);
+  await expect(block(window, 'first')).not.toHaveClass(/is-whip-target/);
+  await window.keyboard.press('Escape');
+  await window.mouse.up();
+  await expect(window.locator('.is-whip-target')).toHaveCount(0);
+
+  // Replace puts a new block in place: a new name, no values, the same connections.
+  await block(window, 'first').click({ button: 'right' });
+  await window.locator('.context-menu-root').getByRole('menuitem', { name: 'Replace…' }).click();
+  await window.getByTestId('add-choices').getByRole('button', { name: 'Writer' }).click();
+  await expect(block(window, 'Writer1')).toBeVisible();
+  await expect(block(window, 'first')).toHaveCount(0);
+  await expect(settings(window)).toHaveAttribute('data-block-id', 'Writer1');
+  await expect(settings(window).getByLabel('File', { exact: true })).toHaveValue('');
+  await window.getByRole('tab', { name: /Problems/ }).click();
+  // What read the old block's results still names it, as a problem.
+  await expect(window.getByTestId('automation-problems')).toContainText('first');
+  await canvas.press('Control+z');
+  await expect(block(window, 'first')).toBeVisible();
+  await expect(block(window, 'Writer1')).toHaveCount(0);
+
+  // The find stays open when focus moves on, and Escape closes it from the panel too.
+  await choose(window, 'second');
+  await canvas.press('Control+f');
+  const find = window.getByTestId('canvas-find');
+  await find.getByRole('textbox').fill('first.');
+  await expect(find.getByTestId('canvas-find-count')).toHaveText('1 of 1');
+  await settings(window).getByLabel('Width', { exact: true }).click();
+  await expect(find).toBeVisible();
+  await settings(window).getByLabel('Width', { exact: true }).press('Escape');
+  await expect(find).toBeHidden();
+});
+
+test('a new automation asks for its inputs on its first Run, and a block is named FileCheck-style', async () => {
+  await writerTool();
+  const window = await launchShell();
+  await rail(window, 'Automations').click();
+  await window.getByRole('button', { name: 'New automation' }).click();
+  await window.getByLabel('Name', { exact: true }).fill('Asks');
+
+  await window.getByTestId('block-library').getByRole('button', { name: 'Writer' }).click();
+  await expect(settings(window)).toHaveAttribute('data-block-id', 'Writer1');
+  await expect(block(window, 'Writer1')).toContainText('Writer1');
+  await expect(block(window, 'Writer1')).toContainText('Writer');
+  await settings(window).getByLabel('File', { exact: true }).fill('= inputs.target');
+
+  await choose(window, 'start');
+  await settings(window).getByRole('button', { name: 'Add input' }).click();
+  const input = settings(window).getByTestId('start-input');
+  await input.getByLabel('Name', { exact: true }).fill('target');
+  await input.getByLabel('Kind of value').selectOption({ label: 'File or folder' });
+  await input.getByLabel('Must be given').check();
+
+  await window.getByRole('button', { name: 'Save and run', exact: true }).click();
+  await expect(window.getByRole('tab', { name: 'Asks', selected: true })).toBeVisible();
+  const dialog = window.getByTestId('run-inputs');
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(window.getByTestId('run-refused')).toHaveCount(0);
 });

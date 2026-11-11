@@ -119,43 +119,34 @@ export function conditionSentence(
   return condition.rules.map((rule) => ruleSentence(rule, nameOf, valueName)).join(` ${joiner} `);
 }
 
-/** What a block is called on the canvas and in problems, by what it does. */
-export function blockName(
-  block: AutomationBlock,
-  tools: readonly ToolView[],
-  nameOf?: (id: string) => string,
-): string {
+/**
+ * What a block is called on the canvas, in problems, in history and in sentences: its name in
+ * links. Start is called Start.
+ */
+export function blockName(block: AutomationBlock): string {
+  return block.type === 'start' ? t('canvas.kindStart') : block.id;
+}
+
+/** What a block is, as the second line of its label says: its tool's name, or its kind. */
+export function blockKindText(block: AutomationBlock, tools: readonly ToolView[]): string {
   switch (block.type) {
     case 'start':
-      return t('canvas.kindStart');
+      return t('canvas.startKind');
     case 'run':
       return tools.find(({ id }) => id === block.tool)?.name ?? block.tool;
     case 'wait-for-time':
       return t('automation.labelTime', { count: block.seconds });
-    case 'wait-for-manual-action':
-      return block.message;
-    case 'if':
-      return nameOf === undefined
-        ? kindLabel('if')
-        : t('canvas.ifName', { rule: conditionSentence(block.condition, nameOf) });
-    case 'switch':
-      return kindLabel('switch');
-    case 'parallel':
-      return kindLabel('parallel');
-    case 'join':
-      return kindLabel('join');
+    default:
+      return kindLabel(block.type);
   }
 }
 
-/**
- * Names for every block of a flow. A decision reads its rule back, which names other blocks, so
- * those are named first.
- */
-export function blockNames(
-  blocks: readonly AutomationBlock[],
-  tools: readonly ToolView[],
-): ReadonlyMap<string, string> {
-  const plain = new Map(blocks.map((block) => [block.id, blockName(block, tools)]));
-  const nameOf = (id: string): string => plain.get(id) ?? id;
-  return new Map(blocks.map((block) => [block.id, blockName(block, tools, nameOf)]));
+/** The rule of an If read back, such as "If FileCheck1 is completed". */
+export function ifRuleText(condition: AutomationCondition, nameOf: (id: string) => string): string {
+  return t('canvas.ifName', { rule: conditionSentence(condition, nameOf) });
+}
+
+/** Names for every block of a flow. */
+export function blockNames(blocks: readonly AutomationBlock[]): ReadonlyMap<string, string> {
+  return new Map(blocks.map((block) => [block.id, blockName(block)]));
 }

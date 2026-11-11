@@ -37,7 +37,7 @@ import type {
   TakenPathView,
   ToolView,
 } from '../../../shared/ipc-contract.js';
-import { kindLabel, outputLabel } from './block-text.js';
+import { blockKindText, outputLabel } from './block-text.js';
 import {
   NOTE_SIZE,
   blockOf,
@@ -245,6 +245,8 @@ export interface CanvasProps {
   readonly onOpenBlock?: (id: string) => void;
   /** Asks for a block's name in links to be changed, as F2 and the block's menu do. */
   readonly onRenameBlock?: (id: string) => void;
+  /** Puts a new block for another tool in a Run tool block's place, and gives its id. */
+  readonly onReplaceBlock?: (id: string, choice: NewBlock & { kind: 'run' }) => string | undefined;
   /** Adds a block after another, and gives the new block's id. */
   readonly onAddAfter: (anchor: string, choice: NewBlock) => string | undefined;
   /** Moves keyboard focus to a block, as the blocks list asks. Changes each time it is asked. */
@@ -433,6 +435,7 @@ export function Canvas({
   library,
   onOpenBlock,
   onRenameBlock,
+  onReplaceBlock,
   onAddAfter,
   focusRequest,
   options = NO_OPTIONS,
@@ -453,9 +456,9 @@ export function Canvas({
   const findField = useRef<HTMLInputElement>(null);
   /** After Enter, arrow keys move the focused block instead of moving between blocks. */
   const [moving, setMoving] = useState(false);
-  const [dialog, setDialog] = useState<{ kind: 'add' | 'connect'; id: string } | undefined>(
-    undefined,
-  );
+  const [dialog, setDialog] = useState<
+    { kind: 'add' | 'connect' | 'replace'; id: string } | undefined
+  >(undefined);
   const [announcement, setAnnouncement] = useState('');
   /** The note being written on the canvas. */
   const [editingNote, setEditingNote] = useState<string | undefined>(undefined);
@@ -524,7 +527,7 @@ export function Canvas({
             kind: block.type,
             name: names.get(block.id) ?? block.id,
             // Start's name already says what it is, so its second line says when it runs.
-            kindLabel: block.type === 'start' ? t('canvas.startKind') : kindLabel(block.type),
+            kindLabel: blockKindText(block, tools),
             outputs: outputsOf(block).map((id) => ({ id, label: outputLabel(id) })),
             domId: domId(prefix, block.id),
             blockId: block.id,
@@ -545,6 +548,7 @@ export function Canvas({
     document.connections,
     names,
     toolsById,
+    tools,
     problemCounts,
     usedBy,
     run,
@@ -988,6 +992,27 @@ export function Canvas({
     container.current?.focus();
   }
 
+  // The find stays open while focus is elsewhere, and Escape closes it from anywhere in the tab,
+  // unless a menu or a dialog is open: Escape belongs to those first. Handlers that use Escape
+  // themselves, such as an open suggestion list, have already stopped or prevented it.
+  const findOpen = find !== undefined;
+  useEffect(() => {
+    if (!findOpen) return;
+    const onKey = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      const tab = container.current?.closest('.automation-tab');
+      if (!(event.target instanceof Node) || tab?.contains(event.target) !== true) return;
+      if (window.document.querySelector('dialog[open], .context-menu-root') !== null) return;
+      event.preventDefault();
+      setFind(undefined);
+      container.current?.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [findOpen]);
+
   useEffect(() => {
     if (findFocus === 0) return;
     findField.current?.focus();
@@ -1389,6 +1414,16 @@ export function Canvas({
           onRenameBlock?.(id);
         },
       },
+      ...(block.type === 'run' && onReplaceBlock !== undefined
+        ? [
+            {
+              label: t('canvas.menuReplace'),
+              run: () => {
+                setDialog({ kind: 'replace', id });
+              },
+            },
+          ]
+        : []),
       ...(block.type === 'start'
         ? []
         : [
@@ -1519,6 +1554,11 @@ export function Canvas({
     if (event.key === 'Escape' && rectangle !== undefined) {
       event.preventDefault();
       setRectangle(undefined);
+      return;
+    }
+    if (event.key === 'Escape' && find !== undefined) {
+      event.preventDefault();
+      closeFind();
       return;
     }
     if (event.key === 'F2' && !readOnly) {
@@ -1945,6 +1985,26 @@ export function Canvas({
               setFocused(added);
               reveal_(added);
               announce(t('canvas.added', { after: nameOf(dialogBlock.id) }));
+            }
+          }}
+          onClose={() => {
+            setDialog(undefined);
+            container.current?.focus();
+          }}
+        />
+      ) : null}
+      {dialog?.kind === 'replace' && dialogBlock !== undefined ? (
+        <AddDialog
+          title={t('canvas.replaceTitle', { name: nameOf(dialogBlock.id) })}
+          choices={library.filter(({ choice }) => choice.kind === 'run')}
+          onPick={(choice) => {
+            setDialog(undefined);
+            if (choice.kind !== 'run') return;
+            const replaced = onReplaceBlock?.(dialogBlock.id, choice);
+            container.current?.focus();
+            if (replaced !== undefined) {
+              setFocused(replaced);
+              announce(t('canvas.replaced', { name: replaced }));
             }
           }}
           onClose={() => {

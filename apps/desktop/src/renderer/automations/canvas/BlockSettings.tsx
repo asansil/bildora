@@ -1,15 +1,15 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { SWITCH_CASES_MAX } from '@bildora/protocol';
 import type { AutomationBlock } from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
 import type { AutomationProblemView, ToolView } from '../../../shared/ipc-contract.js';
 import { without } from '../automation-draft.js';
+import { ContextMenu } from '../../shell/ContextMenu.js';
 import { problemText } from '../problem-text.js';
-import { kindLabel } from './block-text.js';
+import { blockKindText, ifRuleText } from './block-text.js';
 import { ConditionEditor } from './ConditionEditor.js';
-import { NameField, NumberField, Select } from './fields.js';
-import type { BlockIdProblem } from './flow-document.js';
+import { NumberField, Select } from './fields.js';
 import { InputsEditor } from './InputsEditor.js';
 import { RunFields } from './RunFields.js';
 import { valueChoices } from './values.js';
@@ -63,15 +63,11 @@ export interface BlockSettingsProps {
   readonly context: ValueContext;
   /** Problems of the flow about this block. */
   readonly problems: readonly AutomationProblemView[];
-  /** The block's name in links should take the caret, as Rename asks. */
-  readonly focusName?: boolean;
-  /** Called once the name has taken the caret, so that it does not again. */
-  readonly onNameFocused?: () => void;
-  /** Why another id cannot name this block, or undefined when it can. */
-  readonly idProblem: (next: string) => BlockIdProblem | undefined;
   readonly onChange: (block: AutomationBlock, renamed?: Readonly<Record<string, string>>) => void;
-  /** Gives the block another id, which everything that names it follows. */
-  readonly onRename: (from: string, to: string) => void;
+  /** Asks for the block's new name in links, in the Rename dialog. */
+  readonly onRename: () => void;
+  /** Gives focus back to the canvas, once Enter has applied a field. */
+  readonly onDone: () => void;
   /** Selects another block on the canvas. */
   readonly onGoTo: (blockId: string) => void;
   readonly onError: (error: unknown) => void;
@@ -85,16 +81,15 @@ export function BlockSettings({
   names,
   context,
   problems,
-  focusName = false,
-  onNameFocused,
-  idProblem,
   onChange,
   onRename,
+  onDone,
   onGoTo,
   onError,
 }: BlockSettingsProps) {
   const messageId = useId();
-  const idField = useRef<HTMLInputElement>(null);
+  /** Where the name's menu opened, while it is open. */
+  const [menu, setMenu] = useState<{ readonly x: number; readonly y: number } | undefined>();
   const nameOf = (id: string): string => names.get(id) ?? id;
   const sources = blocks
     .filter(({ id, type }) => id !== block.id && type !== 'start')
@@ -108,30 +103,63 @@ export function BlockSettings({
     }),
   );
 
-  useEffect(() => {
-    if (!focusName) return;
-    idField.current?.focus();
-    idField.current?.select();
-    onNameFocused?.();
-  }, [focusName, onNameFocused]);
-
   return (
-    <div className="block-settings" data-testid="block-settings" data-block-id={block.id}>
-      <h2>{kindLabel(block.type)}</h2>
-      <NameField
-        label={t('canvas.blockId')}
-        value={block.id}
-        hint={t('canvas.blockIdHint', { id: block.id })}
-        applyOnBlur
-        inputRef={idField}
-        problemOf={(next) => {
-          const problem = idProblem(next);
-          return problem === undefined ? undefined : t(`canvas.blockIdProblem.${problem}`);
-        }}
-        onRename={(next) => {
-          onRename(block.id, next);
-        }}
-      />
+    <div
+      className="block-settings"
+      data-testid="block-settings"
+      data-block-id={block.id}
+      onKeyDown={(event) => {
+        if (event.key === 'F2') {
+          event.preventDefault();
+          onRename();
+          return;
+        }
+        // Enter applies a field and hands the keyboard back to the canvas. A field that uses
+        // Enter itself, such as one picking a suggestion, has already prevented this.
+        const field = event.target;
+        if (
+          event.key === 'Enter' &&
+          !event.defaultPrevented &&
+          !event.shiftKey &&
+          (field instanceof HTMLInputElement || field instanceof HTMLSelectElement) &&
+          !(field instanceof HTMLInputElement && ['checkbox', 'radio'].includes(field.type))
+        ) {
+          event.preventDefault();
+          field.blur();
+          onDone();
+        }
+      }}
+    >
+      <header className="block-settings-header">
+        <h2
+          className="block-settings-name truncate"
+          title={t('canvas.blockIdHint', { id: block.id })}
+          data-testid="block-settings-name"
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setMenu({ x: event.clientX, y: event.clientY });
+          }}
+        >
+          {nameOf(block.id)}
+        </h2>
+        <p className="muted truncate">{blockKindText(block, tools)}</p>
+      </header>
+      {menu === undefined ? null : (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          label={t('canvas.menu', { name: nameOf(block.id) })}
+          items={[{ label: t('canvas.rename'), shortcut: 'F2', run: onRename }]}
+          onClose={() => {
+            setMenu(undefined);
+          }}
+        />
+      )}
+      {block.type === 'if' ? (
+        <p className="field-hint" data-testid="if-rule">
+          {ifRuleText(block.condition, nameOf)}
+        </p>
+      ) : null}
       {block.type === 'start' ? (
         <>
           <p className="field-hint">{t('canvas.startHint')}</p>

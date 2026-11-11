@@ -168,6 +168,43 @@ describe('linked values while editing', () => {
       ]),
     );
   });
+
+  it('counts reads of results as uses too, as the find does', () => {
+    const reading: AutomationBlock[] = [
+      ...blocks,
+      {
+        id: 'report',
+        type: 'run',
+        tool: 'acme.convert',
+        values: {
+          file: { expression: 'steps.convert.outputs.result.path' },
+          width: '{{steps.thumb.outputs.result.count}}',
+        },
+      },
+      {
+        id: 'decide',
+        type: 'if',
+        condition: {
+          match: 'all',
+          rules: [
+            {
+              field: 'value',
+              read: { expression: 'steps.convert.outputs.result.count' },
+              operator: 'greater-than',
+              value: 1,
+            },
+          ],
+        },
+      },
+    ];
+    const counts = usedByCounts(reading);
+    expect(counts.get('convert')).toBe(3);
+    expect(counts.get('thumb')).toBe(2);
+    for (const id of ['convert', 'thumb']) {
+      const found = matchingBlocks(reading, `${id}.`, new Map(), new Map());
+      expect(found.filter((block) => block !== id)).toHaveLength(counts.get(id) ?? 0);
+    }
+  });
 });
 
 describe('renaming a block', () => {

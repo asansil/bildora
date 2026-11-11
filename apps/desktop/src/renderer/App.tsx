@@ -168,6 +168,10 @@ export function App() {
   const [recent, setRecent] = useState(EMPTY_RECENT);
   const [tabs, setTabs] = useState<TabState>(NO_TABS);
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>({});
+  /** The run Run history should select, as an automation's Past runs ask. */
+  const [historyRun, setHistoryRun] = useState<
+    { readonly runId: string; readonly count: number } | undefined
+  >();
   /** Asks an automation tab to show one of its past runs; `count` repeats the same request. */
   const [runShown, setRunShown] = useState<
     { id: string; runId: string; count: number } | undefined
@@ -1050,6 +1054,7 @@ export function App() {
             setRunShown((asked) => ({ id, runId, count: (asked?.count ?? 0) + 1 }));
             openTab({ kind: 'automation', id }, true);
           }}
+          selectRequest={historyRun}
           onError={report}
         />
       );
@@ -1084,6 +1089,10 @@ export function App() {
           onRun={(id, inputs) => api.startAutomation(id, inputs)}
           onShowTool={(id) => {
             showTool(id);
+          }}
+          onOpenInHistory={(automationId, runId) => {
+            setHistoryRun((asked) => ({ runId, count: (asked?.count ?? 0) + 1 }));
+            showHistory({ automationId });
           }}
           onDirty={(dirty) => {
             markUnsaved(tab.key, dirty);
@@ -1368,22 +1377,23 @@ export function App() {
               onAction={tabAction}
             />
           )}
+          {/* Floats over the content, so it never pushes the window down. */}
+          {banner === undefined ? null : (
+            <div className="notice notice-failed banner" role="alert" data-testid="app-error">
+              <p>{banner}</p>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={t('banner.dismiss')}
+                onClick={() => {
+                  setBanner(undefined);
+                }}
+              >
+                <X className="icon" aria-hidden="true" />
+              </button>
+            </div>
+          )}
           <div className="tab-panels" key={workspaces.activeId}>
-            {banner === undefined ? null : (
-              <div className="notice notice-failed banner" role="alert">
-                <p>{banner}</p>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label={t('banner.dismiss')}
-                  onClick={() => {
-                    setBanner(undefined);
-                  }}
-                >
-                  <X className="icon" aria-hidden="true" />
-                </button>
-              </div>
-            )}
             {tabs.tabs.map((tab) => (
               <div
                 key={tab.key}

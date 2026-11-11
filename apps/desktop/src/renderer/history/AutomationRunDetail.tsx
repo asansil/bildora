@@ -21,7 +21,7 @@ import type {
   StepRunView,
   ToolView,
 } from '../../shared/ipc-contract.js';
-import { kindLabel, outputLabel } from '../automations/canvas/block-text.js';
+import { blockKindText, blockName, outputLabel } from '../automations/canvas/block-text.js';
 import { DataView } from '../automations/DataView.js';
 import { ProgramIcon } from '../shell/ProgramIcon.js';
 import { RunStateBadge, RunStateIcon } from '../shell/RunStateBadge.js';
@@ -60,14 +60,18 @@ function toolOf(row: TimelineRow, tools: readonly ToolView[]): ToolView | undefi
   return tools.find((tool) => tool.id === id);
 }
 
-function rowName(row: TimelineRow, tools: readonly ToolView[]): string {
-  if (row.block === undefined) {
-    return row.toolName ?? row.id;
-  }
+/** A step is named as its block is, and a block since removed by the id it had. */
+function rowName(row: TimelineRow): string {
+  return row.block === undefined ? row.id : blockName(row.block);
+}
+
+/** What the step's block is: its tool's name, or its kind. */
+function rowKind(row: TimelineRow, tools: readonly ToolView[]): string {
+  if (row.block === undefined) return row.toolName ?? row.toolId ?? '';
   if (row.block.type === 'run') {
     return toolOf(row, tools)?.name ?? row.toolName ?? row.block.tool;
   }
-  return kindLabel(row.block.type);
+  return blockKindText(row.block, tools);
 }
 
 function RowIcon({
@@ -171,9 +175,9 @@ function BlockDetail({ row, tools, branches, step, revision, onError }: BlockDet
     <section className="timeline-detail" data-testid="history-block">
       <header className="tool-header">
         <RowIcon row={row} tools={tools} />
-        <h2 title={rowName(row, tools)}>{rowName(row, tools)}</h2>
+        <h2 title={rowName(row)}>{rowName(row)}</h2>
         <RunStateBadge state={shownState(row)} />
-        <span className="muted">{row.id}</span>
+        <span className="muted">{rowKind(row, tools)}</span>
       </header>
       {row.tries.length > 1 ? (
         <div
@@ -361,7 +365,7 @@ export function AutomationRunDetail({
           <h2>{t('history.overTime')}</h2>
           <div className="timeline" data-testid="history-timeline">
             {timeline.rows.map((row) => {
-              const name = rowName(row, tools);
+              const name = rowName(row);
               return (
                 <button
                   key={row.id}

@@ -6,13 +6,15 @@
 import {
   ExpressionError,
   evaluateExpression,
+  expressionsOf,
+  findStepOutputReferences,
   fitsParameter,
   guarantees,
   isExpressionValue,
-  linkUses,
   parseCached,
   runtimeText,
   targetOf,
+  targetsOf,
   typeOfExpression,
   typeOfParameter,
 } from '@bildora/protocol';
@@ -278,14 +280,30 @@ export function expressionType(context: ValueContext, expression: string): Value
   }
 }
 
-/** How many other blocks use values of each block through links, by block id. */
+/**
+ * How many other blocks use values of each block, by block id: links to its settings, and reads
+ * of its results, also as `{{steps.<id>.outputs…}}` in text. Ctrl+F on `<id>.` finds the same
+ * blocks.
+ */
 export function usedByCounts(blocks: readonly AutomationBlock[]): ReadonlyMap<string, number> {
   const users = new Map<string, Set<string>>();
-  for (const use of linkUses(blocks)) {
-    if (use.block === use.target.block) continue;
-    const set = users.get(use.target.block) ?? new Set<string>();
-    set.add(use.block);
-    users.set(use.target.block, set);
+  const use = (target: string, user: string): void => {
+    if (target === user) return;
+    const set = users.get(target) ?? new Set<string>();
+    set.add(user);
+    users.set(target, set);
+  };
+  for (const placed of expressionsOf(blocks)) {
+    for (const { target } of targetsOf(placed.expression)) {
+      if (target.kind === 'link' || target.kind === 'output') use(target.block, placed.block);
+    }
+  }
+  for (const block of blocks) {
+    if (block.type !== 'run') continue;
+    for (const value of Object.values(block.values ?? {})) {
+      if (typeof value !== 'string') continue;
+      for (const reference of findStepOutputReferences(value)) use(reference.step, block.id);
+    }
   }
   return new Map([...users].map(([id, set]) => [id, set.size]));
 }

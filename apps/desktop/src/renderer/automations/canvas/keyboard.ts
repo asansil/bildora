@@ -1,6 +1,6 @@
 import { connectionOutput, outputsOf } from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
-import { kindLabel, outputLabel } from './block-text.js';
+import { ifRuleText, kindLabel, outputLabel } from './block-text.js';
 import { sizeOf } from './flow-document.js';
 import type { FlowDocument } from './flow-document.js';
 
@@ -97,7 +97,8 @@ export function describeBlock(
   if (block === undefined) return id;
   return t('canvas.blockDescription', {
     name: nameOf(id),
-    kind: kindLabel(block.type),
+    // An If's label is its name, so what a screen reader hears says its rule.
+    kind: block.type === 'if' ? ifRuleText(block.condition, nameOf) : kindLabel(block.type),
     outputs: outgoing(document, id, nameOf).join('; '),
   });
 }

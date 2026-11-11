@@ -84,17 +84,24 @@ interface Whip {
   readonly to: { readonly x: number; readonly y: number };
 }
 
-/** The block under a point of the window, found through the canvas node drawn there. */
-function blockAt(x: number, y: number): string | undefined {
+/** The canvas node of the block under a point of the window, with the block's id. */
+function nodeAt(x: number, y: number): { readonly id: string; readonly node: Element } | undefined {
   for (const element of document.elementsFromPoint(x, y)) {
     const node = element.closest('.react-flow__node');
     const id = node?.getAttribute('data-id');
     if (id !== null && id !== undefined && node?.classList.contains('react-flow__node-block')) {
-      return id;
+      return { id, node };
     }
   }
   return undefined;
 }
+
+/** The block under a point of the window. */
+function blockAt(x: number, y: number): string | undefined {
+  return nodeAt(x, y)?.id;
+}
+
+const WHIP_TARGET = 'is-whip-target';
 
 interface Menu {
   readonly x: number;
@@ -131,7 +138,6 @@ export function RunFields({
   onGoTo,
   onError,
 }: RunFieldsProps) {
-  const toolId = useId();
   const profileId = useId();
   const tool = tools.find(({ id }) => id === block.tool);
   const parameters = useMemo(
@@ -258,14 +264,32 @@ export function RunFields({
     event.preventDefault();
     const from = { x: event.clientX, y: event.clientY };
     setWhip({ name: parameter.name, from, to: from });
+    const fitting = fittingChoices(parameter);
+    /** The block under the tip, highlighted because one of its values fits the field. */
+    let marked: Element | undefined;
+    const mark = (node: Element | undefined): void => {
+      if (node === marked) return;
+      marked?.classList.remove(WHIP_TARGET);
+      node?.classList.add(WHIP_TARGET);
+      marked = node;
+    };
     const move = (moved: PointerEvent): void => {
       setWhip((current) =>
         current === undefined
           ? undefined
           : { ...current, to: { x: moved.clientX, y: moved.clientY } },
       );
+      const under = nodeAt(moved.clientX, moved.clientY);
+      const fits =
+        under !== undefined &&
+        fitting.some(
+          (choice) =>
+            choice.block === under.id && (choice.group === 'setting' || choice.group === 'result'),
+        );
+      mark(fits ? under.node : undefined);
     };
     const stop = (): void => {
+      mark(undefined);
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       window.removeEventListener('keydown', cancel);
@@ -275,7 +299,7 @@ export function RunFields({
       stop();
       const target = blockAt(released.clientX, released.clientY);
       if (target === undefined) return;
-      const items = blockMenuItems(fittingChoices(parameter), target, (choice) => {
+      const items = blockMenuItems(fitting, target, (choice) => {
         link(parameter.name, choice.expression);
       });
       setMenu({
@@ -365,27 +389,9 @@ export function RunFields({
 
   return (
     <>
-      <div className="field">
-        <label className="field-label" htmlFor={toolId}>
-          {t('automation.tool')}
-        </label>
-        <select
-          id={toolId}
-          value={block.tool}
-          onChange={(event) => {
-            onChange({ ...without(block, 'profile', 'values'), tool: event.target.value });
-          }}
-        >
-          {tool === undefined ? (
-            <option value={block.tool}>{t('automation.toolMissing', { id: block.tool })}</option>
-          ) : null}
-          {tools.map(({ id, name }) => (
-            <option key={id} value={id}>
-              {name}
-            </option>
-          ))}
-        </select>
-      </div>
+      {tool === undefined ? (
+        <p className="field-problem">{t('automation.toolMissing', { id: block.tool })}</p>
+      ) : null}
       {toolLevel === 1 ? (
         <div className="field">
           <label className="field-label" htmlFor={profileId}>

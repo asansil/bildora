@@ -265,6 +265,7 @@ export const en = {
   'form.save': 'Save',
   'form.add': 'Add tool',
   'form.cancel': 'Cancel',
+  'form.ok': 'OK',
 
   'remove.title': 'Remove {name}?',
   'remove.body':
@@ -554,6 +555,10 @@ export const en = {
   'canvas.addHereTitle': 'Add here',
   'canvas.menu': 'Actions for {name}',
   'canvas.menuAdd': 'Add a block after this one…',
+  'canvas.menuReplace': 'Replace…',
+  'automation.openInHistory': 'Open in history',
+  'canvas.replaceTitle': 'Replace {name} with',
+  'canvas.replaced': 'Replaced with {name}.',
   'canvas.menuConnect': 'Connect an output…',
   'canvas.menuWrite': 'Write the note',
   'canvas.menuDelete': 'Delete',
@@ -661,6 +666,7 @@ export const en = {
   'canvas.blockIdProblem.reserved': 'Bildora keeps this name for other values.',
   'canvas.blockIdProblem.taken': 'Another block, note or group already has this name.',
   'canvas.rename': 'Rename…',
+  'canvas.renameTitle': 'Rename block',
   'canvas.usedBy': 'Used by {count} other blocks',
   'canvas.usedByOne': 'Used by 1 other block',
   'canvas.linkTo': 'Link to',

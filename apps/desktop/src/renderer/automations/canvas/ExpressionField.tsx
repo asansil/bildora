@@ -1,8 +1,10 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { EXPRESSION_FUNCTIONS } from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
 import type { ShownValue, ValueChoice } from './values.js';
 
+/** As tall as the suggestion list may grow, in pixels, as the stylesheet caps it. */
+const SUGGESTIONS_HEIGHT = 220;
 /** Suggestions shown at once while a name is typed. */
 const SUGGESTIONS_MAX = 8;
 /** What a name being typed is made of, so that the word before the caret can be completed. */
@@ -85,6 +87,9 @@ export function ExpressionField({
   const listId = `${id}-suggestions`;
   const hintId = `${id}-hint`;
   const input = useRef<HTMLInputElement>(null);
+  const anchor = useRef<HTMLDivElement>(null);
+  /** The suggestions open above the field only when there is no room for them below. */
+  const [above, setAbove] = useState(false);
   const [caret, setCaret] = useState(text.length);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -99,6 +104,14 @@ export function ExpressionField({
   const typed = NAME_PART.exec(text.slice(0, caret))?.[0] ?? '';
   const suggestions = open ? suggestionsFor(typed, choices, nameOf) : [];
   const shownLine = problem ?? shownText(shown);
+  const showing = suggestions.length > 0;
+
+  useLayoutEffect(() => {
+    const box = anchor.current?.getBoundingClientRect();
+    if (!showing || box === undefined) return;
+    const room = window.innerHeight - box.bottom;
+    setAbove(room < SUGGESTIONS_HEIGHT && box.top > room);
+  }, [showing]);
 
   function accept(suggestion: Suggestion): void {
     const start = caret - typed.length;
@@ -117,84 +130,91 @@ export function ExpressionField({
       <label className="field-label" htmlFor={id}>
         {label}
       </label>
-      <div className="field-row expression-row">
-        <span className="expression-equals" aria-hidden="true">
-          =
-        </span>
-        <input
-          ref={input}
-          id={id}
-          className="expression-input"
-          value={text}
-          spellCheck={false}
-          autoComplete="off"
-          role="combobox"
-          aria-expanded={suggestions.length > 0}
-          aria-controls={listId}
-          aria-autocomplete="list"
-          aria-describedby={hintId}
-          {...(problem === undefined ? {} : { 'aria-invalid': true })}
-          {...(suggestions.length > 0
-            ? { 'aria-activedescendant': `${listId}-${String(active)}` }
-            : {})}
-          onChange={(event) => {
-            onChange(event.target.value);
-            setCaret(event.target.selectionStart ?? event.target.value.length);
-            setOpen(true);
-            setActive(0);
-          }}
-          onSelect={(event) => {
-            setCaret(event.currentTarget.selectionStart ?? 0);
-          }}
-          onBlur={() => {
-            setOpen(false);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Backspace' && text === '') {
-              event.preventDefault();
-              onUnlink();
-              return;
-            }
-            if (suggestions.length === 0) return;
-            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-              event.preventDefault();
-              const step = event.key === 'ArrowDown' ? 1 : -1;
-              setActive((active + step + suggestions.length) % suggestions.length);
-            } else if (event.key === 'Enter' || event.key === 'Tab') {
-              const chosen = suggestions[active];
-              if (chosen !== undefined) {
-                event.preventDefault();
-                accept(chosen);
-              }
-            } else if (event.key === 'Escape') {
-              event.preventDefault();
-              event.stopPropagation();
+      <div className="expression-anchor" ref={anchor}>
+        <div className="field-row expression-row">
+          <span className="expression-equals" aria-hidden="true">
+            =
+          </span>
+          <input
+            ref={input}
+            id={id}
+            className="expression-input"
+            value={text}
+            spellCheck={false}
+            autoComplete="off"
+            role="combobox"
+            aria-expanded={suggestions.length > 0}
+            aria-controls={listId}
+            aria-autocomplete="list"
+            aria-describedby={hintId}
+            {...(problem === undefined ? {} : { 'aria-invalid': true })}
+            {...(suggestions.length > 0
+              ? { 'aria-activedescendant': `${listId}-${String(active)}` }
+              : {})}
+            onChange={(event) => {
+              onChange(event.target.value);
+              setCaret(event.target.selectionStart ?? event.target.value.length);
+              setOpen(true);
+              setActive(0);
+            }}
+            onSelect={(event) => {
+              setCaret(event.currentTarget.selectionStart ?? 0);
+            }}
+            onBlur={() => {
               setOpen(false);
-            }
-          }}
-        />
-      </div>
-      {suggestions.length > 0 ? (
-        <ul className="expression-suggestions" id={listId} role="listbox" aria-label={label}>
-          {suggestions.map((suggestion, index) => (
-            <li
-              key={suggestion.text}
-              id={`${listId}-${String(index)}`}
-              role="option"
-              aria-selected={index === active}
-              className={index === active ? 'is-active' : undefined}
-              onMouseDown={(event) => {
-                // Keeps the caret in the field.
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Backspace' && text === '') {
                 event.preventDefault();
-                accept(suggestion);
-              }}
-            >
-              <span className="expression-suggestion-text">{suggestion.text}</span>
-              <span className="expression-suggestion-hint">{suggestion.hint}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+                onUnlink();
+                return;
+              }
+              if (suggestions.length === 0) return;
+              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault();
+                const step = event.key === 'ArrowDown' ? 1 : -1;
+                setActive((active + step + suggestions.length) % suggestions.length);
+              } else if (event.key === 'Enter' || event.key === 'Tab') {
+                const chosen = suggestions[active];
+                if (chosen !== undefined) {
+                  event.preventDefault();
+                  accept(chosen);
+                }
+              } else if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                setOpen(false);
+              }
+            }}
+          />
+        </div>
+        {suggestions.length > 0 ? (
+          <ul
+            className={`expression-suggestions${above ? ' is-above' : ''}`}
+            id={listId}
+            role="listbox"
+            aria-label={label}
+          >
+            {suggestions.map((suggestion, index) => (
+              <li
+                key={suggestion.text}
+                id={`${listId}-${String(index)}`}
+                role="option"
+                aria-selected={index === active}
+                className={index === active ? 'is-active' : undefined}
+                onMouseDown={(event) => {
+                  // Keeps the caret in the field.
+                  event.preventDefault();
+                  accept(suggestion);
+                }}
+              >
+                <span className="expression-suggestion-text">{suggestion.text}</span>
+                <span className="expression-suggestion-hint">{suggestion.hint}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
       <span
         className={problem === undefined ? 'field-hint' : 'field-problem'}
         id={hintId}

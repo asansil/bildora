@@ -216,21 +216,6 @@
   padding: var(--bildora-space-2) var(--bildora-space-3);
 }
 
-/* Why Run started nothing, between the header and the canvas. */
-.flow-refused {
-  align-items: center;
-  margin: var(--bildora-space-2) var(--bildora-space-3) 0;
-}
-
-.flow-refused > .icon {
-  margin-top: 0;
-  color: var(--bildora-status-failed);
-}
-
-.flow-refused p {
-  color: var(--bildora-text);
-}
-
 /* A block's output fills the lower panel, which scrolls it. */
 .block-output {
   margin: 0;
@@ -276,6 +261,11 @@
   flex: none;
   margin-top: 2px;
   color: var(--bildora-status-warning);
+}
+
+/* Why Run started nothing, as the first row of Problems. */
+.problem-item.problem-refused .icon {
+  color: var(--bildora-status-failed);
 }
 
 .problem-text {
@@ -362,6 +352,12 @@
 .block.is-selected {
   border-color: var(--bildora-accent);
   box-shadow: 0 0 0 1px var(--bildora-accent);
+}
+
+/* The block under a dragged pick-whip, when one of its values fits the field. */
+.react-flow__node.is-whip-target .block {
+  border-color: var(--bildora-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--bildora-accent) 35%, transparent);
 }
 
 .block-text {

@@ -5,7 +5,7 @@ import { describeBlock, nearestInDirection, neighbourOf } from './keyboard.js';
 function flow() {
   let doc = emptyDocument();
   doc = addAfter(doc, 'start', createBlocks(doc, { kind: 'run', tool: 'a' }, '')).document;
-  doc = addAfter(doc, 'a', createBlocks(doc, { kind: 'run', tool: 'b' }, '')).document;
+  doc = addAfter(doc, 'A1', createBlocks(doc, { kind: 'run', tool: 'b' }, '')).document;
   doc = addBlocks(doc, createBlocks(doc, { kind: 'run', tool: 'below' }, ''), { x: 300, y: 600 });
   return doc;
 }
@@ -13,23 +13,23 @@ function flow() {
 describe('canvas keyboard', () => {
   it('moves to the nearest block in the direction of an arrow', () => {
     const doc = flow();
-    expect(nearestInDirection(doc, 'start', 'ArrowRight')).toBe('a');
-    expect(nearestInDirection(doc, 'a', 'ArrowRight')).toBe('b');
-    expect(nearestInDirection(doc, 'a', 'ArrowLeft')).toBe('start');
-    expect(nearestInDirection(doc, 'a', 'ArrowDown')).toBe('below');
+    expect(nearestInDirection(doc, 'start', 'ArrowRight')).toBe('A1');
+    expect(nearestInDirection(doc, 'A1', 'ArrowRight')).toBe('B1');
+    expect(nearestInDirection(doc, 'A1', 'ArrowLeft')).toBe('start');
+    expect(nearestInDirection(doc, 'A1', 'ArrowDown')).toBe('Below1');
     expect(nearestInDirection(doc, 'start', 'ArrowUp')).toBeUndefined();
   });
 
   it('keeps focus on a neighbour after a delete', () => {
     const doc = flow();
-    const after = removeItems(doc, new Set(['a']));
-    expect(['start', 'b']).toContain(neighbourOf(doc, after, 'a'));
+    const after = removeItems(doc, new Set(['A1']));
+    expect(['start', 'B1']).toContain(neighbourOf(doc, after, 'A1'));
   });
 
   it('describes a block with where its outputs lead', () => {
     const doc = flow();
-    expect(describeBlock(doc, 'a', (id) => id.toUpperCase())).toBe(
-      'A, Run a tool. Next goes to B; Error is not connected',
+    expect(describeBlock(doc, 'A1', (id) => id.toUpperCase())).toBe(
+      'A1, Run a tool. Next goes to B1; Error is not connected',
     );
   });
 });

@@ -448,6 +448,7 @@ input[type='radio'] {
 }
 
 .work-area {
+  position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -737,9 +738,15 @@ input[type='radio'] {
   border-left-color: var(--bildora-status-failed);
 }
 
+/* The app's error notice floats over the bottom of the work area instead of moving it. */
 .banner {
-  max-width: 720px;
-  margin-bottom: var(--bildora-space-4);
+  position: absolute;
+  right: var(--bildora-space-4);
+  bottom: var(--bildora-space-4);
+  z-index: 40;
+  max-width: min(720px, calc(100% - 2 * var(--bildora-space-4)));
+  margin: 0;
+  box-shadow: var(--bildora-shadow-overlay);
 }
 
 .facts {
@@ -1447,6 +1454,19 @@ input[type='radio'] {
   list-style: none;
 }
 
+/* The block's name, as links write it, over what the block is. */
+.block-settings-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+}
+
+.block-settings-header h2,
+.block-settings-header p {
+  margin: 0;
+}
+
 /* A fieldset is as wide as its content by default, which would push the panel sideways. */
 .block-settings fieldset {
   min-inline-size: 0;
@@ -1523,6 +1543,11 @@ input[type='radio'] {
   position: relative;
 }
 
+/* The field row and its suggestions, which open just below it and never over it. */
+.expression-anchor {
+  position: relative;
+}
+
 .expression-row {
   align-items: center;
   gap: 0;
@@ -1551,6 +1576,7 @@ input[type='radio'] {
 
 .expression-suggestions {
   position: absolute;
+  top: 100%;
   left: 0;
   right: 0;
   z-index: 20;
@@ -1563,6 +1589,12 @@ input[type='radio'] {
   border: 1px solid var(--bildora-border);
   border-radius: var(--bildora-radius-md);
   box-shadow: var(--bildora-shadow-overlay);
+}
+
+.expression-suggestions.is-above {
+  top: auto;
+  bottom: 100%;
+  margin: 0 0 var(--bildora-space-1);
 }
 
 .expression-suggestions li {
@@ -1631,6 +1663,18 @@ input[type='radio'] {
   background: var(--bildora-surface-frame);
   border: 1px solid var(--bildora-border);
   border-radius: var(--bildora-radius-sm);
+}
+
+/* A past run, with its button to open it in Run history beside it. */
+.automation-run-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--bildora-space-1);
+}
+
+.automation-run-row > .automation-run {
+  flex: 1;
+  min-width: 0;
 }
 
 .automation-run {
