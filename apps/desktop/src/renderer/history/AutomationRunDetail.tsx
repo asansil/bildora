@@ -18,9 +18,11 @@ import type {
   HistoryAutomationRunView,
   HistoryEntryView,
   HistoryRecordView,
+  StepRunView,
   ToolView,
 } from '../../shared/ipc-contract.js';
-import { kindLabel, outputLabel } from '../automations/canvas/block-text.js';
+import { blockKindText, blockName, outputLabel } from '../automations/canvas/block-text.js';
+import { DataView } from '../automations/DataView.js';
 import { ProgramIcon } from '../shell/ProgramIcon.js';
 import { RunStateBadge, RunStateIcon } from '../shell/RunStateBadge.js';
 import type { BlockState } from '../shell/RunStateBadge.js';
@@ -58,14 +60,18 @@ function toolOf(row: TimelineRow, tools: readonly ToolView[]): ToolView | undefi
   return tools.find((tool) => tool.id === id);
 }
 
-function rowName(row: TimelineRow, tools: readonly ToolView[]): string {
-  if (row.block === undefined) {
-    return row.toolName ?? row.id;
-  }
+/** A step is named as its block is, and a block since removed by the id it had. */
+function rowName(row: TimelineRow): string {
+  return row.block === undefined ? row.id : blockName(row.block);
+}
+
+/** What the step's block is: its tool's name, or its kind. */
+function rowKind(row: TimelineRow, tools: readonly ToolView[]): string {
+  if (row.block === undefined) return row.toolName ?? row.toolId ?? '';
   if (row.block.type === 'run') {
     return toolOf(row, tools)?.name ?? row.toolName ?? row.block.tool;
   }
-  return kindLabel(row.block.type);
+  return blockKindText(row.block, tools);
 }
 
 function RowIcon({
@@ -138,11 +144,13 @@ interface BlockDetailProps {
   readonly row: TimelineRow;
   readonly tools: readonly ToolView[];
   readonly branches: number;
+  /** The block as the run recorded it, with what it received and produced. */
+  readonly step: StepRunView | undefined;
   readonly revision: unknown;
   readonly onError: (error: unknown) => void;
 }
 
-function BlockDetail({ row, tools, branches, revision, onError }: BlockDetailProps) {
+function BlockDetail({ row, tools, branches, step, revision, onError }: BlockDetailProps) {
   const [chosenTry, setChosenTry] = useState<string | undefined>(undefined);
   const [record, setRecord] = useState<HistoryRecordView | undefined>(undefined);
   const tryId = chosenTry ?? row.tries.at(-1)?.runId;
@@ -167,9 +175,9 @@ function BlockDetail({ row, tools, branches, revision, onError }: BlockDetailPro
     <section className="timeline-detail" data-testid="history-block">
       <header className="tool-header">
         <RowIcon row={row} tools={tools} />
-        <h2 title={rowName(row, tools)}>{rowName(row, tools)}</h2>
+        <h2 title={rowName(row)}>{rowName(row)}</h2>
         <RunStateBadge state={shownState(row)} />
-        <span className="muted">{row.id}</span>
+        <span className="muted">{rowKind(row, tools)}</span>
       </header>
       {row.tries.length > 1 ? (
         <div
@@ -226,6 +234,12 @@ function BlockDetail({ row, tools, branches, revision, onError }: BlockDetailPro
           )}
         </dl>
       )}
+      {isTool && step !== undefined && row.state !== 'idle' && row.state !== 'skipped' ? (
+        <section className="history-data" aria-label={t('canvas.data')}>
+          <h3>{t('canvas.data')}</h3>
+          <DataView step={step} />
+        </section>
+      ) : null}
     </section>
   );
 }
@@ -351,7 +365,7 @@ export function AutomationRunDetail({
           <h2>{t('history.overTime')}</h2>
           <div className="timeline" data-testid="history-timeline">
             {timeline.rows.map((row) => {
-              const name = rowName(row, tools);
+              const name = rowName(row);
               return (
                 <button
                   key={row.id}
@@ -397,6 +411,7 @@ export function AutomationRunDetail({
               row={shown}
               tools={tools}
               branches={data?.run.paths.filter(({ from }) => from === shown.id).length ?? 0}
+              step={data?.run.steps.find(({ id }) => id === shown.id)}
               revision={revision}
               onError={onError}
             />

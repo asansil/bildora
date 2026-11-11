@@ -103,6 +103,11 @@ export const startRunSchema = z.strictObject({
   answerWithScript: z.boolean().optional(),
 });
 export const automationIdSchema = z.strictObject({ id: idSchema });
+/** Starts an automation, with values for the inputs its Start block declares. */
+export const automationStartSchema = z.strictObject({
+  id: idSchema,
+  inputs: valuesSchema.optional(),
+});
 export const automationRunIdSchema = z.strictObject({ runId: idSchema });
 export const automationConfirmSchema = z.strictObject({
   runId: idSchema,
@@ -329,6 +334,24 @@ export interface ParameterView {
   readonly delivery: 'argument' | 'environment' | 'script';
 }
 
+/** A declared output: a path, a parameter's value, or a JSON file with typed fields. */
+export interface OutputView {
+  readonly name: string;
+  readonly description?: string;
+  /** What the output itself holds: a path, or text for a parameter that is not a path. */
+  readonly type: 'path' | 'text';
+  /** Present for a JSON output. */
+  readonly fields?: readonly OutputFieldView[];
+}
+
+export interface OutputFieldView {
+  readonly name: string;
+  readonly type: 'string' | 'path' | 'integer' | 'number' | 'boolean' | 'list';
+  readonly description?: string;
+  /** Kept from history and from other blocks. */
+  readonly secret?: true;
+}
+
 export interface ToolView {
   /** Unique across scopes, unlike the id, which names a tool only inside a Workspace. */
   readonly key: string;
@@ -344,6 +367,8 @@ export interface ToolView {
   readonly parameters?: readonly ParameterView[];
   /** Names of declared outputs, which automation steps can refer to. */
   readonly outputs?: readonly string[];
+  /** The same outputs with what they hold, which values and rules that read them need. */
+  readonly outputDetails?: readonly OutputView[];
   /** Present when the tool declares a console script, which its form can choose to answer. */
   readonly hasScript?: true;
   readonly permissions: readonly string[];
@@ -506,6 +531,29 @@ export interface StepRunView {
   readonly message?: string;
   /** When a timed wait ends, in milliseconds since the epoch. */
   readonly resumesAt?: number;
+  /** What the block's tool received in its latest try. */
+  readonly values?: readonly StepValueView[];
+  /** What the block left for later blocks, JSON fields as `<output>.<field>`. */
+  readonly outputs?: readonly StepOutputView[];
+  /** Some values were shortened, or left out, to keep the record small. */
+  readonly truncated?: true;
+}
+
+/** A value a block's tool received. A secret shows only that it was set. */
+export interface StepValueView {
+  readonly name: string;
+  readonly label: string;
+  readonly value?: string | number | boolean;
+  readonly secret?: true;
+  /** The link or expression it was worked out from, as written after `=`. */
+  readonly from?: string;
+}
+
+/** A value a block left. A secret field shows only that it was there. */
+export interface StepOutputView {
+  readonly name: string;
+  readonly value?: string | number | boolean | readonly string[];
+  readonly secret?: true;
 }
 
 /** An automation run this session knows about, going on or the latest finished one. */

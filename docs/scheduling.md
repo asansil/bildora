@@ -9,12 +9,14 @@ Bildora has no scheduler of its own and no background service. Task Scheduler st
 The zip holds `bildora.cmd` next to `Bildora.exe`.
 
 ```text
-bildora run <automation> [--workspace <id or name>]
+bildora run <automation> [--workspace <id or name>] [--input <name>=<value>]...
 ```
 
 `<automation>` is the automation's id or its name, in any case. The automation's screen in the app shows the exact command. Put the name in quotes if it has spaces.
 
 If several Workspaces hold the same automation, the command stops and lists them, and `--workspace` chooses one. Use `--workspace` in a scheduled task, so a later automation with the same name cannot stop it.
+
+`--input` gives a value to one of the automation's inputs, and can be repeated, as in `--input file="D:\in\report.csv" --input size=100`. Inputs left out take their defaults. A yes-or-no input takes `true` or `false`. An input name the automation does not declare, a value of the wrong type, or a required input with no value and no default stops the command with code 2 before anything runs.
 
 Each block that runs a tool or waits prints one line, such as `[2/3] report: completed (4.1 s)`, and one that was on a path the run did not take prints `skipped`. Tool output goes to run history, where the app shows it, marked as coming from the command line.
 
@@ -24,7 +26,7 @@ Each block that runs a tool or waits prints one line, such as `[2/3] report: com
 | ---- | ---------------------------------------------------------------------------- |
 | 0    | Every block that ran succeeded                                               |
 | 1    | A failed block stopped the automation                                        |
-| 2    | The command was used incorrectly                                             |
+| 2    | The command was used incorrectly, or an input does not fit                   |
 | 3    | The automation finished, but a block failed and its Error output handled it  |
 | 4    | It stopped at a manual block, because nobody could answer                    |
 | 5    | It could not start: not found, in several Workspaces, or with a broken block |

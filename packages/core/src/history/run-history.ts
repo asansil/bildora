@@ -167,6 +167,29 @@ export interface AutomationStepRecord {
   readonly attempt?: number;
   readonly durationMs?: number;
   readonly failure?: { readonly kind: string; readonly message: string };
+  /** What the block's tool received in its latest try. Runs from before it was kept lack it. */
+  readonly values?: readonly StepValueRecord[];
+  /** What the block left for later blocks, JSON fields as `<output>.<field>`. */
+  readonly outputs?: readonly StepOutputRecord[];
+  /** Some values were shortened to keep the record within its limit. */
+  readonly truncated?: true;
+}
+
+/** A value a block's tool received. A secret records only that it was set. */
+export interface StepValueRecord {
+  readonly name: string;
+  readonly label: string;
+  readonly value?: string | number | boolean;
+  readonly secret?: true;
+  /** The link or expression the value was worked out from, as written after `=`. */
+  readonly from?: string;
+}
+
+/** A value a block left. A secret field records only that it was there. */
+export interface StepOutputRecord {
+  readonly name: string;
+  readonly value?: string | number | boolean | readonly string[];
+  readonly secret?: true;
 }
 
 export interface AutomationRunSummary {

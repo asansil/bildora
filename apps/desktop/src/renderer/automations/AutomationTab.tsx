@@ -6,14 +6,15 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  CircleX,
   Hand,
+  History,
   Play,
   Redo2,
   Save,
   Square,
   TriangleAlert,
   Undo2,
-  X,
 } from 'lucide-react';
 import type { AutomationBlock, AutomationPosition } from '@bildora/protocol';
 import { t } from '../../shared/i18n/translate.js';
@@ -38,7 +39,7 @@ import { commandFor } from './automation-draft.js';
 import { ProgramIcon } from '../shell/ProgramIcon.js';
 import { BlockLibrary, controlIcon } from './canvas/BlockLibrary.js';
 import { BlockSettings } from './canvas/BlockSettings.js';
-import { blockNames, kindLabel } from './canvas/block-text.js';
+import { blockKindText, blockNames, kindLabel } from './canvas/block-text.js';
 import { Canvas } from './canvas/Canvas.js';
 import type { CanvasRun } from './canvas/Canvas.js';
 import type { CanvasCommands, EditorCommands } from './canvas/canvas-commands.js';
@@ -46,13 +47,19 @@ import {
   GAP_X,
   addAfter,
   addBlocks,
+  blockIdProblem,
+  blockOf,
   createBlocks,
+  namedChoice,
   documentOf,
   draftOf,
   addNote,
   groupBlocks,
+  renameBlock,
+  replaceBlock,
   sizeOf,
   spliceInto,
+  takenIds,
   ungroup,
   unplaced,
   updateBlock,
@@ -65,7 +72,12 @@ import { Outline } from './canvas/Outline.js';
 import { record, redo, replace, startHistory, undo } from './canvas/undo.js';
 import { placeMissing } from './canvas/layout.js';
 import type { ConnectionRef, FlowDocument, NewBlock } from './canvas/flow-document.js';
-import { referenceOptionsFor } from './canvas/references.js';
+import { useBlockProfiles } from './canvas/use-profiles.js';
+import { inputsOfFlow } from './canvas/values.js';
+import type { ValueContext } from './canvas/values.js';
+import { RenameDialog } from './canvas/RenameDialog.js';
+import { RunInputsDialog } from './RunInputsDialog.js';
+import { DataView } from './DataView.js';
 import { problemText } from './problem-text.js';
 
 const api = window.bildora;
@@ -95,16 +107,18 @@ interface PastRunsProps {
   readonly onOpen: (record: AutomationRunRecordView) => void;
   /** A double click opens the run and shows the output of its blocks. */
   readonly onOpenOutput: (record: AutomationRunRecordView) => void;
+  /** Shows the run in Run history. */
+  readonly onOpenInHistory: (runId: string) => void;
 }
 
-function PastRuns({ runs, shown, onOpen, onOpenOutput }: PastRunsProps) {
+function PastRuns({ runs, shown, onOpen, onOpenOutput, onOpenInHistory }: PastRunsProps) {
   if (runs.length === 0) {
     return <p className="muted">{t('automation.noRuns')}</p>;
   }
   return (
     <ul className="automation-runs" data-testid="automation-runs">
       {runs.map((run) => (
-        <li key={run.runId}>
+        <li key={run.runId} className="automation-run-row">
           <button
             type="button"
             className="automation-run"
@@ -129,6 +143,18 @@ function PastRuns({ runs, shown, onOpen, onOpenOutput }: PastRunsProps) {
               <span className="muted automation-run-failure">{run.failure.message}</span>
             )}
           </button>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={t('automation.openInHistory')}
+            title={t('automation.openInHistory')}
+            data-testid="run-open-in-history"
+            onClick={() => {
+              onOpenInHistory(run.runId);
+            }}
+          >
+            <History className="icon" aria-hidden="true" />
+          </button>
         </li>
       ))}
     </ul>
@@ -137,16 +163,24 @@ function PastRuns({ runs, shown, onOpen, onOpenOutput }: PastRunsProps) {
 
 interface ProblemsProps {
   readonly problems: readonly AutomationProblemView[];
+  /** Why the last Run started nothing, shown as the first row. */
+  readonly refusal?: string | undefined;
   readonly nameOf: (id: string) => string;
   readonly onPick: (blockId: string) => void;
 }
 
-function Problems({ problems, nameOf, onPick }: ProblemsProps) {
-  if (problems.length === 0) {
+function Problems({ problems, refusal, nameOf, onPick }: ProblemsProps) {
+  if (problems.length === 0 && refusal === undefined) {
     return <p className="muted">{t('canvas.noProblems')}</p>;
   }
   return (
     <ul className="problem-list" data-testid="automation-problems">
+      {refusal === undefined ? null : (
+        <li className="problem-item problem-refused" role="alert" data-testid="run-refused">
+          <CircleX className="icon" aria-hidden="true" />
+          <span className="problem-text">{refusal}</span>
+        </li>
+      )}
       {problems.map((problem, index) => {
         const { what, fix } = problemText(problem, nameOf);
         return (
@@ -194,8 +228,8 @@ function RunDetails({ block, step, name, live, tools, onContinue, onShowTool }: 
   const hasTool = block.type === 'run' && tools.some(({ id }) => id === block.tool);
   return (
     <div className="run-details" data-testid="run-details" data-block-id={block.id}>
-      <h2>{kindLabel(block.type)}</h2>
-      <p>{name}</p>
+      <h2>{name}</h2>
+      <p className="muted">{blockKindText(block, tools)}</p>
       <RunStateBadge state={state} />
       {state === 'skipped' ? <p className="muted">{t('automation.skipped')}</p> : null}
       {step?.durationMs === undefined ? null : <p>{formatDuration(step.durationMs)}</p>}
@@ -240,10 +274,16 @@ type Refusal =
  */
 const refusalsForNewTabs = new Map<string, Refusal>();
 
+/**
+ * A new automation whose flow takes inputs is run by its reopened tab, which asks for them first,
+ * so a required input is never left without a value.
+ */
+const runRequestsForNewTabs = new Set<string>();
+
 function messageOf(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   // Electron wraps what a handler throws with the name of the channel.
-  return text.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+  return text.replace(/^Error invoking remote method '[^']+': (?:(?:Input)?Error: )?/, '');
 }
 
 function refusalText(refusal: Refusal): string {
@@ -339,8 +379,13 @@ interface AutomationTabProps {
   /** A new automation was saved, and its tab now shows it. */
   readonly onSaved: (id: string) => void;
   /** Starts the saved automation with this id. Rejects when it cannot start. */
-  readonly onRun: (id: string) => Promise<unknown>;
+  readonly onRun: (
+    id: string,
+    inputs?: Readonly<Record<string, string | number | boolean>>,
+  ) => Promise<unknown>;
   readonly onShowTool: (id: string) => void;
+  /** Shows one of the automation's past runs in Run history. */
+  readonly onOpenInHistory: (automationId: string, runId: string) => void;
   readonly onDirty: (dirty: boolean) => void;
   readonly onUsed: () => void;
   readonly onError: (error: unknown) => void;
@@ -375,6 +420,7 @@ function FlowEditor({
   onSaved,
   onRun,
   onShowTool,
+  onOpenInHistory,
   onDirty,
   onUsed,
   onError,
@@ -410,7 +456,9 @@ function FlowEditor({
     refusalsForNewTabs.delete(automation.id);
     return handed;
   });
-  const [lower, setLower] = useState<'problems' | 'runs' | 'outline' | 'output'>('problems');
+  const [lower, setLower] = useState<'problems' | 'runs' | 'outline' | 'output' | 'data'>(
+    'problems',
+  );
   const nameField = useRef<HTMLInputElement>(null);
   /** False once the tab has gone, such as after a new automation is saved under its id. */
   const mounted = useRef(true);
@@ -549,7 +597,20 @@ function FlowEditor({
     };
   }, [automation, status, revision, onError]);
 
-  const names = useMemo(() => blockNames(document.blocks, tools), [document.blocks, tools]);
+  const names = useMemo(() => blockNames(document.blocks), [document.blocks]);
+  const profiles = useBlockProfiles(document.blocks, onError);
+  const valueContext: ValueContext = useMemo(
+    () => ({ blocks: document.blocks, connections: document.connections, tools, profiles }),
+    [document.blocks, document.connections, tools, profiles],
+  );
+  /** The automation whose inputs Run is asking for, while the form is open. */
+  const [asking, setAsking] = useState<string | undefined>(() => {
+    if (automation === undefined || !runRequestsForNewTabs.has(automation.id)) return undefined;
+    runRequestsForNewTabs.delete(automation.id);
+    return automation.id;
+  });
+  /** The block the Rename dialog is open for. */
+  const [renaming, setRenaming] = useState<string | undefined>();
   const nameOf = useCallback((id: string) => names.get(id) ?? id, [names]);
   const problemCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -579,6 +640,12 @@ function FlowEditor({
     [watching],
   );
 
+  // Undo, redo or Replace can take a selected item away; it leaves the selection with it, so the
+  // next click on a block selects that block alone.
+  const present = takenIds(document);
+  if ([...selected].some((id) => !present.has(id))) {
+    setSelected(new Set([...selected].filter((id) => present.has(id))));
+  }
   const [only] = selected.size === 1 ? [...selected] : [];
   const selectedBlock = document.blocks.find(({ id }) => id === only);
   const selectedNote = document.notes.find(({ id }) => id === only);
@@ -634,7 +701,12 @@ function FlowEditor({
     const anchor = [after, only, lastAdded, 'start'].find(
       (id) => id !== undefined && document.positions[id] !== undefined,
     );
-    const blocks = createBlocks(document, choice, t('automation.defaultMessage'), anchor);
+    const blocks = createBlocks(
+      document,
+      namedChoice(choice, tools),
+      t('automation.defaultMessage'),
+      anchor,
+    );
     const [first] = blocks;
     if (first === undefined) return undefined;
     let next: FlowDocument;
@@ -745,9 +817,13 @@ function FlowEditor({
       id = stored.id;
       problems = stored.problems;
       if (automation === undefined) {
-        // The tab reopens under the new id, so the refusal is handed to it.
+        // The tab reopens under the new id, so the refusal, or the run that asks for inputs
+        // first, is handed to it.
+        const asks = problems.length === 0 && inputsOfFlow(document.blocks).length > 0;
         if (problems.length > 0) refusalsForNewTabs.set(id, refusalOf(problems));
+        if (asks) runRequestsForNewTabs.add(id);
         onSaved(id);
+        if (asks) return;
       } else if (problems.length > 0) {
         refuse(refusalOf(problems));
       }
@@ -758,7 +834,19 @@ function FlowEditor({
       if (problems.length > 0) refuse(refusalOf(problems));
     }
     if (problems.length > 0) return;
-    await onRun(id).catch((error: unknown) => {
+    // A new automation's tab reopens under its id, so only a tab that stays can ask.
+    if (inputsOfFlow(document.blocks).length > 0 && mounted.current && automation !== undefined) {
+      setAsking(id);
+      return;
+    }
+    await start(id);
+  }
+
+  async function start(
+    id: string,
+    inputs?: Readonly<Record<string, string | number | boolean>>,
+  ): Promise<void> {
+    await onRun(id, inputs).catch((error: unknown) => {
       const message = messageOf(error);
       // A new automation's tab has reopened by now, so the shell shows why.
       if (mounted.current) refuse({ kind: 'error', message });
@@ -795,7 +883,7 @@ function FlowEditor({
     settingsCollapsed ? STRIP : `auto ${String(settingsWidth)}px`,
   ].join(' ');
   // The Output tab belongs to a run, and editing has none.
-  if (lower === 'output' && runOnView === undefined) setLower('problems');
+  if ((lower === 'output' || lower === 'data') && runOnView === undefined) setLower('problems');
 
   const editing = view.kind === 'edit';
   const editor: EditorCommands = {
@@ -1009,22 +1097,6 @@ function FlowEditor({
               </div>
             ))
         : null}
-      {refusal === undefined ? null : (
-        <div className="notice notice-failed flow-refused" role="alert" data-testid="run-refused">
-          <TriangleAlert className="icon" aria-hidden="true" />
-          <p>{refusalText(refusal)}</p>
-          <button
-            type="button"
-            className="icon-button"
-            aria-label={t('banner.dismiss')}
-            onClick={() => {
-              setRefusal(undefined);
-            }}
-          >
-            <X className="icon" aria-hidden="true" />
-          </button>
-        </div>
-      )}
       <div className="flow-body" style={{ gridTemplateColumns: columns }}>
         {runOnView !== undefined ? null : libraryCollapsed ? (
           <div className="flow-strip flow-strip-library">
@@ -1085,6 +1157,17 @@ function FlowEditor({
           library={library}
           onOpenBlock={(id) => {
             pick(id);
+          }}
+          onRenameBlock={(id) => {
+            pick(id);
+            setRenaming(id);
+          }}
+          onReplaceBlock={(id, choice) => {
+            const replaced = replaceBlock(document, id, namedChoice(choice, tools));
+            if (replaced === undefined) return undefined;
+            change(() => replaced.document);
+            setSelected(new Set([replaced.id]));
+            return replaced.id;
           }}
           onAddAfter={(anchor, choice) => add(choice, undefined, anchor)}
           {...(focusRequest === undefined ? {} : { focusRequest })}
@@ -1196,13 +1279,22 @@ function FlowEditor({
               blocks={document.blocks}
               tools={tools}
               names={names}
-              references={referenceOptionsFor(document, selectedBlock.id, tools, nameOf)}
+              context={valueContext}
+              problems={checked.filter(({ blockId }) => blockId === selectedBlock.id)}
               onChange={(block, renamed) => {
                 change(
                   (current) => updateBlock(current, block, renamed),
                   renamed === undefined ? `block:${block.id}` : undefined,
                 );
               }}
+              onRename={() => {
+                setRenaming(selectedBlock.id);
+              }}
+              onDone={() => {
+                const id = selectedBlock.id;
+                setFocusRequest((current) => ({ id, count: (current?.count ?? 0) + 1 }));
+              }}
+              onGoTo={pick}
               onError={onError}
             />
           )}
@@ -1271,6 +1363,18 @@ function FlowEditor({
               {t('canvas.output')}
             </button>
           )}
+          {runOnView === undefined ? null : (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={lower === 'data'}
+              onClick={() => {
+                showLower('data');
+              }}
+            >
+              {t('canvas.data')}
+            </button>
+          )}
           <button
             type="button"
             className="icon-button panel-collapse"
@@ -1289,7 +1393,9 @@ function FlowEditor({
           </button>
         </div>
         <div className="flow-lower-body" role="tabpanel" hidden={lowerCollapsed}>
-          {lower === 'output' && runOnView !== undefined ? (
+          {lower === 'data' && runOnView !== undefined ? (
+            <DataView step={runOnView.steps.find(({ id }) => id === only)} />
+          ) : lower === 'output' && runOnView !== undefined ? (
             <BlockOutput
               block={selectedBlock}
               step={runOnView.steps.find(({ id }) => id === only)}
@@ -1306,7 +1412,16 @@ function FlowEditor({
             />
           ) : lower === 'problems' ? (
             named ? (
-              <Problems problems={checked} nameOf={nameOf} onPick={pick} />
+              <Problems
+                problems={checked}
+                refusal={refusal === undefined ? undefined : refusalText(refusal)}
+                nameOf={nameOf}
+                onPick={pick}
+              />
+            ) : refusal?.kind === 'unnamed' ? (
+              <p className="field-problem" role="alert" data-testid="run-refused">
+                {refusalText(refusal)}
+              </p>
             ) : (
               <p className="field-problem">{t('canvas.nameFirst')}</p>
             )
@@ -1323,10 +1438,41 @@ function FlowEditor({
                 setView({ kind: 'past', record });
                 showLower('output');
               }}
+              onOpenInHistory={(runId) => {
+                if (automation !== undefined) onOpenInHistory(automation.id, runId);
+              }}
             />
           )}
         </div>
       </div>
+      {asking === undefined ? null : (
+        <RunInputsDialog
+          name={document.name}
+          inputs={inputsOfFlow(document.blocks)}
+          onRun={(values) => {
+            const id = asking;
+            setAsking(undefined);
+            void start(id, values);
+          }}
+          onClose={() => {
+            setAsking(undefined);
+          }}
+          onError={onError}
+        />
+      )}
+      {renaming === undefined || blockOf(document, renaming) === undefined ? null : (
+        <RenameDialog
+          current={renaming}
+          problemOf={(next) => blockIdProblem(document, renaming, next)}
+          onRename={(next) => {
+            change((current) => renameBlock(current, renaming, next));
+            setSelected(new Set([next]));
+          }}
+          onClose={() => {
+            setRenaming(undefined);
+          }}
+        />
+      )}
     </section>
   );
 }

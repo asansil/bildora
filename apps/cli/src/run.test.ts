@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -115,6 +115,22 @@ describe.skipIf(process.platform !== 'win32')('bildora run', () => {
     await fake('good', ['exit', '0']);
     await fake('bad', ['exit', '7']);
     await fake('hang', ['hang']);
+    await registry.register(
+      toolManifestSchema.parse({
+        schemaVersion: 1,
+        id: 'writer',
+        name: 'Writer',
+        version: '1.0.0',
+        level: 1,
+        interpreter: 'node',
+        run: { program: FAKE_TOOL, args: ['write'] },
+        parameters: [
+          { name: 'file', type: 'path', label: 'File', required: true },
+          { name: 'text', type: 'string', label: 'Text' },
+        ],
+      }),
+      { scope: workspaceScope(workspaceId) },
+    );
   });
 
   afterEach(async () => {
@@ -209,6 +225,61 @@ describe.skipIf(process.platform !== 'win32')('bildora run', () => {
     expect(lines).toContain('[1/3] one: failed: The tool exited with code 7');
     expect(lines.some((line) => line.startsWith('[2/3] notify: completed'))).toBe(true);
     expect(lines).toContain('[3/3] skipped-one: skipped');
+  });
+
+  it('takes inputs with --input, which blocks read through links', async () => {
+    const folder = join(dataDir, 'workspaces', workspaceId, 'automations');
+    await mkdir(folder, { recursive: true });
+    await writeFile(
+      join(folder, 'flow.yaml'),
+      JSON.stringify({
+        schemaVersion: 2,
+        id: 'flow',
+        name: 'Flow',
+        blocks: [
+          {
+            id: 'start',
+            type: 'start',
+            inputs: [
+              { name: 'target', type: 'path', required: true },
+              { name: 'times', type: 'integer', default: 2 },
+            ],
+          },
+          {
+            id: 'write',
+            type: 'run',
+            tool: 'writer',
+            values: {
+              file: { expression: 'inputs.target' },
+              text: { expression: 'name(write.file) + " x" + inputs.times * 10' },
+            },
+          },
+        ],
+        connections: [{ from: 'start', to: 'write' }],
+      }),
+    );
+    const target = join(dataDir, 'out.txt');
+    const result = await runCli(['run', 'flow', '--input', `target=${target}`], '1', io());
+    expect(result.exitCode).toBe(EXIT_CODES.completed);
+    expect(await readFile(target, 'utf8')).toBe('out.txt x20');
+
+    const wrong = await runCli(
+      ['run', 'flow', '-i', 'times=two', '-i', 'nope=1', '-i', 'bare'],
+      '1',
+      io(),
+    );
+    expect(wrong).toEqual({
+      exitCode: EXIT_CODES.usage,
+      stderr: [
+        '"Flow" cannot take these inputs:',
+        '  Input "times" must be a number',
+        '  This automation has no input "nope"',
+        '  "bare" should read <name>=<value>',
+      ].join('\n'),
+    });
+    const missing = await runCli(['run', 'flow'], '1', io());
+    expect(missing.exitCode).toBe(EXIT_CODES.usage);
+    expect(missing.stderr).toContain('Input "target" needs a value');
   });
 
   it('exits 4 at once at a manual step with no terminal', async () => {

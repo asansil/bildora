@@ -1,7 +1,7 @@
 import { memo, useContext } from 'react';
 import { Handle, NodeResizer, Position } from '@xyflow/react';
 import type { Node, NodeProps } from '@xyflow/react';
-import { TriangleAlert } from 'lucide-react';
+import { Link2, TriangleAlert } from 'lucide-react';
 import { ERROR_OUTPUT, NOTE_TEXT_MAX } from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
 import type { StepStateView, ToolView } from '../../../shared/ipc-contract.js';
@@ -22,11 +22,15 @@ export interface BlockNodeData extends Record<string, unknown> {
   readonly outputs: readonly OutputView[];
   /** The element's id, which the canvas names as its focused block. */
   readonly domId: string;
+  /** The block's id in the file, as links name it. */
+  readonly blockId: string;
   /** What a screen reader says: the block, then where its outputs lead. */
   readonly description: string;
   /** A Run tool block's tool, whose program icon the block shows. */
   readonly tool?: ToolView;
   readonly problems: number;
+  /** How many other blocks link to this one's values. */
+  readonly usedBy: number;
   /** Set in the run view. */
   readonly state?: StepStateView;
   /** A line under the name in the run view, such as a progress message or a failure. */
@@ -54,6 +58,30 @@ function Outputs({ outputs, labelled }: { outputs: readonly OutputView[]; labell
         </Handle>
       ))}
     </>
+  );
+}
+
+/** How many other blocks follow this one's values. Pressing it finds them on the canvas. */
+function UsedBy({ id, count }: { readonly id: string; readonly count: number }) {
+  const actions = useContext(CanvasActionsContext);
+  const label = count === 1 ? t('canvas.usedByOne') : t('canvas.usedBy', { count });
+  return (
+    <button
+      type="button"
+      className="block-used-by nodrag"
+      title={label}
+      aria-label={label}
+      data-testid="block-used-by"
+      tabIndex={-1}
+      disabled={actions === undefined}
+      onClick={(event) => {
+        event.stopPropagation();
+        actions?.showUses(id);
+      }}
+    >
+      <Link2 className="icon" aria-hidden="true" />
+      <span>{count}</span>
+    </button>
   );
 }
 
@@ -101,6 +129,7 @@ export const BlockNodeView = memo(function BlockNodeView({ data, selected }: Nod
           <span className="block-kind truncate">{data.detail ?? data.kindLabel}</span>
         </span>
       )}
+      {data.usedBy > 0 ? <UsedBy id={data.blockId} count={data.usedBy} /> : null}
       {data.problems > 0 ? (
         <span className="block-problem" title={t('canvas.blockProblems', { count: data.problems })}>
           <TriangleAlert className="icon" aria-hidden="true" />

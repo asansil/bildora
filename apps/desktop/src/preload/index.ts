@@ -58,7 +58,8 @@ const api: ShellApi = {
   saveAutomation: (draft) => invoke(CHANNELS.automationsSave, draft),
   checkAutomation: (draft) => invoke(CHANNELS.automationsCheck, draft),
   removeAutomation: (id) => invoke(CHANNELS.automationsRemove, { id }),
-  startAutomation: (id) => invoke(CHANNELS.automationsStart, { id }),
+  startAutomation: (id, inputs) =>
+    invoke(CHANNELS.automationsStart, { id, ...(inputs === undefined ? {} : { inputs }) }),
   cancelAutomation: (runId) => invoke(CHANNELS.automationsCancel, { runId }),
   confirmAutomation: (runId, stepId) =>
     invoke(CHANNELS.automationsConfirm, { runId, ...(stepId === undefined ? {} : { stepId }) }),

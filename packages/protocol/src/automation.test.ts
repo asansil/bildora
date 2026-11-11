@@ -197,6 +197,71 @@ describe('automationSchema', () => {
   });
 });
 
+describe('values worked out from others', () => {
+  it('keeps expressions apart from plain values, in any parameter', () => {
+    const values = {
+      file: { expression: 'convert.file' },
+      width: { expression: 'convert.width * 2' },
+      fast: true,
+      title: '= not an expression, just text',
+    };
+    expect(issues(chain({ ...run('a'), values }))).toEqual([]);
+    expect(issues(chain({ ...run('a'), values: { file: { expression: '  ' } } }))).not.toEqual([]);
+    expect(issues(chain({ ...run('a'), values: { file: { expression: 'a', x: 1 } } }))).not.toEqual(
+      [],
+    );
+  });
+
+  it('keeps names that expressions use for other values from naming a block', () => {
+    for (const id of ['inputs', 'steps', 'run', 'paths', 'loop']) {
+      expect(issues(chain(run(id)))).toEqual([
+        `"${id}" cannot name a block, because expressions use it for other values`,
+      ]);
+    }
+  });
+
+  it('accepts inputs on Start, with unique names and a default among the choices', () => {
+    const inputs = [
+      { name: 'file', type: 'path', label: 'File', required: true },
+      { name: 'size', type: 'integer', default: 100 },
+      { name: 'mode', type: 'choice', choices: ['a', 'b'], default: 'b' },
+    ];
+    expect(issues({ ...base, blocks: [{ ...start, inputs }], connections: [] })).toEqual([]);
+    const twice = [inputs[0], { name: 'file', type: 'string' }];
+    expect(issues({ ...base, blocks: [{ ...start, inputs: twice }], connections: [] })).toEqual([
+      'Input "file" is declared more than once',
+    ]);
+    const choice = [{ name: 'mode', type: 'choice', choices: ['a'], default: 'z' }];
+    expect(issues({ ...base, blocks: [{ ...start, inputs: choice }], connections: [] })).toEqual([
+      'The default of input "mode" is not one of its choices',
+    ]);
+    const secret = [{ name: 'key', type: 'string', secret: true }];
+    expect(
+      issues({ ...base, blocks: [{ ...start, inputs: secret }], connections: [] }),
+    ).not.toEqual([]);
+  });
+
+  it('accepts rules on values, with a value only when the operator compares', () => {
+    const rule = (changes: object) =>
+      chain(run('a'), {
+        id: 'check',
+        type: 'if',
+        condition: {
+          match: 'all',
+          rules: [{ field: 'value', read: { expression: 'inputs.size' }, ...changes }],
+        },
+      });
+    expect(issues(rule({ operator: 'greater-than', value: 100 }))).toEqual([]);
+    expect(issues(rule({ operator: 'equals', value: { expression: 'a.size' } }))).toEqual([]);
+    expect(issues(rule({ operator: 'exists' }))).toEqual([]);
+    expect(issues(rule({ operator: 'equals' }))).toEqual(['A rule compares a value with nothing']);
+    expect(issues(rule({ operator: 'is-true', value: true }))).toEqual([
+      'A rule that compares with nothing is given a value',
+    ]);
+    expect(issues(rule({ operator: 'between', value: 1 }))).not.toEqual([]);
+  });
+});
+
 describe('Parallel and Join', () => {
   const pair = (extra: object[], connections: object[], join: object = {}) => ({
     ...base,

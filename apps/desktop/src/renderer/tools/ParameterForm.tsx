@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { Fragment, useId } from 'react';
 import type { ReactNode } from 'react';
 import { t } from '../../shared/i18n/translate.js';
 import type { MessageKey } from '../../shared/i18n/translate.js';
@@ -133,6 +133,10 @@ interface ParameterFormProps {
   readonly onBrowse: (name: string) => void;
   readonly onForget: (name: string) => void;
   readonly pathControl?: (name: string) => ReactNode;
+  /** A control to show instead of a field, such as one whose value is worked out from others. */
+  readonly replace?: (parameter: ParameterView) => ReactNode;
+  /** Wraps each field, such as to give it a menu of its own. */
+  readonly decorate?: (parameter: ParameterView, field: ReactNode) => ReactNode;
 }
 
 /** The form a manifest describes. Nothing here knows about any particular tool. */
@@ -146,6 +150,8 @@ export function ParameterForm({
   onBrowse,
   onForget,
   pathControl,
+  replace,
+  decorate,
 }: ParameterFormProps) {
   if (parameters.length === 0) {
     return <p className="muted">{t('runner.noParameters')}</p>;
@@ -154,9 +160,8 @@ export function ParameterForm({
     <fieldset className="parameters" disabled={disabled} data-testid="parameter-form">
       {parameters.map((parameter) => {
         const { name } = parameter;
-        return (
+        const field = replace?.(parameter) ?? (
           <Field
-            key={name}
             parameter={parameter}
             value={values[name]}
             problem={problems[name]}
@@ -173,6 +178,7 @@ export function ParameterForm({
             pathControl={pathControl?.(name)}
           />
         );
+        return <Fragment key={name}>{decorate?.(parameter, field) ?? field}</Fragment>;
       })}
     </fieldset>
   );

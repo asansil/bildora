@@ -854,6 +854,185 @@ describe('startAutomationRun', () => {
     });
   });
 
+  describe('values worked out from others', () => {
+    const flow = (blocks: object[], start: object = {}): Automation => {
+      const ids = ['start', ...blocks.map((block) => (block as { id: string }).id)];
+      return automationSchema.parse({
+        schemaVersion: 2,
+        id: 'flow',
+        name: 'Flow',
+        blocks: [{ id: 'start', type: 'start', ...start }, ...blocks],
+        connections: ids.slice(1).map((to, index) => ({ from: ids[index], to })),
+      });
+    };
+    const block = (id: string, values: object = {}) => ({
+      id,
+      type: 'run',
+      tool: 'sample',
+      values,
+    });
+    const link = (expression: string) => ({ expression });
+    const resultFile = () => join(dataDir, 'result.json');
+    const withJson = (id: string) =>
+      tool(id, {
+        outputs: [
+          { name: 'csv', param: 'out' },
+          {
+            name: 'result',
+            json: resultFile(),
+            fields: [
+              { name: 'count', type: 'integer' },
+              { name: 'files', type: 'list' },
+              { name: 'token', type: 'string', secret: true },
+            ],
+          },
+        ],
+      });
+
+    it('follows links, inputs and expressions into the values a tool receives', async () => {
+      script = [COMPLETED, COMPLETED];
+      const automation = flow(
+        [
+          block('a', { out: 'C:\\pics\\photo.png' }),
+          block('b', {
+            in: link('a.out'),
+            note: link('stem(a.out) + "_" + inputs.size + "_" + b.out'),
+            out: '{{run.folder}}/x.png',
+          }),
+        ],
+        { inputs: [{ name: 'size', type: 'string', default: 'big' }] },
+      );
+      const running = start(automation, { inputs: { size: 'small' } });
+      await running.result;
+      const runFolder = String(started[1]?.values['out']).replace(/[\\/]x\.png$/, '');
+      expect(started[1]?.values).toEqual({
+        in: 'C:\\pics\\photo.png',
+        note: `photo_small_${join(runFolder, 'x.png')}`,
+        out: join(runFolder, 'x.png'),
+      });
+      await access(runFolder);
+      expect(stepOf(running.view().steps, 'b')?.values).toContainEqual({
+        name: 'in',
+        label: 'in',
+        value: 'C:\\pics\\photo.png',
+        from: 'a.out',
+      });
+    });
+
+    it('uses input defaults, and refuses inputs that do not fit before anything runs', async () => {
+      script = [COMPLETED];
+      const automation = flow([block('a', { note: link('inputs.size') })], {
+        inputs: [
+          { name: 'size', type: 'string', default: 'big' },
+          { name: 'count', type: 'integer' },
+        ],
+      });
+      await start(automation).result;
+      expect(started[0]?.values).toEqual({ note: 'big' });
+      expect(() => start(automation, { inputs: { nope: 'x', count: 1.5 } })).toThrow(
+        'This automation has no input "nope"\nInput "count" must be a whole number',
+      );
+      const required = flow([block('a')], {
+        inputs: [{ name: 'file', type: 'path', required: true }],
+      });
+      expect(() => start(required)).toThrow('Input "file" needs a value');
+      expect(started).toHaveLength(1);
+    });
+
+    it('fails a block whose input has no value, under its own policy', async () => {
+      const automation = flow([block('a', { note: link('inputs.size') })], {
+        inputs: [{ name: 'size', type: 'string' }],
+      });
+      const result = await start(automation).result;
+      expect(result.failure).toMatchObject({ stepId: 'a', kind: 'value' });
+      expect(started).toEqual([]);
+    });
+
+    it('reads a JSON output, decides on its fields, and keeps secret fields out of the record', async () => {
+      script = [COMPLETED, COMPLETED];
+      await writeFile(
+        resultFile(),
+        JSON.stringify({ count: 5, files: ['a', 'b'], token: 'hunter2', extra: 1 }),
+      );
+      const automation = automationSchema.parse({
+        schemaVersion: 2,
+        id: 'flow',
+        name: 'Flow',
+        blocks: [
+          { id: 'start', type: 'start' },
+          block('a'),
+          {
+            id: 'check',
+            type: 'if',
+            condition: {
+              match: 'all',
+              rules: [
+                {
+                  field: 'value',
+                  read: link('steps.a.outputs.result.count'),
+                  operator: 'greater-than',
+                  value: 3,
+                },
+                {
+                  field: 'value',
+                  read: link('steps.a.outputs.result.files'),
+                  operator: 'contains',
+                  value: 'b',
+                },
+                { field: 'value', read: link('steps.a.outputs.result'), operator: 'exists' },
+              ],
+            },
+          },
+          block('yes', { note: link('"rows: " + steps.a.outputs.result.count') }),
+          block('no'),
+        ],
+        connections: [
+          { from: 'start', to: 'a' },
+          { from: 'a', to: 'check' },
+          { from: 'check', output: 'true', to: 'yes' },
+          { from: 'check', output: 'false', to: 'no' },
+        ],
+      });
+      const running = start(automation, { findTool: (id) => Promise.resolve(withJson(id)) });
+      const result = await running.result;
+      expect(result.status).toBe('completed');
+      expect(started.map(({ values }) => values)).toEqual([{}, { note: 'rows: 5' }]);
+      const outputs = stepOf(running.view().steps, 'a')?.outputs;
+      expect(outputs).toEqual([
+        { name: 'result', value: resultFile() },
+        { name: 'result.count', value: 5 },
+        { name: 'result.files', value: ['a', 'b'] },
+        { name: 'result.token', secret: true },
+      ]);
+      const record = history.getAutomationRun('work', result.runId);
+      expect(JSON.stringify(record)).not.toContain('hunter2');
+      expect(stepOf(record?.steps, 'a')?.outputs).toEqual(outputs);
+    });
+
+    it('fails the block when its JSON output is missing or does not fit', async () => {
+      const automation = flow([block('a')]);
+      script = [COMPLETED];
+      const missing = await start(automation, { findTool: (id) => Promise.resolve(withJson(id)) })
+        .result;
+      expect(missing.failure).toMatchObject({ stepId: 'a', kind: 'output' });
+      expect(missing.failure?.message).toMatch(/did not write output "result"/);
+
+      script = [COMPLETED];
+      await writeFile(resultFile(), JSON.stringify({ count: 'many', files: [], token: '' }));
+      const wrong = await start(automation, { findTool: (id) => Promise.resolve(withJson(id)) })
+        .result;
+      expect(wrong.failure?.message).toBe(
+        'Field "count" of output "result" must be a whole number',
+      );
+
+      script = [COMPLETED];
+      await writeFile(resultFile(), 'not json');
+      const broken = await start(automation, { findTool: (id) => Promise.resolve(withJson(id)) })
+        .result;
+      expect(broken.failure?.message).toBe('Output "result" is not valid JSON');
+    });
+  });
+
   it('runs even if its record cannot be written', async () => {
     script = [COMPLETED];
     history.close();

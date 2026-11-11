@@ -129,7 +129,11 @@ test('a file with no positions opens laid out, and saving keeps the positions', 
   await openAutomation(window, 'Branched');
 
   await expect(window.getByTestId('canvas-block')).toHaveCount(5);
-  await expect(block(window, 'check')).toContainText('If the exit code of Extract is 0');
+  // An If is labelled by its name; its rule is read back in what a screen reader hears.
+  await expect(block(window, 'check').getByTestId('canvas-block')).toHaveAttribute(
+    'aria-label',
+    /If the exit code of extract is 0/,
+  );
   const start = await block(window, 'start').boundingBox();
   const extract = await block(window, 'extract').boundingBox();
   expect(extract?.x).toBeGreaterThan((start?.x ?? 0) + (start?.width ?? 0));
@@ -161,27 +165,27 @@ test('a decision is built with the mouse, and the run shows the path it took', a
 
   await library.getByRole('button', { name: 'Extract' }).click();
   await library.getByRole('button', { name: 'If', exact: true }).click();
-  await expect(settings).toHaveAttribute('data-block-id', 'decide');
+  await expect(settings).toHaveAttribute('data-block-id', 'If1');
   await settings.getByLabel('Read').selectOption({ label: 'Its exit code' });
   await settings.getByLabel('With').fill('0');
   await expect(settings.getByTestId('condition-sentence')).toHaveText(
-    'If the exit code of Extract is 0',
+    'If the exit code of Extract1 is 0',
   );
   // The If's first free output is True; with True taken, the next block goes on False.
   await library.getByRole('button', { name: 'Report' }).click();
-  await block(window, 'decide').click();
+  await block(window, 'If1').click();
   await library.getByRole('button', { name: 'Report' }).click();
   await expect(window.locator('.react-flow__edge')).toHaveCount(4);
 
   // While a connection is drawn, Start is never a target, and blocks ahead of it are.
-  const handle = block(window, 'report-2').locator('[data-output="next"]');
+  const handle = block(window, 'Report2').locator('[data-output="next"]');
   const box = await handle.boundingBox();
   if (box === null) throw new Error('No handle');
   await window.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await window.mouse.down();
   await window.mouse.move(box.x + 60, box.y + 60, { steps: 4 });
   await expect(block(window, 'start')).not.toHaveClass(/is-target/);
-  await expect(block(window, 'extract')).not.toHaveClass(/is-target/);
+  await expect(block(window, 'Extract1')).not.toHaveClass(/is-target/);
   await shot(window, 'connecting');
   await window.mouse.up();
 
@@ -190,15 +194,15 @@ test('a decision is built with the mouse, and the run shows the path it took', a
   await shot(window, 'decision');
   await window.getByRole('button', { name: 'Run', exact: true }).click();
   const state = (id: string) => block(window, id).getByTestId('canvas-block');
-  await expect(state('report')).toHaveAttribute('data-state', 'completed', { timeout: 30_000 });
-  await expect(state('report-2')).toHaveAttribute('data-state', 'skipped');
+  await expect(state('Report1')).toHaveAttribute('data-state', 'completed', { timeout: 30_000 });
+  await expect(state('Report2')).toHaveAttribute('data-state', 'skipped');
   await expect(window.locator('.react-flow__edge.edge--taken')).toHaveCount(3);
   await shot(window, 'run-view');
 
   await window.getByRole('button', { name: 'Back to editing' }).click();
   await window.getByRole('tab', { name: 'Past runs' }).click();
   await window.getByTestId('automation-runs').getByRole('button').first().click();
-  await expect(state('report-2')).toHaveAttribute('data-state', 'skipped');
+  await expect(state('Report2')).toHaveAttribute('data-state', 'skipped');
   await expect(window.getByRole('button', { name: 'Back to editing' })).toBeVisible();
 });
 
@@ -286,36 +290,36 @@ test('a flow is built from the keyboard alone, with one Tab stop for the canvas'
   await window.keyboard.press('ArrowRight');
   await expect(canvas).toHaveAttribute('data-focused', 'start');
   await addWithKeys('Extract');
-  await expect(canvas).toHaveAttribute('data-focused', 'extract');
+  await expect(canvas).toHaveAttribute('data-focused', 'Extract1');
   await expect(announcer).toHaveText('Added after Start');
   await addWithKeys('If');
   await addWithKeys('Report');
   await window.keyboard.press('ArrowLeft');
-  await expect(canvas).toHaveAttribute('data-focused', 'decide');
+  await expect(canvas).toHaveAttribute('data-focused', 'If1');
   await addWithKeys('Wait for time');
-  await expect(canvas).toHaveAttribute('data-focused', 'pause');
+  await expect(canvas).toHaveAttribute('data-focused', 'Wait1');
 
   // C connects the wait's Next output to Report, chosen from the blocks that can follow.
   await window.keyboard.press('c');
   await window.keyboard.type('Report');
   await window.keyboard.press('Tab');
   await window.keyboard.press('Enter');
-  await expect(announcer).toHaveText('Connected Wait 60 seconds, Next, to Report');
+  await expect(announcer).toHaveText('Connected Wait1, Next, to Report1');
   await expect(window.locator('.react-flow__edge')).toHaveCount(5);
   const focusedBlock = window.locator(
     `[id="${(await canvas.getAttribute('aria-activedescendant')) ?? ''}"]`,
   );
   await expect(focusedBlock).toHaveAttribute(
     'aria-label',
-    /Wait 60 seconds, Wait for time\. Next goes to Report/,
+    /Wait1, Wait for time\. Next goes to Report1/,
   );
 
   // Delete keeps focus on the canvas, on a neighbouring block.
   await window.keyboard.press('Delete');
   await expect(window.getByTestId('canvas-block')).toHaveCount(4);
   await expect(canvas).toBeFocused();
-  await expect(canvas).not.toHaveAttribute('data-focused', 'pause');
-  await expect(announcer).toHaveText('Deleted Wait 60 seconds');
+  await expect(canvas).not.toHaveAttribute('data-focused', 'Wait1');
+  await expect(announcer).toHaveText('Deleted Wait1');
 
   // Tab leaves the canvas at once: no block or connection is a stop of its own.
   await window.keyboard.press('Tab');
@@ -326,10 +330,10 @@ test('a flow is built from the keyboard alone, with one Tab stop for the canvas'
   // The blocks list reads the same structure, and choosing a block focuses it on the canvas.
   await window.getByRole('tab', { name: 'Blocks list' }).click();
   const outline = window.getByTestId('outline');
-  await expect(outline).toContainText('True goes to Report');
+  await expect(outline).toContainText('True goes to Report1');
   await outline.getByRole('button', { name: /^Extract/ }).click();
   await expect(canvas).toBeFocused();
-  await expect(canvas).toHaveAttribute('data-focused', 'extract');
+  await expect(canvas).toHaveAttribute('data-focused', 'Extract1');
 });
 
 /** An exit code rule for a Switch case, in the file's own shape. */
@@ -413,10 +417,10 @@ test('a Parallel comes with its Join, and branches are led to it from the keyboa
 
   await library.getByRole('button', { name: 'Parallel', exact: true }).click();
   await expect(window.getByTestId('canvas-block')).toHaveCount(3);
-  await expect(block(window, 'join')).toBeVisible();
+  await expect(block(window, 'Join1')).toBeVisible();
   // With the Parallel selected, each tool added becomes a branch of its own.
   await library.getByRole('button', { name: 'Extract' }).click();
-  await block(window, 'parallel').click();
+  await block(window, 'Parallel1').click();
   await library.getByRole('button', { name: 'Report' }).click();
   await expect(window.locator('.react-flow__edge')).toHaveCount(3);
 
@@ -424,8 +428,8 @@ test('a Parallel comes with its Join, and branches are led to it from the keyboa
   const outline = window.getByTestId('outline');
   await window.getByRole('tab', { name: 'Blocks list' }).click();
   for (const [id, name] of [
-    ['extract', 'Extract'],
-    ['report', 'Report'],
+    ['Extract1', 'Extract'],
+    ['Report1', 'Report'],
   ] as const) {
     await outline.getByRole('button', { name: new RegExp(`^${name}`) }).click();
     await expect(canvas).toBeFocused();
@@ -476,10 +480,10 @@ test('Enter picks a block up, arrow keys move it, and the move undoes as one', a
   }
   const before = await offset();
   await window.keyboard.press('Enter');
-  await expect(announcer).toHaveText('Extract selected. Arrow keys move it, Escape stops.');
+  await expect(announcer).toHaveText('extract selected. Arrow keys move it, Escape stops.');
   for (let press = 0; press < 3; press += 1) await window.keyboard.press('ArrowDown');
   await window.keyboard.press('Escape');
-  await expect(announcer).toHaveText('Extract stays here.');
+  await expect(announcer).toHaveText('extract stays here.');
   // Each press adds its step, however fast they come.
   await expect.poll(async () => (await offset()).y - before.y).toBeGreaterThan(40);
   const moved = await offset();
@@ -522,7 +526,7 @@ test('a flow of 200 blocks opens laid out, pans with the middle button, and show
   await window.getByRole('tab', { name: 'Blocks list' }).click();
   await window
     .getByTestId('outline')
-    .getByRole('button', { name: /^Wait 199 seconds/ })
+    .getByRole('button', { name: /^w199 · / })
     .click();
   await expect(block(window, 'w199')).toBeInViewport();
   await shot(window, 'long');
@@ -554,17 +558,17 @@ test('a selected connection is deleted alone, by Delete or a double-click', asyn
 
   // A block clicked first keeps keyboard focus, which Delete must not fall back to.
   await block(window, 'extract').click();
-  await clickConnection(connection(window, 'Start', 'Next', 'Extract'));
-  await expect(connection(window, 'Start', 'Next', 'Extract')).toHaveClass(/selected/);
+  await clickConnection(connection(window, 'Start', 'Next', 'extract'));
+  await expect(connection(window, 'Start', 'Next', 'extract')).toHaveClass(/selected/);
   await shot(window, 'edge-selected');
   await window.keyboard.press('Delete');
   await expect(edges).toHaveCount(4);
   await expect(window.getByTestId('canvas-block')).toHaveCount(5);
 
-  await clickConnection(connection(window, 'Extract', 'Next', 'If the exit code of Extract is 0'));
+  await clickConnection(connection(window, 'extract', 'Next', 'check'));
   await window.keyboard.press('Delete');
   await expect(edges).toHaveCount(3);
-  await clickConnection(connection(window, 'Extract', 'Error', 'Report'), 'dblclick');
+  await clickConnection(connection(window, 'extract', 'Error', 'notify'), 'dblclick');
   await expect(edges).toHaveCount(2);
   await expect(window.getByTestId('canvas-block')).toHaveCount(5);
 
@@ -615,6 +619,7 @@ test('a right-click on the canvas opens its menu, which adds where it was asked'
   await expect(menu.getByRole('menuitem')).toHaveText([
     /^Add a block after this one…/,
     /^Connect an output…/,
+    /^Rename…/,
   ]);
   await window.keyboard.press('Escape');
   await expect(menu).toBeHidden();
@@ -637,7 +642,7 @@ test('a right-click on the canvas opens its menu, which adds where it was asked'
   await expect(canvasMenu).toBeHidden();
   await expect(window.getByTestId('canvas-block')).toHaveCount(2);
   // The new block's corner is where the menu was asked for.
-  const added = await block(window, 'report').boundingBox();
+  const added = await block(window, 'Report1').boundingBox();
   expect(Math.abs((added?.x ?? 0) - at.x)).toBeLessThan(4);
   expect(Math.abs((added?.y ?? 0) - at.y)).toBeLessThan(4);
   await expect(window.locator('.react-flow__edge')).toHaveCount(0);
@@ -652,7 +657,7 @@ test('a right-click on the canvas opens its menu, which adds where it was asked'
   await expect(window.getByTestId('canvas-block')).toHaveCount(3);
   await shot(window, 'canvas-menu');
 
-  await block(window, 'report').click({ button: 'right' });
+  await block(window, 'Report1').click({ button: 'right' });
   await window.getByRole('menuitem', { name: /^Delete/ }).click();
   await expect(window.getByTestId('canvas-block')).toHaveCount(2);
 });
@@ -675,7 +680,7 @@ test('a tool dragged from the side panel becomes a block, and the library finds 
   await row.first().dragTo(window.locator('.react-flow__pane'), {
     targetPosition: { x: 400, y: 300 },
   });
-  await expect(block(window, 'extract')).toBeVisible();
+  await expect(block(window, 'Extract1')).toBeVisible();
 });
 
 test('a double-click on a block in a run goes back to editing it', async () => {
@@ -881,7 +886,7 @@ test('a block goes into a connection only with Shift, and that undoes as one', a
   await openAutomation(window, 'Spaced');
   await expect(block(window, 'report')).toBeVisible();
   const splice = window.locator('.react-flow__edge.edge--pending');
-  const middle = await connectionMiddle(window, 'Start', 'Next', 'Extract');
+  const middle = await connectionMiddle(window, 'Start', 'Next', 'extract');
 
   // Without Shift, a block let go over a connection only moves, so none goes in by accident.
   await dragTo(window, block(window, 'report'), middle);
@@ -923,23 +928,23 @@ test('a block dropped with Shift from the library or the side panel goes into a 
   const wait = library.getByRole('button', { name: 'Wait for time', exact: true });
 
   // Without Shift, the new block is only placed where it was dropped.
-  await wait.dragTo(pane, { targetPosition: await at('Start', 'Next', 'Extract') });
-  await expect(block(window, 'pause')).toBeVisible();
+  await wait.dragTo(pane, { targetPosition: await at('Start', 'Next', 'extract') });
+  await expect(block(window, 'Wait1')).toBeVisible();
   expect(await connectionsShown(window)).toEqual(['start next extract']);
   await window.getByRole('button', { name: 'Undo', exact: true }).click();
-  await expect(block(window, 'pause')).toHaveCount(0);
+  await expect(block(window, 'Wait1')).toHaveCount(0);
 
   const middle = (from: string, output: string, to: string) =>
     connectionMiddle(window, from, output, to);
-  await dropWithShift(window, { kind: 'wait-for-time' }, await middle('Start', 'Next', 'Extract'));
+  await dropWithShift(window, { kind: 'wait-for-time' }, await middle('Start', 'Next', 'extract'));
   await expect
     .poll(() => connectionsShown(window))
-    .toEqual(['pause next extract', 'start next pause']);
+    .toEqual(['Wait1 next extract', 'start next Wait1']);
 
   // An If goes on through True or False, so it is only placed where it was dropped.
   const before = await connectionsShown(window);
-  await dropWithShift(window, { kind: 'if' }, await middle('Start', 'Next', 'Wait 60 seconds'));
-  await expect(block(window, 'decide')).toBeVisible();
+  await dropWithShift(window, { kind: 'if' }, await middle('Start', 'Next', 'Wait1'));
+  await expect(block(window, 'If1')).toBeVisible();
   expect(await connectionsShown(window)).toEqual(before);
   await window.getByRole('button', { name: 'Undo', exact: true }).click();
 
@@ -947,11 +952,11 @@ test('a block dropped with Shift from the library or the side panel goes into a 
   await dropWithShift(
     window,
     { kind: 'run', tool: 'acme.report' },
-    await middle('Wait 60 seconds', 'Next', 'Extract'),
+    await middle('Wait1', 'Next', 'extract'),
   );
   await expect
     .poll(() => connectionsShown(window))
-    .toEqual(['pause next report-2', 'report-2 next extract', 'start next pause']);
+    .toEqual(['Report1 next extract', 'Wait1 next Report1', 'start next Wait1']);
 });
 
 const CHAIN = `name: Chain
@@ -1002,7 +1007,7 @@ test('Shift takes a block out of the flow, joining its neighbours, or moves it e
   await window.getByRole('button', { name: 'Undo', exact: true }).click();
   await expect.poll(() => connectionsShown(window)).toEqual(all);
 
-  const middle = await connectionMiddle(window, 'Report', 'Next', 'Report');
+  const middle = await connectionMiddle(window, 'report', 'Next', 'send');
   await window.keyboard.down('Shift');
   await dragTo(window, block(window, 'extract'), middle);
   // Over another connection, the block is drawn in it, with the connection it replaces faint.
@@ -1056,7 +1061,7 @@ test('a left drag on the canvas selects blocks, and the middle button pans', asy
   const { window } = await launchShell();
   await openAutomation(window, 'Chain');
   await expect(block(window, 'send')).toBeVisible();
-  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+  await connectionMiddle(window, 'Start', 'Next', 'extract');
   const viewport = window.locator('.react-flow__viewport');
   const transform = (await viewport.getAttribute('style')) ?? '';
 
@@ -1089,10 +1094,10 @@ test('either end of a connection moves to another block, and let go on nothing i
     connection(window, from, 'Next', to).locator(`.react-flow__edgeupdater-${side}`);
 
   // The input end is taken straight from the block it points to, and let go on another one.
-  await connectionMiddle(window, 'Extract', 'Next', 'Report');
+  await connectionMiddle(window, 'extract', 'Next', 'report');
   await pull(
     window,
-    await middleOf(end('Extract', 'Report', 'target')),
+    await middleOf(end('extract', 'report', 'target')),
     await middleOf(block(window, 'send')),
   );
   await expect
@@ -1102,7 +1107,7 @@ test('either end of a connection moves to another block, and let go on nothing i
   // Let go on the empty canvas, the connection is removed, and that undoes.
   const box = await block(window, 'start').boundingBox();
   if (box === null) throw new Error('Start is not drawn');
-  await pull(window, await middleOf(end('Start', 'Extract', 'target')), {
+  await pull(window, await middleOf(end('Start', 'extract', 'target')), {
     x: box.x + box.width / 2,
     y: box.y + 160,
   });
@@ -1115,9 +1120,9 @@ test('either end of a connection moves to another block, and let go on nothing i
     .toEqual(['extract next send', 'report next send', 'start next extract']);
 
   // A chosen connection's output end moves to another block's output, which then leads there.
-  await clickConnection(connection(window, 'Report', 'Next', 'Report'));
+  await clickConnection(connection(window, 'report', 'Next', 'send'));
   const next = block(window, 'start').locator('[data-output="next"]');
-  await pull(window, await middleOf(end('Report', 'Report', 'source')), await middleOf(next));
+  await pull(window, await middleOf(end('report', 'send', 'source')), await middleOf(next));
   await expect
     .poll(() => connectionsShown(window))
     .toEqual(['extract next send', 'start next send']);
@@ -1143,7 +1148,7 @@ test('a connection let go on a block joins it, and Shift+Space adds a block at t
   const { window } = await launchShell();
   await openAutomation(window, 'Near');
   await expect(block(window, 'report')).toBeVisible();
-  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+  await connectionMiddle(window, 'Start', 'Next', 'extract');
 
   const output = block(window, 'report').locator('[data-output="next"]');
   await pull(window, await middleOf(output), await middleOf(block(window, 'extract')));
@@ -1160,8 +1165,8 @@ test('a connection let go on a block joins it, and Shift+Space adds a block at t
   await expect(dialog).toBeVisible();
   await window.keyboard.type('Rep');
   await dialog.getByRole('button', { name: 'Report' }).click();
-  await expect(block(window, 'report-2')).toBeVisible();
-  const added = await block(window, 'report-2').boundingBox();
+  await expect(block(window, 'Report1')).toBeVisible();
+  const added = await block(window, 'Report1').boundingBox();
   if (added === null) throw new Error('The new block is not drawn');
   expect(Math.abs(added.x - at.x)).toBeLessThan(40);
   expect(Math.abs(added.y - at.y)).toBeLessThan(40);
@@ -1187,7 +1192,7 @@ positions:
 async function boxReportAndSend(window: Page): Promise<void> {
   await openAutomation(window, 'Pair');
   await expect(block(window, 'send')).toBeVisible();
-  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+  await connectionMiddle(window, 'Start', 'Next', 'extract');
   const report = await middleOf(block(window, 'report'));
   const send = await middleOf(block(window, 'send'));
   await pull(window, { x: report.x - 140, y: report.y - 60 }, send);
@@ -1206,25 +1211,25 @@ test('copied blocks paste at the pointer with their connection, selected, and un
   const at = { x: start.x - 60, y: start.y + 140 };
   await window.mouse.move(at.x, at.y);
   await window.keyboard.press('Control+v');
-  await expect(block(window, 'report-2')).toBeVisible();
-  await expect(block(window, 'send-2')).toBeVisible();
+  await expect(block(window, 'report1')).toBeVisible();
+  await expect(block(window, 'send1')).toBeVisible();
   await expect
     .poll(() => connectionsShown(window))
-    .toEqual(['report next send', 'report-2 next send-2', 'start next extract']);
+    .toEqual(['report next send', 'report1 next send1', 'start next extract']);
   await expect(window.locator('.react-flow__node-block.selected')).toHaveCount(2);
-  await expect(window.locator('.react-flow__node-block.selected[data-id="report-2"]')).toHaveCount(
+  await expect(window.locator('.react-flow__node-block.selected[data-id="report1"]')).toHaveCount(
     1,
   );
   // The copy's top-left corner, Report's, lands where the pointer was.
-  const pasted = await block(window, 'report-2').boundingBox();
+  const pasted = await block(window, 'report1').boundingBox();
   if (pasted === null) throw new Error('The pasted block is not drawn');
   expect(Math.abs(pasted.x - at.x)).toBeLessThan(4);
   expect(Math.abs(pasted.y - at.y)).toBeLessThan(4);
   await shot(window, 'pasted');
 
   await window.keyboard.press('Control+z');
-  await expect(block(window, 'report-2')).toHaveCount(0);
-  await expect(block(window, 'send-2')).toHaveCount(0);
+  await expect(block(window, 'report1')).toHaveCount(0);
+  await expect(block(window, 'send1')).toHaveCount(0);
 });
 
 /** Where a block is on the canvas, from the transform the canvas gives it. */
@@ -1268,12 +1273,12 @@ test('the canvas options snap, turn connections and hide the grid and navigator,
   const path = (window: Page) =>
     window
       .locator(
-        '.react-flow__edge[aria-label="From Start, Next, to Extract"] .react-flow__edge-path',
+        '.react-flow__edge[aria-label="From Start, Next, to extract"] .react-flow__edge-path',
       )
       .getAttribute('d');
   const grid = (window: Page) => window.locator('.react-flow__background');
   const navigator = (window: Page) => window.locator('.react-flow__minimap');
-  await connectionMiddle(first.window, 'Start', 'Next', 'Extract');
+  await connectionMiddle(first.window, 'Start', 'Next', 'extract');
   expect(await path(first.window)).toContain('C');
   // The option buttons have left the canvas: zoom in, zoom out and fit stay.
   await expect(first.window.locator('.react-flow__controls-button')).toHaveCount(3);
@@ -1351,7 +1356,7 @@ test('the wheel moves the view, Shift+wheel moves it sideways, and Ctrl+wheel zo
   const { window } = await launchShell();
   await openAutomation(window, 'Chain');
   await expect(block(window, 'send')).toBeVisible();
-  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+  await connectionMiddle(window, 'Start', 'Next', 'extract');
   const start = await middleOf(block(window, 'start'));
   await window.mouse.move(start.x - 60, start.y + 120);
 
@@ -1390,7 +1395,7 @@ test('the canvas menu scales the view and tidies up, and its submenus work from 
   const { window } = await launchShell();
   await openAutomation(window, 'Chain');
   await expect(block(window, 'send')).toBeVisible();
-  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+  await connectionMiddle(window, 'Start', 'Next', 'extract');
 
   const menu = await canvasMenuBelowStart(window);
   const addBlock = menu.getByRole('menuitem', { name: 'Add block' });
@@ -1435,7 +1440,7 @@ test('Scale to rectangle zooms to a box drawn on the canvas, and Escape cancels 
   const { window } = await launchShell();
   await openAutomation(window, 'Chain');
   await expect(block(window, 'send')).toBeVisible();
-  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+  await connectionMiddle(window, 'Start', 'Next', 'extract');
 
   await (await canvasMenuBelowStart(window)).getByRole('menuitem', { name: 'Scale' }).click();
   await window.getByRole('menuitem', { name: 'Scale to rectangle' }).click();
@@ -1468,13 +1473,15 @@ test('a block menu duplicates and takes out, and Selection selects downstream', 
   const { window } = await launchShell();
   await openAutomation(window, 'Chain');
   await expect(block(window, 'send')).toBeVisible();
-  await connectionMiddle(window, 'Start', 'Next', 'Extract');
+  await connectionMiddle(window, 'Start', 'Next', 'extract');
 
   await block(window, 'extract').click({ button: 'right' });
-  const menu = window.getByRole('menu', { name: 'Actions for Extract' });
+  const menu = window.getByRole('menu', { name: 'Actions for extract' });
   await expect(menu.getByRole('menuitem')).toHaveText([
     /^Add a block after this one…/,
     /^Connect an output…/,
+    /^Rename…/,
+    /^Replace…/,
     /^Copy/,
     /^Duplicate/,
     /^Take out of the flow/,
@@ -1482,8 +1489,8 @@ test('a block menu duplicates and takes out, and Selection selects downstream', 
     /^Delete/,
   ]);
   await menu.getByRole('menuitem', { name: /^Duplicate/ }).click();
-  await expect(block(window, 'extract-2')).toBeVisible();
-  await expect(window.locator('.react-flow__node-block.selected[data-id="extract-2"]')).toHaveCount(
+  await expect(block(window, 'extract1')).toBeVisible();
+  await expect(window.locator('.react-flow__node-block.selected[data-id="extract1"]')).toHaveCount(
     1,
   );
 
@@ -1507,19 +1514,19 @@ test('a block menu duplicates and takes out, and Selection selects downstream', 
 
   // Ctrl+D duplicates the selection one grid step away.
   await window.keyboard.press('Control+d');
-  await expect(block(window, 'extract-3')).toBeVisible();
-  await expect(block(window, 'send-2')).toBeVisible();
+  await expect(block(window, 'extract2')).toBeVisible();
+  await expect(block(window, 'send1')).toBeVisible();
   await expect
     .poll(() => connectionsShown(window))
-    .toEqual(['extract next send', 'extract-3 next send-2', 'start next extract']);
+    .toEqual(['extract next send', 'extract2 next send1', 'start next extract']);
   const original = await placeOf(window, 'extract');
-  expect(await placeOf(window, 'extract-3')).toEqual({ x: original.x + 16, y: original.y + 16 });
+  expect(await placeOf(window, 'extract2')).toEqual({ x: original.x + 16, y: original.y + 16 });
 
   // Ctrl+S saves the flow, wherever the focus is in the tab.
   await window.getByLabel('Name', { exact: true }).click();
   await window.keyboard.press('Control+s');
   await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
-  await expect.poll(() => readFile(automationFile('chain'), 'utf8')).toContain('send-2');
+  await expect.poll(() => readFile(automationFile('chain'), 'utf8')).toContain('send1');
 });
 
 test('the menus act on the automation on view, and are disabled for other tabs', async () => {

@@ -20,12 +20,33 @@ export const SWITCH_CASES_MAX = 20;
 export const AUTOMATION_NOTE_LIMIT = 100;
 export const AUTOMATION_GROUP_LIMIT = 50;
 export const NOTE_TEXT_MAX = 2000;
+/** Inputs the Start block can declare. */
+export const AUTOMATION_INPUTS_MAX = 50;
+/** Characters in one expression, the leading `=` left out. */
+export const EXPRESSION_MAX_LENGTH = 2000;
 
 /** Names an output cannot be given by a Switch case, because they mean something else. */
 const RESERVED_CASES = ['next', 'error', 'true', 'false', 'default'];
 
+/** Names that start other kinds of values in an expression, so no block can have them as its id. */
+export const RESERVED_BLOCK_IDS: readonly string[] = ['inputs', 'steps', 'run', 'paths', 'loop'];
+
 const nonEmpty = z.string().min(1);
 const blockId = z.string().max(64).regex(NAME_PATTERN);
+
+/**
+ * A value worked out when it is needed: a link such as `convert.file`, an input such as
+ * `inputs.file`, or an expression over them. People write it after `=`; the file keeps it apart from
+ * plain text so that it fits number, boolean and choice parameters too.
+ */
+const expressionSchema = z.strictObject({
+  expression: z.string().trim().min(1).max(EXPRESSION_MAX_LENGTH),
+});
+
+const literalSchema = z.union([z.string(), z.number(), z.boolean()]);
+
+/** What a block value can hold: its own value, or one worked out from others. */
+const blockValueSchema = z.union([literalSchema, expressionSchema]);
 
 const retrySchema = z.strictObject({
   retry: z.strictObject({
@@ -49,7 +70,53 @@ const exitCodeRuleSchema = z.strictObject({
   value: z.int(),
 });
 
-const ruleSchema = z.discriminatedUnion('field', [resultRuleSchema, exitCodeRuleSchema]);
+/** Operators of a rule on a value. Which ones fit depends on the value's type. */
+export const VALUE_RULE_OPERATORS = [
+  'equals',
+  'not-equals',
+  'greater-than',
+  'less-than',
+  'at-least',
+  'at-most',
+  'contains',
+  'starts-with',
+  'ends-with',
+  'is-empty',
+  'is-not-empty',
+  'is-true',
+  'is-false',
+  'exists',
+  'not-exists',
+] as const;
+
+export type ValueRuleOperator = (typeof VALUE_RULE_OPERATORS)[number];
+
+/** Operators that compare with nothing, so their rule has no value. */
+export const UNARY_VALUE_RULE_OPERATORS: readonly ValueRuleOperator[] = [
+  'is-empty',
+  'is-not-empty',
+  'is-true',
+  'is-false',
+  'exists',
+  'not-exists',
+];
+
+/**
+ * A rule on a value: an output, an input or a link, read through an expression, and compared with a
+ * value of its own or one worked out from others. `exists` asks whether a file or folder is there.
+ */
+const valueRuleSchema = z.strictObject({
+  field: z.literal('value'),
+  read: expressionSchema,
+  operator: z.enum(VALUE_RULE_OPERATORS),
+  value: blockValueSchema.optional(),
+});
+
+const ruleSchema = z.discriminatedUnion('field', [
+  resultRuleSchema,
+  exitCodeRuleSchema,
+  valueRuleSchema,
+]);
 
 /** A set of rules joined with AND (`all`) or OR (`any`). */
 const conditionSchema = z.strictObject({
@@ -57,11 +124,35 @@ const conditionSchema = z.strictObject({
   rules: z.array(ruleSchema).min(1).max(CONDITION_RULES_MAX),
 });
 
+const inputFields = {
+  name: z.string().max(64).regex(NAME_PATTERN),
+  label: nonEmpty.max(200).optional(),
+  description: nonEmpty.max(2000).optional(),
+  required: z.boolean().optional(),
+};
+
+/** A value the automation asks for when it starts. Inputs are never secret, since files are shared. */
+const inputSchema = z.discriminatedUnion('type', [
+  z.strictObject({ ...inputFields, type: z.literal('string'), default: z.string().optional() }),
+  z.strictObject({ ...inputFields, type: z.literal('path'), default: z.string().optional() }),
+  z.strictObject({ ...inputFields, type: z.literal('integer'), default: z.int().optional() }),
+  z.strictObject({ ...inputFields, type: z.literal('number'), default: z.number().optional() }),
+  z.strictObject({ ...inputFields, type: z.literal('boolean'), default: z.boolean().optional() }),
+  z.strictObject({
+    ...inputFields,
+    type: z.literal('choice'),
+    choices: z.array(nonEmpty).min(1).max(100),
+    default: nonEmpty.optional(),
+  }),
+]);
+
 const startBlockSchema = z.strictObject({
   id: blockId,
   type: z.literal('start'),
   /** How the automation begins. Only a button for now; later modes must not change existing files. */
   mode: z.literal('button').optional(),
+  /** What the automation asks for when it starts. Blocks read them as `inputs.<name>`. */
+  inputs: z.array(inputSchema).max(AUTOMATION_INPUTS_MAX).optional(),
 });
 
 const runBlockSchema = z.strictObject({
@@ -70,9 +161,7 @@ const runBlockSchema = z.strictObject({
   tool: z.string().max(IDENTIFIER_MAX_LENGTH).regex(IDENTIFIER_PATTERN),
   profile: z.string().max(IDENTIFIER_MAX_LENGTH).regex(IDENTIFIER_PATTERN).optional(),
   /** Values for this block, by parameter. Secrets never go here, because automations are shared. */
-  values: z
-    .record(z.string().regex(NAME_PATTERN), z.union([z.string(), z.number(), z.boolean()]))
-    .optional(),
+  values: z.record(z.string().regex(NAME_PATTERN), blockValueSchema).optional(),
   onFailure: z.union([z.literal('stop'), retrySchema]).optional(),
 });
 
@@ -186,19 +275,49 @@ export function automationRuleIssues(automation: z.output<typeof automationShape
     issues.push({ path, ...automationProblem(code, params, blockId) });
   };
   const ids = new Set(automation.blocks.map(({ id }) => id));
+  const checkInputs = (
+    inputs: readonly z.output<typeof inputSchema>[],
+    path: (string | number)[],
+    owner: string,
+  ) => {
+    inputs.forEach((input, index) => {
+      if (inputs.findIndex(({ name }) => name === input.name) !== index) {
+        report([...path, index, 'name'], 'input-duplicate', { input: input.name }, owner);
+      }
+      if (
+        input.type === 'choice' &&
+        input.default !== undefined &&
+        !input.choices.includes(input.default)
+      ) {
+        report([...path, index, 'default'], 'input-default-choice', { input: input.name }, owner);
+      }
+    });
+  };
   const checkCondition = (
     condition: z.output<typeof conditionSchema>,
     path: (string | number)[],
     owner: string,
   ) => {
-    condition.rules.forEach(({ block }, index) => {
-      if (!ids.has(block)) {
-        report([...path, 'rules', index, 'block'], 'rule-block-missing', { block }, owner);
+    condition.rules.forEach((rule, index) => {
+      const rulePath = [...path, 'rules', index];
+      if (rule.field === 'value') {
+        const unary = UNARY_VALUE_RULE_OPERATORS.includes(rule.operator);
+        if (unary && rule.value !== undefined) {
+          report([...rulePath, 'value'], 'rule-value-extra', {}, owner);
+        } else if (!unary && rule.value === undefined) {
+          report([...rulePath, 'value'], 'rule-value-missing', {}, owner);
+        }
+      } else if (!ids.has(rule.block)) {
+        report([...rulePath, 'block'], 'rule-block-missing', { block: rule.block }, owner);
       }
     });
   };
   automation.blocks.forEach((block, index) => {
     const path: (string | number)[] = ['blocks', index];
+    if (RESERVED_BLOCK_IDS.includes(block.id)) {
+      report([...path, 'id'], 'block-reserved', { block: block.id }, block.id);
+    }
+    if (block.type === 'start') checkInputs(block.inputs ?? [], [...path, 'inputs'], block.id);
     if (block.type === 'if') checkCondition(block.condition, [...path, 'condition'], block.id);
     if (block.type !== 'switch') return;
     block.cases.forEach((branch, position) => {
@@ -264,6 +383,21 @@ export type AutomationNote = z.output<typeof noteSchema>;
 export type AutomationGroup = z.output<typeof groupSchema>;
 export type AutomationPosition = z.output<typeof positionSchema>;
 export type AutomationRule = z.output<typeof ruleSchema>;
+export type ValueRule = z.output<typeof valueRuleSchema>;
+export type StartBlock = z.output<typeof startBlockSchema>;
+export type AutomationInputDeclaration = z.output<typeof inputSchema>;
+export type ExpressionValue = z.output<typeof expressionSchema>;
+export type LiteralValue = z.output<typeof literalSchema>;
+export type BlockValue = z.output<typeof blockValueSchema>;
+
+/** Tells a value worked out from others from one held as it is. */
+export function isExpressionValue(value: unknown): value is ExpressionValue {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { expression?: unknown }).expression === 'string'
+  );
+}
 
 /** Builds the JSON Schema published for automation authors. */
 export function buildAutomationJsonSchema(): Record<string, unknown> {

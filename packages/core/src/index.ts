@@ -50,7 +50,9 @@ export type {
   RunRecord,
   RunStart,
   RunSummary,
+  StepOutputRecord,
   StepState,
+  StepValueRecord,
 } from './history/run-history.js';
 export {
   findAutomations,
@@ -68,6 +70,14 @@ export type {
   FoundAutomation,
 } from './automations/automation-store.js';
 export { checkAutomation } from './automations/check-automation.js';
+export {
+  InputError,
+  inputsOf,
+  parseInputText,
+  resolveInputs,
+} from './automations/automation-inputs.js';
+export { JSON_OUTPUT_BYTE_LIMIT } from './automations/tool-outputs.js';
+export { STEP_DATA_LIMIT } from './automations/step-data.js';
 export type { AutomationProblem } from './automations/check-automation.js';
 export { startAutomationRun } from './automations/run-automation.js';
 export type {

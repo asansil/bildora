@@ -448,6 +448,7 @@ input[type='radio'] {
 }
 
 .work-area {
+  position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -737,9 +738,15 @@ input[type='radio'] {
   border-left-color: var(--bildora-status-failed);
 }
 
+/* The app's error notice floats over the bottom of the work area instead of moving it. */
 .banner {
-  max-width: 720px;
-  margin-bottom: var(--bildora-space-4);
+  position: absolute;
+  right: var(--bildora-space-4);
+  bottom: var(--bildora-space-4);
+  z-index: 40;
+  max-width: min(720px, calc(100% - 2 * var(--bildora-space-4)));
+  margin: 0;
+  box-shadow: var(--bildora-shadow-overlay);
 }
 
 .facts {
@@ -1447,9 +1454,199 @@ input[type='radio'] {
   list-style: none;
 }
 
-.reference-select {
+/* The block's name, as links write it, over what the block is. */
+.block-settings-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+}
+
+.block-settings-header h2,
+.block-settings-header p {
+  margin: 0;
+}
+
+/* A fieldset is as wide as its content by default, which would push the panel sideways. */
+.block-settings fieldset {
+  min-inline-size: 0;
+}
+
+/* The panel beside the canvas is narrow, so its form keeps to one column. */
+.block-settings .parameters {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* A value of a block, with its pick-whip beside it. */
+.value-field {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: var(--bildora-space-1);
+}
+
+.value-field > .field {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Controls take the room left beside the pick-whip, however wide they would be on their own. */
+.value-field .field-row > input,
+.value-field select {
+  flex: 1;
+  min-width: 0;
+}
+
+.pick-whip {
   flex: none;
-  width: 120px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: var(--bildora-control-height);
+  margin-top: 22px;
+  padding: 0;
+  color: var(--bildora-text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--bildora-radius-sm);
+  cursor: crosshair;
+}
+
+.pick-whip:hover,
+.pick-whip:focus-visible {
+  color: var(--bildora-accent);
+  border-color: var(--bildora-border);
+}
+
+/* The line drawn from a pick-whip to the pointer while it is dragged. */
+.pick-whip-line {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+}
+
+.pick-whip-line line {
+  stroke: var(--bildora-accent);
+  stroke-width: 2;
+  stroke-dasharray: 4 3;
+}
+
+.pick-whip-line circle {
+  fill: var(--bildora-accent);
+}
+
+/* A value worked out from others, written after = in a mono face. */
+.expression-field {
+  position: relative;
+}
+
+/* The field row and its suggestions, which open just below it and never over it. */
+.expression-anchor {
+  position: relative;
+}
+
+.expression-row {
+  align-items: center;
+  gap: 0;
+}
+
+.expression-equals {
+  display: grid;
+  place-items: center;
+  align-self: stretch;
+  padding: 0 var(--bildora-space-2);
+  font: var(--bildora-weight-semibold) var(--bildora-text-md) var(--bildora-font-mono);
+  color: var(--bildora-accent);
+  background: var(--bildora-surface-frame);
+  border: 1px solid var(--bildora-border);
+  border-right: 0;
+  border-radius: var(--bildora-radius-sm) 0 0 var(--bildora-radius-sm);
+}
+
+.expression-input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--bildora-font-mono);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.expression-suggestions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 220px;
+  margin: var(--bildora-space-1) 0 0;
+  padding: var(--bildora-space-1);
+  overflow-y: auto;
+  list-style: none;
+  background: var(--bildora-surface-raised);
+  border: 1px solid var(--bildora-border);
+  border-radius: var(--bildora-radius-md);
+  box-shadow: var(--bildora-shadow-overlay);
+}
+
+.expression-suggestions.is-above {
+  top: auto;
+  bottom: 100%;
+  margin: 0 0 var(--bildora-space-1);
+}
+
+.expression-suggestions li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--bildora-space-2);
+  padding: var(--bildora-space-1) var(--bildora-space-2);
+  border-radius: var(--bildora-radius-sm);
+  cursor: default;
+}
+
+.expression-suggestions li.is-active,
+.expression-suggestions li:hover {
+  background: var(--bildora-surface-selected);
+}
+
+.expression-suggestion-text {
+  font-family: var(--bildora-font-mono);
+  overflow-wrap: anywhere;
+}
+
+.expression-suggestion-hint {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--bildora-text-muted);
+}
+
+/* The inputs of the Start block. */
+.start-inputs {
+  display: grid;
+  gap: var(--bildora-space-2);
+}
+
+.start-inputs h3 {
+  margin: var(--bildora-space-2) 0 0;
+  font-size: var(--bildora-text-md);
+}
+
+.start-input {
+  display: grid;
+  gap: var(--bildora-space-2);
+  margin: 0;
+  padding: var(--bildora-space-2);
+  border: 1px solid var(--bildora-border);
+  border-radius: var(--bildora-radius-md);
+}
+
+.start-input > button {
+  justify-self: start;
 }
 
 .automation-retry {
@@ -1468,6 +1665,18 @@ input[type='radio'] {
   border-radius: var(--bildora-radius-sm);
 }
 
+/* A past run, with its button to open it in Run history beside it. */
+.automation-run-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--bildora-space-1);
+}
+
+.automation-run-row > .automation-run {
+  flex: 1;
+  min-width: 0;
+}
+
 .automation-run {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
@@ -1478,4 +1687,57 @@ input[type='radio'] {
 .automation-run-failure {
   grid-column: 1 / -1;
   overflow-wrap: anywhere;
+}
+
+/* What a block received and produced, in a run and in history. */
+.data-view {
+  display: grid;
+  gap: var(--bildora-space-3);
+}
+
+.data-view h3,
+.history-data h3 {
+  margin: 0 0 var(--bildora-space-1);
+  font-size: var(--bildora-text-md);
+}
+
+.data-raw {
+  justify-self: start;
+}
+
+.data-row {
+  display: contents;
+}
+
+.data-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.data-from {
+  display: block;
+  font: var(--bildora-text-sm) var(--bildora-font-mono);
+  color: var(--bildora-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.data-json {
+  margin: 0;
+  padding: var(--bildora-space-2);
+  font: var(--bildora-text-sm) var(--bildora-font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  background: var(--bildora-surface-frame);
+  border: 1px solid var(--bildora-border);
+  border-radius: var(--bildora-radius-sm);
+}
+
+.history-data {
+  margin-top: var(--bildora-space-4);
+}
+
+.dialog.run-inputs {
+  width: min(560px, calc(100vw - 48px));
 }

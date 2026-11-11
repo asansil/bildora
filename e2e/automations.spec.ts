@@ -137,26 +137,23 @@ outputs:
 
   // Pressing blocks in the library one after another builds a chain from Start.
   await library.getByRole('button', { name: 'Writer' }).click();
-  await expect(settings(window)).toHaveAttribute('data-block-id', 'writer');
-  await settings(window)
-    .getByLabel('Use a reference')
-    .nth(1)
-    .selectOption({ label: 'Folder of this run' });
+  await expect(settings(window)).toHaveAttribute('data-block-id', 'Writer1');
   await settings(window).getByLabel('To', { exact: true }).fill('{{run.folder}}/one.txt');
 
   await library.getByRole('button', { name: 'Writer' }).click();
-  await expect(settings(window)).toHaveAttribute('data-block-id', 'writer-2');
-  await settings(window)
-    .getByLabel('Use a reference')
-    .nth(0)
-    .selectOption({ label: 'Writer: file' });
+  await expect(settings(window)).toHaveAttribute('data-block-id', 'Writer2');
+  // Typing = makes the value follow another one: here, the file the first block wrote.
+  await settings(window).getByLabel('From', { exact: true }).fill('= steps.Writer1.outputs.file');
+  await expect(settings(window).getByTestId('expression-shown')).toHaveText(
+    'Worked out when the automation runs',
+  );
   await settings(window).getByLabel('To', { exact: true }).fill('{{run.folder}}/two.txt');
 
   // A block added after one whose way on is taken goes in between.
   await window.getByRole('button', { name: 'Fit View' }).click();
-  await step(window, 'writer').click();
+  await step(window, 'Writer1').click();
   await library.getByRole('button', { name: 'Wait for a person' }).click();
-  await expect(settings(window)).toHaveAttribute('data-block-id', 'review');
+  await expect(settings(window)).toHaveAttribute('data-block-id', 'Confirm1');
   await window.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(window.getByRole('tab', { name: 'Hand over', selected: true })).toBeVisible();
   await expect(window.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
@@ -167,13 +164,13 @@ outputs:
 
   // A tool process can take seconds to start on a busy machine, as in the other run tests.
   const toFinish = { timeout: 15_000 };
-  await expect(step(window, 'writer')).toHaveAttribute('data-state', 'completed', toFinish);
-  await expect(step(window, 'review')).toContainText('Waiting for you');
-  await expect(step(window, 'writer-2')).toHaveAttribute('data-state', 'idle');
+  await expect(step(window, 'Writer1')).toHaveAttribute('data-state', 'completed', toFinish);
+  await expect(step(window, 'Confirm1')).toContainText('Waiting for you');
+  await expect(step(window, 'Writer2')).toHaveAttribute('data-state', 'idle');
   await expect(window.getByTestId('status')).toContainText('1 task');
   await window.getByTestId('automation-waiting').getByRole('button', { name: 'Continue' }).click();
 
-  await expect(step(window, 'writer-2')).toHaveAttribute('data-state', 'completed', toFinish);
+  await expect(step(window, 'Writer2')).toHaveAttribute('data-state', 'completed', toFinish);
   await expect(runBadge(window)).toHaveAttribute('data-state', 'completed', toFinish);
   await window.getByRole('tab', { name: 'Past runs' }).click();
   await expect(window.getByTestId('automation-runs')).toContainText('App');
@@ -186,7 +183,13 @@ outputs:
     join(dataDir, 'workspaces', 'default', 'automations', 'hand-over.yaml'),
     'utf8',
   );
-  expect(stored).toContain('{{steps.writer.outputs.file}}');
+  expect(stored).toContain('expression: steps.Writer1.outputs.file');
+
+  // A past run opens in Run history, chosen there.
+  await window.getByTestId('run-open-in-history').first().click();
+  const history = window.getByTestId('history');
+  await expect(history.locator('.history-row[aria-current="true"]')).toBeVisible();
+  await expect(history.getByTestId('history-timeline')).toBeVisible();
 });
 
 test('a failed step stops the automation and says why', async () => {
@@ -212,7 +215,7 @@ test('a failed step stops the automation and says why', async () => {
 
   await rail(window, 'Run history').click();
   await window.locator('.history-row').first().click();
-  await expect(window.getByTestId('history-detail')).toContainText('Bad');
+  await expect(window.getByTestId('history-detail')).toContainText('first');
 });
 
 test('a block answers the console script of its tool, with nobody there', async () => {

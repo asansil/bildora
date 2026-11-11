@@ -216,21 +216,6 @@
   padding: var(--bildora-space-2) var(--bildora-space-3);
 }
 
-/* Why Run started nothing, between the header and the canvas. */
-.flow-refused {
-  align-items: center;
-  margin: var(--bildora-space-2) var(--bildora-space-3) 0;
-}
-
-.flow-refused > .icon {
-  margin-top: 0;
-  color: var(--bildora-status-failed);
-}
-
-.flow-refused p {
-  color: var(--bildora-text);
-}
-
 /* A block's output fills the lower panel, which scrolls it. */
 .block-output {
   margin: 0;
@@ -276,6 +261,11 @@
   flex: none;
   margin-top: 2px;
   color: var(--bildora-status-warning);
+}
+
+/* Why Run started nothing, as the first row of Problems. */
+.problem-item.problem-refused .icon {
+  color: var(--bildora-status-failed);
 }
 
 .problem-text {
@@ -362,6 +352,12 @@
 .block.is-selected {
   border-color: var(--bildora-accent);
   box-shadow: 0 0 0 1px var(--bildora-accent);
+}
+
+/* The block under a dragged pick-whip, when one of its values fits the field. */
+.react-flow__node.is-whip-target .block {
+  border-color: var(--bildora-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--bildora-accent) 35%, transparent);
 }
 
 .block-text {
@@ -751,4 +747,63 @@
 
 .outline-group {
   font-weight: var(--bildora-weight-medium);
+}
+
+/* What the canvas find matches stands out, and the rest steps back. */
+.react-flow__node.is-match .block {
+  border-color: var(--bildora-accent);
+  box-shadow: 0 0 0 2px var(--bildora-accent);
+}
+
+.react-flow__node.is-dimmed {
+  opacity: 0.35;
+}
+
+.canvas-find {
+  position: absolute;
+  top: var(--bildora-space-2);
+  left: var(--bildora-space-2);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--bildora-space-1);
+  padding: var(--bildora-space-1);
+  background: var(--bildora-surface-raised);
+  border: 1px solid var(--bildora-border);
+  border-radius: var(--bildora-radius-md);
+  box-shadow: var(--bildora-shadow-overlay);
+}
+
+.canvas-find input {
+  width: 320px;
+}
+
+.canvas-find-count {
+  min-width: 64px;
+  font-size: var(--bildora-text-sm);
+  color: var(--bildora-text-muted);
+  text-align: center;
+}
+
+/* How many other blocks follow this one's values, on the block's top edge. */
+.block-used-by {
+  position: absolute;
+  top: -9px;
+  right: var(--bildora-space-3);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 18px;
+  padding: 0 var(--bildora-space-1);
+  background: var(--bildora-surface-raised);
+  font-size: var(--bildora-text-xs);
+  color: var(--bildora-text-muted);
+  background: transparent;
+  border: 1px solid var(--bildora-border);
+  border-radius: 999px;
+}
+
+.block-used-by:not(:disabled):hover {
+  color: var(--bildora-accent);
+  border-color: var(--bildora-accent);
 }

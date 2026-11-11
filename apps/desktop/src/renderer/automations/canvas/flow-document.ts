@@ -6,7 +6,9 @@ import {
   ERROR_OUTPUT,
   connectionOutput,
   findStepOutputReferences,
+  isReservedBlockId,
   outputsOf,
+  renameInBlockExpressions,
   stepOutputReference,
   validTargets,
 } from '@bildora/protocol';
@@ -118,19 +120,105 @@ export function takenIds(document: FlowDocument): Set<string> {
   ]);
 }
 
+/** An id for a note or a group: a word, then `-2`, `-3` and so on when it is taken. */
 export function freeId(text: string, taken: ReadonlySet<string>): string {
   const base = idBase(text);
   let candidate = base;
-  for (let suffix = 2; taken.has(candidate); suffix += 1) {
+  // Names that expressions keep for other values, such as `run`, never name a block.
+  for (let suffix = 2; taken.has(candidate) || isReservedBlockId(candidate); suffix += 1) {
     candidate = `${base}-${String(suffix)}`;
   }
   return candidate;
 }
 
-/** What a new block can be: a kind, and for Run tool, which tool. */
+/**
+ * What a block's name starts with: a tool's name in CamelCase, letters and digits only, with
+ * accents removed. `File check` gives `FileCheck`; text that would not start with a letter gives
+ * `Block`.
+ */
+export function nameBase(text: string): string {
+  const words = text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .split(/[^a-zA-Z0-9]+/)
+    .filter((word) => word !== '');
+  const base = words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join('');
+  return /^[a-zA-Z]/.test(base) ? base.slice(0, 56) : 'Block';
+}
+
+/** A block's name: its base and the smallest free number from 1, such as `FileCheck1`. */
+export function freeName(base: string, taken: ReadonlySet<string>): string {
+  let candidate = `${base}1`;
+  // Names that expressions keep for other values never name a block.
+  for (let number = 2; taken.has(candidate) || isReservedBlockId(candidate); number += 1) {
+    candidate = `${base}${String(number)}`;
+  }
+  return candidate;
+}
+
+/** The base a pasted block is numbered from: its name without the number it ends with. */
+function pastedBase(id: string): string {
+  const base = id.replace(/-?\d+$/, '');
+  return /^[a-zA-Z]/.test(base) ? base : 'Block';
+}
+
+/** What a block id may look like: what a link can name, as in `convert.file`. */
+const BLOCK_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+
+export type BlockIdProblem = 'pattern' | 'reserved' | 'taken';
+
+/** Why `next` cannot name the block now called `current`, or undefined when it can. */
+export function blockIdProblem(
+  document: FlowDocument,
+  current: string,
+  next: string,
+): BlockIdProblem | undefined {
+  if (!BLOCK_ID.test(next)) return 'pattern';
+  if (isReservedBlockId(next)) return 'reserved';
+  if (next !== current && takenIds(document).has(next)) return 'taken';
+  return undefined;
+}
+
+/**
+ * Gives a block another id. Everything that names it follows: connections, its place and group,
+ * rules, the Join of a Parallel, references in text, and links and expressions.
+ */
+export function renameBlock(document: FlowDocument, from: string, to: string): FlowDocument {
+  if (from === to) return document;
+  const ids = new Map([[from, to]]);
+  const renamed = (id: string): string => (id === from ? to : id);
+  return {
+    ...document,
+    blocks: document.blocks.map((block) => renamedBlock(block, ids)),
+    connections: document.connections.map((connection) => ({
+      ...connection,
+      from: renamed(connection.from),
+      to: renamed(connection.to),
+    })),
+    positions: Object.fromEntries(
+      Object.entries(document.positions).map(([id, position]) => [renamed(id), position]),
+    ),
+    groups: document.groups.map((group) => ({ ...group, blocks: group.blocks.map(renamed) })),
+  };
+}
+
+/**
+ * What a new block can be: a kind, and for Run tool, which tool. A tool's name gives the block's
+ * name; without it, the last part of the tool's id does.
+ */
 export type NewBlock =
-  | { readonly kind: 'run'; readonly tool: string }
+  | { readonly kind: 'run'; readonly tool: string; readonly toolName?: string }
   | { readonly kind: Exclude<BlockKind, 'run' | 'start' | 'join'> };
+
+/** A choice with its tool's name, which a new Run tool block is named after. */
+export function namedChoice<Choice extends NewBlock>(
+  choice: Choice,
+  tools: readonly { readonly id: string; readonly name: string }[],
+): Choice {
+  if (choice.kind !== 'run' || choice.toolName !== undefined) return choice;
+  const tool = tools.find(({ id }) => id === choice.tool);
+  return tool === undefined ? choice : { ...choice, toolName: tool.name };
+}
 
 /** A first rule for a new decision, which the person then changes. */
 function firstCondition(document: FlowDocument, near?: string): AutomationCondition {
@@ -156,36 +244,74 @@ export function createBlocks(
   near?: string,
 ): AutomationBlock[] {
   const taken = takenIds(document);
-  const id = (text: string): string => {
-    const value = freeId(text, taken);
+  const id = (base: string): string => {
+    const value = freeName(base, taken);
     taken.add(value);
     return value;
   };
   switch (choice.kind) {
-    case 'run':
-      return [{ id: id(choice.tool), type: 'run', tool: choice.tool }];
+    case 'run': {
+      const base = nameBase(choice.toolName ?? choice.tool.split('.').at(-1) ?? choice.tool);
+      return [{ id: id(base), type: 'run', tool: choice.tool }];
+    }
     case 'wait-for-time':
-      return [{ id: id('pause'), type: 'wait-for-time', seconds: 60 }];
+      return [{ id: id('Wait'), type: 'wait-for-time', seconds: 60 }];
     case 'wait-for-manual-action':
-      return [{ id: id('review'), type: 'wait-for-manual-action', message: defaultMessage }];
+      return [{ id: id('Confirm'), type: 'wait-for-manual-action', message: defaultMessage }];
     case 'if':
-      return [{ id: id('decide'), type: 'if', condition: firstCondition(document, near) }];
+      return [{ id: id('If'), type: 'if', condition: firstCondition(document, near) }];
     case 'switch':
       return [
         {
-          id: id('choose'),
+          id: id('Switch'),
           type: 'switch',
           cases: [{ id: 'case-1', condition: firstCondition(document, near) }],
         },
       ];
     case 'parallel': {
-      const parallel = id('parallel');
+      const parallel = id('Parallel');
       return [
         { id: parallel, type: 'parallel' },
-        { id: id('join'), type: 'join', parallel },
+        { id: id('Join'), type: 'join', parallel },
       ];
     }
   }
+}
+
+/**
+ * Puts a new block for another tool in a Run tool block's place: a new numbered name, no values,
+ * no profile and the default failure policy. Only its position and its connections stay; links
+ * and rules that named the old block keep its name, so they show as problems. Gives nothing for a
+ * block that is not a Run tool block.
+ */
+export function replaceBlock(
+  document: FlowDocument,
+  id: string,
+  choice: Extract<NewBlock, { kind: 'run' }>,
+): { readonly document: FlowDocument; readonly id: string } | undefined {
+  const old = blockOf(document, id);
+  if (old?.type !== 'run') return undefined;
+  // The old name stays taken, so links to it are not caught by the new block.
+  const [fresh] = createBlocks(document, choice, '');
+  if (fresh === undefined) return undefined;
+  const moved = (item: string): string => (item === id ? fresh.id : item);
+  const { [id]: at, ...positions } = document.positions;
+  return {
+    document: {
+      ...document,
+      blocks: document.blocks.map((block) => (block.id === id ? fresh : block)),
+      connections: document.connections.map((connection) => ({
+        ...connection,
+        from: moved(connection.from),
+        to: moved(connection.to),
+      })),
+      positions: at === undefined ? positions : { ...positions, [fresh.id]: at },
+      groups: document.groups
+        .map((group) => ({ ...group, blocks: group.blocks.filter((block) => block !== id) }))
+        .filter((group) => group.blocks.length > 0),
+    },
+    id: fresh.id,
+  };
 }
 
 function overlaps(a: AutomationPosition & Size, b: AutomationPosition & Size): boolean {
@@ -606,7 +732,7 @@ function renamedReferences(text: string, ids: ReadonlyMap<string, string>): stri
     if (step !== undefined) {
       result = result.replaceAll(
         stepOutputReference(reference),
-        stepOutputReference({ step, output: reference.output }),
+        stepOutputReference({ ...reference, step }),
       );
     }
   }
@@ -619,12 +745,19 @@ function renamedCondition(
 ): AutomationCondition {
   return {
     ...condition,
-    rules: condition.rules.map((rule) => ({ ...rule, block: ids.get(rule.block) ?? rule.block })),
+    rules: condition.rules.map((rule) =>
+      rule.field === 'value' ? rule : { ...rule, block: ids.get(rule.block) ?? rule.block },
+    ),
   };
 }
 
 /** A copied block under its new id, with what names other copied blocks renamed too. */
 function renamedBlock(block: AutomationBlock, ids: ReadonlyMap<string, string>): AutomationBlock {
+  // Links and expressions name blocks too; they follow the same new ids.
+  return renameInBlockExpressions(renamedFields(block, ids), (id) => ids.get(id));
+}
+
+function renamedFields(block: AutomationBlock, ids: ReadonlyMap<string, string>): AutomationBlock {
   const id = ids.get(block.id) ?? block.id;
   switch (block.type) {
     case 'run': {
@@ -679,8 +812,14 @@ export function pasteItems(
   });
   const taken = takenIds(document);
   const ids = new Map<string, string>();
-  for (const { id } of [...clip.blocks, ...clip.notes]) {
-    // A copy of convert-2 is convert-3, not convert-2-2.
+  for (const { id } of clip.blocks) {
+    // A copy of FileCheck1 is FileCheck2, not FileCheck11.
+    const fresh = freeName(pastedBase(id), taken);
+    taken.add(fresh);
+    ids.set(id, fresh);
+  }
+  for (const { id } of clip.notes) {
+    // A copy of note-2 is note-3, not note-2-2.
     const fresh = freeId(id.replace(/-\d+$/, ''), taken);
     taken.add(fresh);
     ids.set(id, fresh);

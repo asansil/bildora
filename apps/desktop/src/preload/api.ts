@@ -69,7 +69,11 @@ export interface ShellApi {
   /** Says what keeps a draft from running. Nothing is stored. */
   checkAutomation(draft: AutomationDraft): Promise<readonly AutomationProblemView[]>;
   removeAutomation(id: string): Promise<void>;
-  startAutomation(id: string): Promise<AutomationRunStateView>;
+  /** Starts an automation, with values for its inputs. Defaults fill the rest. */
+  startAutomation(
+    id: string,
+    inputs?: Readonly<Record<string, string | number | boolean>>,
+  ): Promise<AutomationRunStateView>;
   cancelAutomation(runId: string): Promise<void>;
   /** Answers the manual step a run is waiting on. */
   confirmAutomation(runId: string, stepId?: string): Promise<void>;

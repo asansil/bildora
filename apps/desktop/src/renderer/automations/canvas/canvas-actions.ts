@@ -6,6 +6,8 @@ export interface CanvasActions {
   readonly editingNote: string | undefined;
   /** Ends writing a note: its new text, or undefined to leave it as it was. */
   readonly finishNote: (id: string, text: string | undefined) => void;
+  /** Finds the blocks that use a block's values, as its "used by" mark offers. */
+  readonly showUses: (id: string) => void;
 }
 
 /** True when connections are drawn at right angles. The run view draws them the same way. */

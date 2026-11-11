@@ -154,6 +154,8 @@ interface HistoryViewProps {
   readonly onOpenAutomation: (id: string) => void;
   /** Opens an automation's tab on one of its past runs. */
   readonly onShowRun: (id: string, runId: string) => void;
+  /** Asks to select one run, as an automation's Past runs do; a new `count` asks again. */
+  readonly selectRequest?: { readonly runId: string; readonly count: number } | undefined;
   readonly onError: (error: unknown) => void;
 }
 
@@ -169,11 +171,17 @@ export function HistoryView({
   onFilter,
   onOpenAutomation,
   onShowRun,
+  selectRequest,
   onError,
 }: HistoryViewProps) {
   const id = useId();
   const [entries, setEntries] = useState<readonly HistoryEntryView[] | undefined>(undefined);
-  const [selected, setSelected] = useState<string | undefined>(undefined);
+  const [selected, setSelected] = useState<string | undefined>(selectRequest?.runId);
+  const [selectAsked, setSelectAsked] = useState(selectRequest);
+  if (selectAsked !== selectRequest) {
+    setSelectAsked(selectRequest);
+    if (selectRequest !== undefined) setSelected(selectRequest.runId);
+  }
   const [record, setRecord] = useState<HistoryRecordView | undefined>(undefined);
   const { toolId, automationId } = filter;
   const chosen = entries?.find((entry) => entry.runId === selected);

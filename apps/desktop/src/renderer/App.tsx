@@ -37,6 +37,8 @@ import {
 } from './automations/canvas/canvas-commands.js';
 import type { CanvasCommand, CanvasCommands } from './automations/canvas/canvas-commands.js';
 import { AutomationsPanel } from './automations/AutomationsPanel.js';
+import { inputsOfFlow } from './automations/canvas/values.js';
+import { RunInputsDialog } from './automations/RunInputsDialog.js';
 import { LIBRARY_DRAG_TYPE } from './automations/canvas/Canvas.js';
 import { HistoryView } from './history/HistoryView.js';
 import type { HistoryFilter } from './history/HistoryView.js';
@@ -146,6 +148,12 @@ export function App() {
   const [runs, setRuns] = useState<readonly RunView[]>([]);
   const [automations, setAutomations] = useState(NO_AUTOMATIONS);
   const [automationsLoaded, setAutomationsLoaded] = useState(false);
+  /** The automation whose inputs the palette's Run is asking for. */
+  const [askingInputs, setAskingInputs] = useState<string | undefined>();
+  const inputsAutomation =
+    askingInputs === undefined
+      ? undefined
+      : automations.automations.find((item) => item.id === askingInputs);
   const [automationRuns, setAutomationRuns] = useState<readonly AutomationRunStateView[]>([]);
   const [version, setVersion] = useState('');
   const [workspaces, setWorkspaces] = useState(NO_WORKSPACES);
@@ -160,6 +168,10 @@ export function App() {
   const [recent, setRecent] = useState(EMPTY_RECENT);
   const [tabs, setTabs] = useState<TabState>(NO_TABS);
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>({});
+  /** The run Run history should select, as an automation's Past runs ask. */
+  const [historyRun, setHistoryRun] = useState<
+    { readonly runId: string; readonly count: number } | undefined
+  >();
   /** Asks an automation tab to show one of its past runs; `count` repeats the same request. */
   const [runShown, setRunShown] = useState<
     { id: string; runId: string; count: number } | undefined
@@ -587,7 +599,13 @@ export function App() {
     return saved;
   }
 
+  /** Runs a saved automation, asking first for the inputs its Start block declares. */
   function runAutomation(id: string): void {
+    const automation = automations.automations.find((item) => item.id === id);
+    if (automation !== undefined && inputsOfFlow(automation.blocks).length > 0) {
+      setAskingInputs(id);
+      return;
+    }
     void api.startAutomation(id).catch(report);
   }
 
@@ -1036,6 +1054,7 @@ export function App() {
             setRunShown((asked) => ({ id, runId, count: (asked?.count ?? 0) + 1 }));
             openTab({ kind: 'automation', id }, true);
           }}
+          selectRequest={historyRun}
           onError={report}
         />
       );
@@ -1067,9 +1086,13 @@ export function App() {
             markUnsaved(tab.key, false);
             changeTabs((state) => rename(state, tab.key, { kind: 'automation', id }));
           }}
-          onRun={(id) => api.startAutomation(id)}
+          onRun={(id, inputs) => api.startAutomation(id, inputs)}
           onShowTool={(id) => {
             showTool(id);
+          }}
+          onOpenInHistory={(automationId, runId) => {
+            setHistoryRun((asked) => ({ runId, count: (asked?.count ?? 0) + 1 }));
+            showHistory({ automationId });
           }}
           onDirty={(dirty) => {
             markUnsaved(tab.key, dirty);
@@ -1354,22 +1377,23 @@ export function App() {
               onAction={tabAction}
             />
           )}
+          {/* Floats over the content, so it never pushes the window down. */}
+          {banner === undefined ? null : (
+            <div className="notice notice-failed banner" role="alert" data-testid="app-error">
+              <p>{banner}</p>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={t('banner.dismiss')}
+                onClick={() => {
+                  setBanner(undefined);
+                }}
+              >
+                <X className="icon" aria-hidden="true" />
+              </button>
+            </div>
+          )}
           <div className="tab-panels" key={workspaces.activeId}>
-            {banner === undefined ? null : (
-              <div className="notice notice-failed banner" role="alert">
-                <p>{banner}</p>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label={t('banner.dismiss')}
-                  onClick={() => {
-                    setBanner(undefined);
-                  }}
-                >
-                  <X className="icon" aria-hidden="true" />
-                </button>
-              </div>
-            )}
             {tabs.tabs.map((tab) => (
               <div
                 key={tab.key}
@@ -1416,6 +1440,20 @@ export function App() {
         </div>
       ) : null}
 
+      {inputsAutomation === undefined ? null : (
+        <RunInputsDialog
+          name={inputsAutomation.name}
+          inputs={inputsOfFlow(inputsAutomation.blocks)}
+          onRun={(values) => {
+            setAskingInputs(undefined);
+            void api.startAutomation(inputsAutomation.id, values).catch(report);
+          }}
+          onClose={() => {
+            setAskingInputs(undefined);
+          }}
+          onError={report}
+        />
+      )}
       {question === 'running' ? (
         <Dialog
           title={t('tabs.runningTitle', { name: askingName })}
