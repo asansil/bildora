@@ -6,6 +6,7 @@ import type { ElectronApplication } from '@playwright/test';
  * CI workflow uploads it, so a failure seen only there can be stepped through afterwards.
  */
 const TRACING = process.env['CI'] !== undefined;
+const STOP_TIMEOUT_MS = 10_000;
 
 export async function startTrace(app: ElectronApplication): Promise<void> {
   if (!TRACING) return;
@@ -19,11 +20,15 @@ export async function stopTraces(apps: readonly ElectronApplication[]): Promise<
   const failed = info.status !== info.expectedStatus;
   await Promise.all(
     apps.map((app, index) =>
-      app
-        .context()
-        .tracing.stop(failed ? { path: info.outputPath(`trace-${String(index + 1)}.zip`) } : {})
-        // An app the test closed itself has no trace left to stop.
-        .catch(() => undefined),
+      Promise.race([
+        app
+          .context()
+          .tracing.stop(failed ? { path: info.outputPath(`trace-${String(index + 1)}.zip`) } : {})
+          // An app the test closed itself has no trace left to stop.
+          .catch(() => undefined),
+        // An app that hangs must not hold up its own closing, and the hook's time with it.
+        new Promise((done) => setTimeout(done, STOP_TIMEOUT_MS)),
+      ]),
     ),
   );
 }

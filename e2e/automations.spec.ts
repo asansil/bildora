@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
+import { canvasSettled } from './fixtures/canvas.js';
 import { startTrace, stopTraces } from './fixtures/trace.js';
 
 const FAKE_TOOL = resolve('examples/fixtures/fake-tool.mjs');
@@ -92,6 +93,7 @@ async function openAutomation(window: Page, name: string): Promise<void> {
   }
   await automationsPanel(window).getByRole('button', { name, exact: true }).dblclick();
   await expect(window.getByRole('tab', { name, selected: true })).toBeVisible();
+  await canvasSettled(window);
 }
 
 test.beforeEach(async () => {
