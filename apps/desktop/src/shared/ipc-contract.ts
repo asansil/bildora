@@ -33,6 +33,8 @@ const FAVORITES_MAX = 1000;
 const SCRIPT_ANSWERS_MAX = 1000;
 const CATEGORIES_MAX = 1000;
 const WORKSPACE_TABS_MAX = 100;
+/** As many folded settings sections as core keeps. */
+const FOLDED_SECTIONS_MAX = 64;
 export const PANEL_WIDTH_MIN = 180;
 export const PANEL_WIDTH_MAX = 480;
 export const PANEL_WIDTH_DEFAULT = 248;
@@ -186,6 +188,11 @@ export const updateWorkspaceSchema = z.strictObject({
           libraryCollapsed: z.boolean().optional(),
           settingsCollapsed: z.boolean().optional(),
           lowerCollapsed: z.boolean().optional(),
+          foldedSections: z
+            .array(z.string().max(65))
+            .max(FOLDED_SECTIONS_MAX)
+            .readonly()
+            .optional(),
         })
         .nullable()
         .optional(),
@@ -277,6 +284,8 @@ export interface AutomationPanelsView {
   readonly libraryCollapsed?: boolean;
   readonly settingsCollapsed?: boolean;
   readonly lowerCollapsed?: boolean;
+  /** Sections of the settings panel folded shut, such as `run.failure`. */
+  readonly foldedSections?: readonly string[];
 }
 
 export interface WorkspaceTabView {
@@ -492,6 +501,8 @@ export interface HistorySummaryView {
 export interface AutomationProblemView {
   readonly code: AutomationProblemCode;
   readonly params: AutomationProblemParams;
+  /** Set on a warning, which lets the automation run. */
+  readonly severity?: 'warning';
   /** Left out when the problem is with the automation as a whole. */
   readonly blockId?: string;
   /** The problem in English, as the CLI words it. */
@@ -501,7 +512,7 @@ export interface AutomationProblemView {
 export interface AutomationView extends Required<Omit<AutomationDraft, 'id' | 'description'>> {
   readonly id: string;
   readonly description?: string;
-  /** What keeps it from running now. Empty means that it can run. */
+  /** What is wrong with it now. With no problems but warnings, it can run. */
   readonly problems: readonly AutomationProblemView[];
 }
 
@@ -511,7 +522,8 @@ export interface AutomationListView {
   readonly problems: readonly { readonly file: string; readonly message: string }[];
 }
 
-export type StepStateView = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped';
+export type StepStateView =
+  'idle' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped' | 'disabled';
 
 export interface StepRunView {
   readonly id: string;

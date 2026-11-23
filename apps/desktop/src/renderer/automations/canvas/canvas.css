@@ -143,6 +143,41 @@
   background: var(--bildora-surface-hover);
 }
 
+/* A block's icon on its family's tint, wherever blocks are listed. */
+.block-swatch {
+  --family: var(--bildora-family-tool);
+  --family-tint: var(--bildora-family-tool-tint);
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--bildora-radius-md);
+  background: var(--family-tint);
+  color: var(--family);
+}
+
+.block-swatch .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.block-swatch--large {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--bildora-radius-lg);
+}
+
+.block-swatch--large .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.block-swatch--note {
+  background: var(--bildora-surface-hover);
+  color: var(--bildora-status-warning);
+}
+
 .library-search {
   margin-bottom: var(--bildora-space-3);
 }
@@ -263,6 +298,11 @@
   color: var(--bildora-status-warning);
 }
 
+/* A warning lets the flow run, so it reads quieter than what stops it. */
+.problem-item--warning .icon {
+  color: var(--bildora-text-muted);
+}
+
 /* Why Run started nothing, as the first row of Problems. */
 .problem-item.problem-refused .icon {
   color: var(--bildora-status-failed);
@@ -335,6 +375,8 @@
 }
 
 .block {
+  --family: var(--bildora-family-tool);
+  --family-tint: var(--bildora-family-tool-tint);
   position: relative;
   box-sizing: border-box;
   width: 100%;
@@ -342,16 +384,40 @@
   display: flex;
   align-items: center;
   gap: var(--bildora-space-2);
-  padding: 0 var(--bildora-space-3);
+  padding: 0 var(--bildora-space-2) 0 0;
   background: var(--bildora-surface-raised);
-  border: 1px solid var(--bildora-border-strong);
-  border-radius: var(--bildora-radius-lg);
+  border: 1px solid var(--bildora-border);
+  border-radius: var(--bildora-radius-block);
+  box-shadow: var(--bildora-shadow-block);
   color: var(--bildora-text);
+}
+
+/* Every kind has the same shape; its family colors the icon tile, so kinds read apart at a glance. */
+.family-start {
+  --family: var(--bildora-family-start);
+  --family-tint: var(--bildora-family-start-tint);
+}
+
+.family-condition {
+  --family: var(--bildora-family-condition);
+  --family-tint: var(--bildora-family-condition-tint);
+}
+
+.family-parallel {
+  --family: var(--bildora-family-parallel);
+  --family-tint: var(--bildora-family-parallel-tint);
+}
+
+.family-wait {
+  --family: var(--bildora-family-wait);
+  --family-tint: var(--bildora-family-wait-tint);
 }
 
 .block.is-selected {
   border-color: var(--bildora-accent);
-  box-shadow: 0 0 0 1px var(--bildora-accent);
+  box-shadow:
+    0 0 0 1px var(--bildora-accent),
+    var(--bildora-shadow-block);
 }
 
 /* The block under a dragged pick-whip, when one of its values fits the field. */
@@ -360,19 +426,16 @@
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--bildora-accent) 35%, transparent);
 }
 
-.block-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  line-height: var(--bildora-line-tight);
-}
-
-.block-name {
-  display: flex;
-  align-items: center;
-  gap: var(--bildora-space-1);
-  min-width: 0;
-  font-weight: var(--bildora-weight-medium);
+.block-tile {
+  flex: none;
+  align-self: stretch;
+  width: 30px;
+  display: grid;
+  place-items: center;
+  background: var(--family-tint);
+  color: var(--family);
+  border-right: 1px solid var(--bildora-border);
+  border-radius: calc(var(--bildora-radius-block) - 1px) 0 0 calc(var(--bildora-radius-block) - 1px);
 }
 
 .block-logo {
@@ -381,12 +444,13 @@
   height: 16px;
 }
 
-.block-kind {
-  color: var(--bildora-text-muted);
-  font-size: var(--bildora-text-xs);
+.block-name {
+  min-width: 0;
+  font-weight: var(--bildora-weight-medium);
+  line-height: var(--bildora-line-tight);
 }
 
-/* A badge on the corner, so the state never pushes the name aside or hides under a shape. */
+/* A badge on the corner, so the state never pushes the name aside. */
 .block-state {
   position: absolute;
   top: -9px;
@@ -402,98 +466,6 @@
   display: flex;
   margin-left: auto;
   color: var(--bildora-status-warning);
-}
-
-/* Control blocks differ by shape as well as by label. */
-.block--start {
-  border-radius: 999px;
-  padding-left: var(--bildora-space-4);
-}
-
-.block--if,
-.block--switch {
-  background: transparent;
-  border: none;
-  justify-content: center;
-  text-align: center;
-  padding: 0 28px;
-}
-
-.block--if::before,
-.block--if::after,
-.block--switch::before,
-.block--switch::after {
-  content: '';
-  position: absolute;
-  clip-path: polygon(14% 0, 86% 0, 100% 50%, 86% 100%, 14% 100%, 0 50%);
-}
-
-.block--if::before,
-.block--switch::before {
-  inset: 0;
-  background: var(--bildora-border-strong);
-}
-
-.block--if::after,
-.block--switch::after {
-  inset: 1px;
-  background: var(--bildora-surface-raised);
-}
-
-.block--if.is-selected,
-.block--switch.is-selected {
-  box-shadow: none;
-}
-
-.block--if.is-selected::before,
-.block--switch.is-selected::before {
-  background: var(--bildora-accent);
-}
-
-.block--if > *,
-.block--switch > * {
-  position: relative;
-  z-index: 1;
-}
-
-/* Handles stay where xyflow puts them, on the edges, above the shape. */
-.block--if > .react-flow__handle,
-.block--switch > .react-flow__handle {
-  position: absolute;
-  z-index: 2;
-}
-
-.block--if > .block-state,
-.block--switch > .block-state {
-  position: absolute;
-  left: 18px;
-}
-
-.block--if .block-text,
-.block--switch .block-text {
-  align-items: center;
-  max-width: 100%;
-  overflow: hidden;
-}
-
-.block-text .block-name {
-  max-width: 100%;
-}
-
-.block--parallel,
-.block--join {
-  justify-content: center;
-  padding: 0;
-  border-radius: var(--bildora-radius-md);
-  background: var(--bildora-surface-selected);
-}
-
-.block-glyph {
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  font-size: var(--bildora-text-xs);
-  font-weight: var(--bildora-weight-semibold);
-  color: var(--bildora-text-muted);
 }
 
 /* Notes and groups are lighter than blocks, so they never read as steps. */
@@ -570,6 +542,11 @@
 }
 
 /* The run view: state by icon, Skipped blocks dimmed, the path taken drawn heavier. */
+/* A disabled block, which the run passes through: dimmed, with its border solid, unlike Skipped. */
+.block.is-disabled {
+  opacity: 0.45;
+}
+
 .block.is-skipped {
   opacity: 0.5;
   border-style: dashed;
@@ -588,13 +565,29 @@
   stroke-width: 2.5;
 }
 
-.handle {
-  width: 12px;
-  height: 12px;
+/* A port is drawn by its ::before, shaped by kind and turned to face out of its side. */
+.react-flow__handle.handle {
+  width: 11px;
+  height: 11px;
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+.handle::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--port-color, var(--bildora-text));
+  clip-path: var(--port-shape, none);
+  border-radius: 1px;
+  transform: rotate(var(--port-turn, 0deg));
   transition: transform var(--bildora-motion-fast) var(--bildora-ease);
 }
 
-/* Larger to the pointer than it is drawn, so an output is easy to grab. */
+/* Larger to the pointer than it is drawn, so a port is easy to grab. */
 .handle::after {
   content: '';
   position: absolute;
@@ -602,40 +595,123 @@
   border-radius: 50%;
 }
 
+/* The input is a triangle pointing into the block. */
+.handle--in {
+  --port-color: var(--bildora-text-muted);
+  --port-shape: polygon(0 0, 100% 50%, 0 100%);
+}
+
+.handle--in[data-side='top'] {
+  --port-turn: 90deg;
+}
+
+.handle--in[data-side='right'] {
+  --port-turn: 180deg;
+}
+
+.handle--in[data-side='bottom'] {
+  --port-turn: 270deg;
+}
+
+.handle--branch {
+  --port-color: var(--family);
+}
+
+.react-flow__handle.handle--error {
+  width: 13px;
+  height: 13px;
+  --port-color: var(--bildora-status-failed);
+  --port-shape: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+
+.flow-canvas:not(.is-readonly) .handle:hover::before {
+  transform: rotate(var(--port-turn, 0deg)) scale(1.35);
+}
+
 .flow-canvas:not(.is-readonly) .handle:hover {
-  transform: translate(50%, -50%) scale(1.35);
-  border-color: var(--bildora-accent);
+  --port-color: var(--bildora-accent);
 }
 
-.flow-canvas:not(.is-readonly) .handle--in:hover {
-  transform: translate(-50%, -50%) scale(1.35);
-}
-
-/* The arrowhead of a connection is drawn with it, in the same color. */
 .flow-canvas:not(.is-readonly) .react-flow__edge:hover .react-flow__edge-path {
   stroke: var(--bildora-accent);
 }
 
+/* A connection has no arrowhead: the input's triangle ends it, in the color of what comes in. */
+.handle--in[data-tone='accent'] {
+  --port-color: var(--bildora-accent);
+}
+
+.handle--in[data-tone='taken'] {
+  --port-color: var(--bildora-text);
+}
+
+.handle--in[data-tone='error'] {
+  --port-color: var(--bildora-status-failed);
+}
+
+/* The blocks at the other end of the port under the pointer. */
+.block.is-port-peer {
+  border-color: color-mix(in srgb, var(--bildora-accent) 60%, var(--bildora-border));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--bildora-accent) 20%, transparent),
+    var(--bildora-shadow-block);
+}
+
+/* A port's name and what it is for, the same size at any zoom. */
+.port-tooltip {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 240px;
+  padding: var(--bildora-space-1) var(--bildora-space-2);
+  background: var(--bildora-surface-raised);
+  border: 1px solid var(--bildora-border);
+  border-radius: var(--bildora-radius-md);
+  box-shadow: var(--bildora-shadow-overlay);
+  font-size: var(--bildora-text-xs);
+  line-height: 1.3;
+  color: var(--bildora-text);
+  pointer-events: none;
+}
+
+.port-tooltip-name {
+  font-weight: var(--bildora-weight-semibold);
+}
+
+.port-tooltip-purpose {
+  color: var(--bildora-text-muted);
+}
+
+/* A choice's label sits outside the block, beside its port, clear of the connection. */
 .handle-label {
   position: absolute;
-  right: 16px;
-  top: 50%;
-  transform: translateY(-50%);
   font-size: var(--bildora-text-xs);
+  line-height: 1;
   color: var(--bildora-text-muted);
   pointer-events: none;
   white-space: nowrap;
 }
 
-/* A decision keeps its labels inside its shape, left of each output, clear of the connections. */
-.block--if,
-.block--switch {
-  padding-right: 64px;
+.handle-label--right {
+  left: calc(100% + 4px);
+  bottom: calc(100% - 2px);
 }
 
-.block--if .handle-label,
-.block--switch .handle-label {
-  right: 26px;
+.handle-label--left {
+  right: calc(100% + 4px);
+  bottom: calc(100% - 2px);
+}
+
+.handle-label--top {
+  left: calc(100% + 2px);
+  bottom: calc(100% + 2px);
+}
+
+.handle-label--bottom {
+  left: calc(100% + 2px);
+  top: calc(100% + 2px);
 }
 
 /* An input lets the pointer through to the end of the connection drawn under it, which can then
@@ -644,15 +720,10 @@
   pointer-events: none;
 }
 
-.handle--error {
-  border-style: dashed;
-}
-
 /* Only valid targets highlight while a connection is dragged. */
 .react-flow__handle.connectingto.valid,
 .react-flow__node.is-target .handle--in {
-  background: var(--bildora-accent);
-  border-color: var(--bildora-accent);
+  --port-color: var(--bildora-accent);
 }
 
 .react-flow__node.is-target .block {
@@ -680,6 +751,12 @@
 .react-flow__edge.edge--splice .react-flow__edge-path {
   stroke: var(--bildora-accent);
   stroke-width: 3;
+}
+
+/* The connections of the port under the pointer, whatever kind they are. */
+.react-flow__edge.edge--port-hover .react-flow__edge-path {
+  stroke: var(--bildora-accent);
+  stroke-width: 2;
 }
 
 .react-flow__edge-textbg {
@@ -798,7 +875,6 @@
   background: var(--bildora-surface-raised);
   font-size: var(--bildora-text-xs);
   color: var(--bildora-text-muted);
-  background: transparent;
   border: 1px solid var(--bildora-border);
   border-radius: 999px;
 }
@@ -806,4 +882,403 @@
 .block-used-by:not(:disabled):hover {
   color: var(--bildora-accent);
   border-color: var(--bildora-accent);
+}
+
+/* ---- The block panel: a card naming the block, tabs, and folding sections. ---- */
+
+.flow-settings {
+  position: relative;
+}
+
+/* The fold button sits in the card's corner rather than pushing it down. */
+.flow-settings > .panel-collapse {
+  position: absolute;
+  top: var(--bildora-space-2);
+  right: var(--bildora-space-2);
+  z-index: 3;
+  float: none;
+  margin: 0;
+}
+
+.block-settings {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: calc(-1 * var(--bildora-space-3));
+}
+
+.block-card {
+  position: sticky;
+  top: calc(-1 * var(--bildora-space-3));
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--bildora-space-3);
+  padding: var(--bildora-space-3) 36px var(--bildora-space-2) var(--bildora-space-3);
+  background: var(--bildora-surface-panel);
+}
+
+.block-card-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.flow-side .block-card .block-settings-name {
+  max-width: 100%;
+  margin: 0;
+  font-size: var(--bildora-text-lg);
+  font-weight: var(--bildora-weight-semibold);
+  line-height: var(--bildora-line-tight);
+  color: var(--bildora-text);
+}
+
+.block-card-kind {
+  max-width: 100%;
+  padding: 1px var(--bildora-space-2);
+  border-radius: 999px;
+  background: var(--bildora-surface-hover);
+  color: var(--bildora-text-muted);
+  font-size: var(--bildora-text-xs);
+}
+
+.block-card-actions {
+  display: flex;
+  gap: 2px;
+  align-self: start;
+}
+
+.block-tabs {
+  position: sticky;
+  top: calc(-1 * var(--bildora-space-3) + 62px);
+  z-index: 2;
+  display: flex;
+  gap: 2px;
+  padding: 0 var(--bildora-space-2);
+  border-bottom: 1px solid var(--bildora-border);
+  background: var(--bildora-surface-panel);
+}
+
+.block-tabs button {
+  height: 30px;
+  padding: 0 var(--bildora-space-2);
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--bildora-text-muted);
+  font-size: var(--bildora-text-sm);
+  font-weight: var(--bildora-weight-medium);
+}
+
+.block-tabs button:hover {
+  color: var(--bildora-text);
+}
+
+.block-tabs button[aria-selected='true'] {
+  color: var(--bildora-text);
+  border-bottom-color: var(--bildora-accent);
+}
+
+.block-tab-panel {
+  container-type: inline-size;
+  padding-bottom: var(--bildora-space-4);
+}
+
+.block-tab-empty {
+  margin: 0;
+  padding: var(--bildora-space-4) var(--bildora-space-3);
+}
+
+.panel-section {
+  border-bottom: 1px solid var(--bildora-border);
+}
+
+.flow-side .panel-section-title {
+  margin: 0;
+}
+
+.panel-section-title button {
+  display: flex;
+  align-items: center;
+  gap: var(--bildora-space-1);
+  width: 100%;
+  height: 34px;
+  padding: 0 var(--bildora-space-3);
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--bildora-text-muted);
+  font-size: var(--bildora-text-xs);
+  font-weight: var(--bildora-weight-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+}
+
+.panel-section-title button:hover {
+  color: var(--bildora-text);
+}
+
+.panel-section-chevron {
+  width: 14px;
+  height: 14px;
+  transition: transform var(--bildora-motion-normal) var(--bildora-ease);
+}
+
+.panel-section[data-open='false'] .panel-section-chevron {
+  transform: rotate(-90deg);
+}
+
+.panel-section-count {
+  margin-left: auto;
+  font-weight: var(--bildora-weight-regular);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.panel-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bildora-space-3);
+  padding: 2px var(--bildora-space-3) var(--bildora-space-4);
+}
+
+/* With room to spare, labels sit to the left of their fields. */
+@container (min-width: 290px) {
+  .block-tab-panel .field:has(> .field-label) {
+    display: grid;
+    grid-template-columns: 104px minmax(0, 1fr);
+    column-gap: var(--bildora-space-2);
+    row-gap: var(--bildora-space-1);
+    align-items: center;
+  }
+
+  .block-tab-panel .field > .field-label {
+    grid-column: 1;
+  }
+
+  .block-tab-panel .field:has(> .field-label) > :not(.field-label, .field-hint) {
+    grid-column: 2;
+  }
+
+  .block-tab-panel .value-field {
+    align-items: center;
+  }
+
+  .block-tab-panel .value-field .pick-whip {
+    margin-top: 0;
+  }
+}
+
+/* Help about a field shows over the panel while the pointer is on its label. */
+.block-tab-panel .field {
+  position: relative;
+}
+
+.block-tab-panel .field:has(.field-hint) .field-label {
+  cursor: help;
+}
+
+.block-tab-panel .field .field-hint,
+[data-tip]::after {
+  position: absolute;
+  z-index: 20;
+  width: max-content;
+  max-width: min(260px, 100%);
+  padding: var(--bildora-space-1) var(--bildora-space-2);
+  border: 1px solid var(--bildora-border);
+  border-radius: var(--bildora-radius-md);
+  background: var(--bildora-surface-raised);
+  box-shadow: var(--bildora-shadow-overlay);
+  color: var(--bildora-text);
+  font-size: var(--bildora-text-sm);
+  font-weight: var(--bildora-weight-regular);
+  line-height: var(--bildora-line-normal);
+  white-space: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  pointer-events: none;
+}
+
+.block-tab-panel .field .field-hint {
+  display: none;
+  top: 100%;
+  left: 0;
+  margin-top: var(--bildora-space-1);
+}
+
+.block-tab-panel .field:has(.field-label:hover) .field-hint {
+  display: block;
+}
+
+[data-tip] {
+  position: relative;
+  cursor: help;
+}
+
+[data-tip]:hover::after,
+[data-tip]:focus-visible::after {
+  content: attr(data-tip);
+  top: calc(100% + var(--bildora-space-1));
+  left: 0;
+  max-width: 240px;
+  width: 240px;
+}
+
+/* Outputs, each drawn as its port is on the canvas. */
+.block-outputs {
+  list-style: none;
+  margin: 0;
+  padding: var(--bildora-space-2) var(--bildora-space-3);
+}
+
+.block-output {
+  display: flex;
+  align-items: center;
+  gap: var(--bildora-space-2);
+  min-height: 32px;
+  border-bottom: 1px solid var(--bildora-border);
+}
+
+.block-output-name {
+  font-weight: var(--bildora-weight-medium);
+}
+
+.block-output-targets {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--bildora-space-1) var(--bildora-space-2);
+  margin-left: auto;
+  min-width: 0;
+}
+
+.block-output-targets .link-button,
+.block-readers .link-button,
+.shared-value code,
+.block-help code {
+  font-family: var(--bildora-font-mono);
+  font-size: var(--bildora-text-xs);
+}
+
+.port-mark {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 1px;
+  background: var(--bildora-text);
+}
+
+.port-mark--branch {
+  background: var(--family);
+}
+
+.port-mark--error {
+  width: 11px;
+  height: 11px;
+  border-radius: 0;
+  background: var(--bildora-status-failed);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+
+/* What the block shares, and who reads it. */
+.shared-values {
+  display: grid;
+  gap: var(--bildora-space-2);
+  margin: 0;
+}
+
+.shared-value {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.shared-value dt {
+  font-weight: var(--bildora-weight-medium);
+}
+
+.shared-value dd {
+  display: flex;
+  gap: var(--bildora-space-2);
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0;
+  min-width: 0;
+}
+
+.shared-value code {
+  overflow-wrap: anywhere;
+  color: var(--bildora-text-muted);
+}
+
+.block-readers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bildora-space-1) var(--bildora-space-3);
+}
+
+.block-help {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bildora-space-2);
+  padding: var(--bildora-space-3);
+  line-height: var(--bildora-line-normal);
+}
+
+.block-help p {
+  margin: 0;
+}
+
+.flow-side .block-help h3 {
+  margin: var(--bildora-space-2) 0 0;
+  font-size: var(--bildora-text-xs);
+  font-weight: var(--bildora-weight-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--bildora-text-muted);
+}
+
+.block-help-rule {
+  padding: var(--bildora-space-2);
+  border-radius: var(--bildora-radius-md);
+  background: var(--bildora-surface-base);
+  border: 1px solid var(--bildora-border);
+}
+
+/* A block named in the panel, which a click selects on the canvas. */
+.link-button {
+  min-height: 0;
+  height: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--bildora-accent);
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+/* In the run view, what a block is doing or why it failed, under it. */
+.block-detail {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  max-width: 220px;
+  font-size: var(--bildora-text-xs);
+  color: var(--bildora-text-muted);
+  pointer-events: none;
+}
+
+.block.is-failed .block-detail {
+  color: var(--bildora-status-failed);
 }

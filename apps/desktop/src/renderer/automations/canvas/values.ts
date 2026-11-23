@@ -286,6 +286,13 @@ export function expressionType(context: ValueContext, expression: string): Value
  * blocks.
  */
 export function usedByCounts(blocks: readonly AutomationBlock[]): ReadonlyMap<string, number> {
+  return new Map([...usersOf(blocks)].map(([id, set]) => [id, set.size]));
+}
+
+/** Which other blocks use values of each block, by block id, as `usedByCounts` counts them. */
+export function usersOf(
+  blocks: readonly AutomationBlock[],
+): ReadonlyMap<string, ReadonlySet<string>> {
   const users = new Map<string, Set<string>>();
   const use = (target: string, user: string): void => {
     if (target === user) return;
@@ -305,7 +312,49 @@ export function usedByCounts(blocks: readonly AutomationBlock[]): ReadonlyMap<st
       for (const reference of findStepOutputReferences(value)) use(reference.step, block.id);
     }
   }
-  return new Map([...users].map(([id, set]) => [id, set.size]));
+  return users;
+}
+
+/** A value a block offers to the blocks after it, as its Data tab lists it. */
+export interface SharedValue {
+  readonly label: string;
+  readonly expression: string;
+  readonly type: ValueType;
+}
+
+/**
+ * What other blocks can read from `blockId`: Start's inputs, and a tool block's results and
+ * settings. Other kinds share nothing.
+ */
+export function sharedValues(context: ValueContext, blockId: string): readonly SharedValue[] {
+  const block = context.blocks.find(({ id }) => id === blockId);
+  if (block?.type === 'start') {
+    return inputsOfFlow(context.blocks).map((input) => ({
+      label: input.label ?? input.name,
+      expression: `inputs.${input.name}`,
+      type: typeOfParameter(input.type),
+    }));
+  }
+  if (block?.type !== 'run') return [];
+  const results = (toolOfBlock(context, blockId)?.outputDetails ?? []).flatMap((output) => {
+    const base = `steps.${blockId}.outputs.${output.name}`;
+    return [
+      { label: output.name, expression: base, type: output.type },
+      ...(output.fields ?? [])
+        .filter(({ secret }) => secret !== true)
+        .map((field) => ({
+          label: `${output.name} › ${field.name}`,
+          expression: `${base}.${field.name}`,
+          type: FIELD_TYPES[field.type],
+        })),
+    ];
+  });
+  const settings = linkableParameters(context, blockId).map((parameter) => ({
+    label: parameter.label,
+    expression: `${blockId}.${parameter.name}`,
+    type: typeOfParameter(parameter.type),
+  }));
+  return [...results, ...settings];
 }
 
 /** A plain value written as an expression, so that a person can go on from it. */

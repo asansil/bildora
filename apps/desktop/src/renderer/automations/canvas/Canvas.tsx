@@ -3,7 +3,6 @@ import type { DragEvent, KeyboardEvent, ReactNode } from 'react';
 import {
   Background,
   Controls,
-  MarkerType,
   MiniMap,
   ReactFlow,
   PanOnScrollMode,
@@ -17,7 +16,6 @@ import type {
   Connection,
   Edge,
   EdgeChange,
-  EdgeMarker,
   FinalConnectionState,
   HandleType,
   IsValidConnection,
@@ -28,7 +26,13 @@ import type {
 import { ChevronDown, ChevronUp, StickyNote, X } from 'lucide-react';
 import '@xyflow/react/dist/style.css';
 import './canvas.css';
-import { ERROR_OUTPUT, connectionOutput, outputsOf, validTargets } from '@bildora/protocol';
+import {
+  ERROR_OUTPUT,
+  connectionOutput,
+  isDisableable,
+  outputsOf,
+  validTargets,
+} from '@bildora/protocol';
 import type { AutomationConnection, AutomationGroup, AutomationPosition } from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
 import type {
@@ -37,7 +41,7 @@ import type {
   TakenPathView,
   ToolView,
 } from '../../../shared/ipc-contract.js';
-import { blockKindText, outputLabel } from './block-text.js';
+import { blockKindText, outputLabel, portText } from './block-text.js';
 import {
   NOTE_SIZE,
   blockOf,
@@ -45,10 +49,12 @@ import {
   alignToGrid,
   connect,
   copyItems,
+  disablesChosen,
   disconnect,
   downstreamOf,
   duplicateItems,
   extractBlock,
+  isDisabled,
   isInFlow,
   moveItems,
   pasteItems,
@@ -56,13 +62,20 @@ import {
   sizeOf,
   spliceEnds,
   spliceInto,
+  toggleDisabled,
   updateNote,
   upstreamOf,
 } from './flow-document.js';
 import type { ConnectionRef, FlowClip } from './flow-document.js';
 import { ContextMenu } from '../../shell/ContextMenu.js';
 import type { MenuEntry } from '../../shell/menu-model.js';
-import { arrangeEntries, commandItem, optionsEntries, scaleEntries } from './canvas-commands.js';
+import {
+  arrangeEntries,
+  commandItem,
+  optionsEntries,
+  scaleEntries,
+  toggleDisabledItem,
+} from './canvas-commands.js';
 import type {
   CanvasCommand,
   CanvasCommands,
@@ -70,7 +83,20 @@ import type {
   EditorCommands,
 } from './canvas-commands.js';
 import { layoutBlocks } from './layout.js';
-import { CanvasActionsContext, RightAnglesContext } from './canvas-actions.js';
+import {
+  CanvasActionsContext,
+  InputTonesContext,
+  NO_PORT_HOVER,
+  PortHoverContext,
+  PortLayoutsContext,
+  RightAnglesContext,
+} from './canvas-actions.js';
+import type { PortHover } from './canvas-actions.js';
+import { inputTones } from './input-tones.js';
+import { PortTooltip } from './PortTooltip.js';
+import type { PortBox } from './PortTooltip.js';
+import { layoutPorts } from './port-sides.js';
+import type { PortRect, Side } from './port-sides.js';
 import type { CanvasActions } from './canvas-actions.js';
 import { edgeTypes } from './edges.js';
 import { AddDialog, ConnectDialog } from './KeyboardDialogs.js';
@@ -107,20 +133,80 @@ function keepCopy(clip: FlowClip): void {
   clipboard = clip;
 }
 
-/** An arrowhead in a color of the theme, so a connection reads in the direction it runs. */
-function arrow(color: string): EdgeMarker {
-  return {
-    type: MarkerType.ArrowClosed,
-    color,
-    width: 20,
-    height: 20,
-    markerUnits: 'userSpaceOnUse',
-  };
+/** How far from a port the pointer still points at it, as its hit area reaches. */
+const PORT_REACH = 6;
+
+/** The port under the pointer, and where it is in the canvas. */
+interface HoveredPort {
+  readonly block: string;
+  readonly input: boolean;
+  readonly port: string;
+  readonly side: Side;
+  readonly box: PortBox;
 }
-const ARROW = arrow('var(--bildora-border-strong)');
-const ARROW_TAKEN = arrow('var(--bildora-text)');
-const ARROW_ERROR = arrow('var(--bildora-status-failed)');
-const ARROW_SELECTED = arrow('var(--bildora-accent)');
+
+function isSide(value: string | undefined): value is Side {
+  return value === 'left' || value === 'right' || value === 'top' || value === 'bottom';
+}
+
+/**
+ * The port nearest the pointer within reach of it. An input lets the pointer through to the end of
+ * a connection, so the pointer is tested against where the ports are rather than what it is over.
+ */
+function portUnder(x: number, y: number, canvas: HTMLElement): HoveredPort | undefined {
+  const area = canvas.getBoundingClientRect();
+  let nearest: { port: HoveredPort; distance: number } | undefined;
+  for (const handle of canvas.querySelectorAll<HTMLElement>('.react-flow__handle.handle')) {
+    const rect = handle.getBoundingClientRect();
+    if (
+      x < rect.left - PORT_REACH ||
+      x > rect.right + PORT_REACH ||
+      y < rect.top - PORT_REACH ||
+      y > rect.bottom + PORT_REACH
+    ) {
+      continue;
+    }
+    const block = handle.dataset['nodeid'];
+    const port = handle.dataset['handleid'];
+    const side = handle.dataset['side'];
+    if (block === undefined || port === undefined || !isSide(side)) continue;
+    const distance = Math.hypot(x - (rect.left + rect.right) / 2, y - (rect.top + rect.bottom) / 2);
+    if (nearest !== undefined && nearest.distance <= distance) continue;
+    nearest = {
+      distance,
+      port: {
+        block,
+        input: handle.classList.contains('target'),
+        port,
+        side,
+        box: {
+          left: rect.left - area.left,
+          top: rect.top - area.top,
+          right: rect.right - area.left,
+          bottom: rect.bottom - area.top,
+        },
+      },
+    };
+  }
+  return nearest?.port;
+}
+
+/** A connection drawn with one more class. */
+function withClass(edge: Edge, mark: string): Edge {
+  return { ...edge, className: `${edge.className ?? ''} ${mark}`.trim() };
+}
+
+function samePort(a: HoveredPort | undefined, b: HoveredPort | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.block === b.block &&
+    a.port === b.port &&
+    a.input === b.input &&
+    a.side === b.side &&
+    a.box.left === b.box.left &&
+    a.box.top === b.box.top
+  );
+}
 
 function nothing(): void {
   // A command that cannot run now.
@@ -178,6 +264,10 @@ function relayed(
     selectUpstream: command('selectUpstream'),
     selectDownstream: command('selectDownstream'),
     takeOut: command('takeOut'),
+    replace: command('replace'),
+    showUses: command('showUses'),
+    toggleDisabled: command('toggleDisabled'),
+    disables: commands.disables,
     tidyAll: command('tidyAll'),
     tidySelected: command('tidySelected'),
     alignToGrid: command('alignToGrid'),
@@ -200,7 +290,7 @@ function relayed(
 function stateOf(commands: CanvasCommands): string {
   return Object.values(commands)
     .map((value: unknown) =>
-      typeof value === 'number'
+      typeof value === 'number' || typeof value === 'boolean'
         ? String(value)
         : typeof value === 'object' && value !== null && 'enabled' in value
           ? String(value.enabled)
@@ -336,6 +426,7 @@ function stepDetail(step: StepRunView | undefined): string | undefined {
   if (step === undefined) return undefined;
   if (step.failure !== undefined) return step.failure.message;
   if (step.state === 'skipped') return t('automation.skipped');
+  if (step.state === 'disabled') return t('automation.disabled');
   if (step.state === 'running' && step.message !== undefined) return t('automation.waitingForYou');
   if (step.resumesAt !== undefined) {
     return t('automation.resumesAt', { time: new Date(step.resumesAt).toLocaleTimeString('en') });
@@ -534,6 +625,7 @@ export function Canvas({
             description: describeBlock(document, block.id, (id) => names.get(id) ?? id),
             problems: readOnly ? 0 : (problemCounts.get(block.id) ?? 0),
             usedBy: usedBy.get(block.id) ?? 0,
+            disabled: isDisabled(block) || step?.state === 'disabled',
             ...(tool === undefined ? {} : { tool }),
             ...(run === undefined ? {} : { state: step?.state ?? 'idle' }),
             ...(detail === undefined ? {} : { detail }),
@@ -635,7 +727,6 @@ export function Canvas({
         return {
           id,
           type: 'flow',
-          markerEnd: taken.has(id) ? ARROW_TAKEN : output === ERROR_OUTPUT ? ARROW_ERROR : ARROW,
           source: connection.from,
           sourceHandle: output,
           target: connection.to,
@@ -745,32 +836,117 @@ export function Canvas({
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     setEdges((current) => applyEdgeChanges(changes, current));
   }, []);
-  // A selected connection's arrowhead takes the selection color with its line, as does the one a
-  // block from the library would go into. While a block is Shift-dragged, the flow is drawn as it
-  // would be if the block were let go now, with the connections that would join it in the accent.
+  // The connection a block from the library would go into is drawn in the accent. While a block is
+  // Shift-dragged, the flow is drawn as it would be if the block were let go now, with the
+  // connections that would join it in the accent.
   const drawnEdges = useMemo(() => {
-    const marked = (edge: Edge, mark: string, arrow?: EdgeMarker): Edge => ({
-      ...edge,
-      ...(arrow === undefined ? {} : { markerEnd: arrow }),
-      className: `${edge.className ?? ''} ${mark}`.trim(),
-    });
     if (preview !== undefined) {
       return edgesFor(preview.connections).map((edge) =>
         preview.pending.has(edge.id)
-          ? marked(edge, 'edge--pending', ARROW_SELECTED)
+          ? withClass(edge, 'edge--pending')
           : edge.id === preview.replaced
-            ? marked(edge, 'edge--replaced')
+            ? withClass(edge, 'edge--replaced')
             : edge,
       );
     }
-    return edges.map((edge) =>
-      edge.id === spliceEdge
-        ? marked(edge, 'edge--splice', ARROW_SELECTED)
-        : edge.selected === true
-          ? { ...edge, markerEnd: ARROW_SELECTED }
-          : edge,
-    );
+    return edges.map((edge) => (edge.id === spliceEdge ? withClass(edge, 'edge--splice') : edge));
   }, [edges, spliceEdge, preview, edgesFor]);
+
+  // The port under the pointer names itself and lights up its connections and the blocks at their
+  // other end.
+  const [hoveredPort, setHoveredPort] = useState<HoveredPort | undefined>(undefined);
+  const [hoveredEdge, setHoveredEdge] = useState<string | undefined>(undefined);
+  const hoverFrame = useRef(0);
+  const hoverPoint = useRef<{ x: number; y: number } | undefined>(undefined);
+  const findPort = useCallback((x: number, y: number, pressed: boolean) => {
+    hoverPoint.current = pressed ? undefined : { x, y };
+    if (hoverFrame.current !== 0) return;
+    hoverFrame.current = requestAnimationFrame(() => {
+      hoverFrame.current = 0;
+      const point = hoverPoint.current;
+      const canvas = container.current;
+      // Nothing is named while a button is held: a block or a connection is being dragged.
+      const found =
+        point === undefined || canvas === null ? undefined : portUnder(point.x, point.y, canvas);
+      setHoveredPort((known) => (samePort(known, found) ? known : found));
+    });
+  }, []);
+  const forgetPort = useCallback(() => {
+    cancelAnimationFrame(hoverFrame.current);
+    hoverFrame.current = 0;
+    hoverPoint.current = undefined;
+    setHoveredPort(undefined);
+  }, []);
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(hoverFrame.current);
+    },
+    [],
+  );
+  const hoveredBlock = hoveredPort === undefined ? undefined : blockOf(document, hoveredPort.block);
+  const portEdges = useMemo(() => {
+    if (hoveredPort === undefined) return new Set<string>();
+    return new Set(
+      drawnEdges
+        .filter((edge) =>
+          hoveredPort.input
+            ? edge.target === hoveredPort.block
+            : edge.source === hoveredPort.block && edge.sourceHandle === hoveredPort.port,
+        )
+        .map(({ id }) => id),
+    );
+  }, [drawnEdges, hoveredPort]);
+  const shownEdges = useMemo(
+    () =>
+      portEdges.size === 0
+        ? drawnEdges
+        : drawnEdges.map((edge) =>
+            portEdges.has(edge.id) ? withClass(edge, 'edge--port-hover') : edge,
+          ),
+    [drawnEdges, portEdges],
+  );
+  const portHover = useMemo((): PortHover => {
+    if (hoveredPort === undefined) return NO_PORT_HOVER;
+    const peers = new Set<string>();
+    for (const edge of shownEdges) {
+      if (portEdges.has(edge.id)) peers.add(hoveredPort.input ? edge.source : edge.target);
+    }
+    return { owner: hoveredPort.block, peers };
+  }, [hoveredPort, portEdges, shownEdges]);
+  const tones = useMemo(() => inputTones(shownEdges, hoveredEdge), [shownEdges, hoveredEdge]);
+
+  // Ports face the blocks they connect to, as the blocks stand now, so they follow a drag.
+  const portShapes = useMemo(
+    () =>
+      new Map(
+        document.blocks.map((block) => [
+          block.id,
+          { hasInput: block.type !== 'start', outputs: outputsOf(block) },
+        ]),
+      ),
+    [document.blocks],
+  );
+  const portLayouts = useMemo(
+    () =>
+      layoutPorts(
+        nodes.flatMap((node): PortRect[] => {
+          const shape = node.type === 'block' ? portShapes.get(node.id) : undefined;
+          if (shape === undefined || node.hidden === true) return [];
+          return [
+            {
+              id: node.id,
+              x: node.position.x,
+              y: node.position.y,
+              width: node.width ?? 0,
+              height: node.height ?? 0,
+              ...shape,
+            },
+          ];
+        }),
+        drawnEdges,
+      ),
+    [nodes, drawnEdges, portShapes],
+  );
 
   /** The flow without a block, worked out once per drag. */
   const extractionOf = useCallback(
@@ -1225,6 +1401,8 @@ export function Canvas({
   const [single] = chosenBlocks.length === 1 ? chosenBlocks : [];
   const editable = !readOnly;
   const can = (enabled: boolean, run: () => void): CanvasCommand => ({ enabled, run });
+  /** Whether toggling the chosen blocks disables them, or undefined when none can be. */
+  const disables = disablesChosen(document, chosen);
 
   function duplicateChosen(): void {
     const copy = duplicateItems(document, chosen, GRID);
@@ -1293,6 +1471,20 @@ export function Canvas({
       onChange((current) => extractBlock(current, single.id));
       announce(t('command.tookOut', { name: nameOf(single.id) }));
     }),
+    replace: can(editable && single?.type === 'run' && onReplaceBlock !== undefined, () => {
+      if (single !== undefined) setDialog({ kind: 'replace', id: single.id });
+    }),
+    showUses: can(single !== undefined && (usedBy.get(single.id) ?? 0) > 0, () => {
+      if (single === undefined) return;
+      setFind({ query: `${single.id}.`, index: 0 });
+      setFindFocus((count) => count + 1);
+    }),
+    toggleDisabled: can(editable && disables !== undefined, () => {
+      const names = chosenBlocks.map(({ id }) => nameOf(id)).join(', ');
+      onChange((current) => toggleDisabled(current, chosen));
+      announce(t(disables === true ? 'command.disabled' : 'command.enabled', { names }));
+    }),
+    disables: disables !== false,
     tidyAll: can(editable, () => {
       void layoutBlocks(document.blocks, document.connections)
         .then((positions) => {
@@ -1424,6 +1616,7 @@ export function Canvas({
             },
           ]
         : []),
+      ...(isDisableable(block.type) ? [toggleDisabledItem(commands)] : []),
       ...(block.type === 'start'
         ? []
         : [
@@ -1531,6 +1724,7 @@ export function Canvas({
         v: commands.paste,
         d: commands.duplicate,
         a: commands.selectAll,
+        e: commands.toggleDisabled,
       };
       const letter = event.key.toLowerCase();
       if (letter === 'f' && !event.shiftKey) {
@@ -1721,9 +1915,11 @@ export function Canvas({
       onDrop={drop}
       onMouseMove={(event) => {
         pointer.current = { x: event.clientX, y: event.clientY };
+        findPort(event.clientX, event.clientY, event.buttons !== 0);
       }}
       onMouseLeave={() => {
         pointer.current = undefined;
+        forgetPort();
       }}
       onKeyDown={onKeyDown}
     >
@@ -1802,96 +1998,122 @@ export function Canvas({
       )}
       <RightAnglesContext value={rightAngles}>
         <CanvasActionsContext value={actions}>
-          <ReactFlow
-            nodes={nodes}
-            edges={drawnEdges}
-            nodeTypes={nodeTypes}
-            edgeTypes={edgeTypes}
-            onNodesChange={onNodesChange}
-            onNodeDrag={onNodeDrag}
-            onNodeDragStop={onNodeDragStop}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            edgesReconnectable={!readOnly}
-            // A chosen connection is drawn above the blocks, so its output end can be taken too.
-            elevateEdgesOnSelect
-            reconnectRadius={12}
-            onReconnectStart={onReconnectStart}
-            onReconnect={onReconnect}
-            onReconnectEnd={onReconnectEnd}
-            // The left button draws a selection box, and the middle one pans.
-            selectionOnDrag={!readOnly}
-            selectionMode={SelectionMode.Partial}
-            panOnDrag={readOnly ? true : [1]}
-            // The wheel and a touchpad move the view, and Ctrl+wheel or a pinch zooms it.
-            panOnScroll
-            panOnScrollMode={PanOnScrollMode.Free}
-            zoomOnScroll={false}
-            zoomOnPinch
-            zoomActivationKeyCode="Control"
-            onNodeClick={(_event, node) => {
-              setFocused(node.id);
-              setMoving(false);
-            }}
-            onNodeDoubleClick={(_event, node) => {
-              if (readOnly) {
-                if (node.type === 'block') onOpenBlock?.(node.id);
-              } else if (node.type === 'note') {
-                setEditingNote(node.id);
-              }
-            }}
-            onPaneClick={() => {
-              // A click on the empty canvas lets go of everything, keyboard focus included.
-              onSelect(new Set());
-              setFocused(undefined);
-              setMoving(false);
-            }}
-            onEdgeClick={() => {
-              setFocused(undefined);
-              setMoving(false);
-            }}
-            onEdgeDoubleClick={(_event, edge) => {
-              deleteConnection(edge.id);
-            }}
-            onPaneContextMenu={(event) => {
-              event.preventDefault();
-              if (readOnly) return;
-              setMenu(undefined);
-              setPaneMenu({
-                x: event.clientX,
-                y: event.clientY,
-                at: placed(flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })),
-              });
-            }}
-            onNodeContextMenu={(event, node) => {
-              event.preventDefault();
-              if (readOnly || node.type === 'frame') return;
-              openMenu(node.id, event.clientX, event.clientY);
-            }}
-            zoomOnDoubleClick={false}
-            onConnectStart={onConnectStart}
-            onConnectEnd={onConnectEnd}
-            isValidConnection={isValidConnection}
-            nodesDraggable={!readOnly}
-            nodesConnectable={!readOnly}
-            elevateNodesOnSelect={false}
-            nodesFocusable={false}
-            edgesFocusable={false}
-            deleteKeyCode={null}
-            onlyRenderVisibleElements={document.blocks.length >= CULL_FROM}
-            minZoom={MIN_ZOOM}
-            maxZoom={MAX_ZOOM}
-            proOptions={{ hideAttribution: true }}
-            snapToGrid={snapToGrid}
-            snapGrid={[GRID, GRID]}
-          >
-            {showGrid ? <Background gap={GRID} /> : null}
-            {showNavigator ? <MiniMap pannable zoomable ariaLabel={t('canvas.overview')} /> : null}
-            <Controls showInteractive={false} />
-            {children}
-          </ReactFlow>
+          <PortLayoutsContext value={portLayouts}>
+            <InputTonesContext value={tones}>
+              <PortHoverContext value={portHover}>
+                <ReactFlow
+                  nodes={nodes}
+                  edges={shownEdges}
+                  onMove={forgetPort}
+                  onEdgeMouseEnter={(_event, edge) => {
+                    // As its line does, the end of a connection lights up only where it can be edited.
+                    if (!readOnly) setHoveredEdge(edge.id);
+                  }}
+                  onEdgeMouseLeave={() => {
+                    setHoveredEdge(undefined);
+                  }}
+                  nodeTypes={nodeTypes}
+                  edgeTypes={edgeTypes}
+                  onNodesChange={onNodesChange}
+                  onNodeDrag={onNodeDrag}
+                  onNodeDragStop={onNodeDragStop}
+                  onEdgesChange={onEdgesChange}
+                  onConnect={onConnect}
+                  edgesReconnectable={!readOnly}
+                  // A chosen connection is drawn above the blocks, so its output end can be taken too.
+                  elevateEdgesOnSelect
+                  reconnectRadius={12}
+                  onReconnectStart={onReconnectStart}
+                  onReconnect={onReconnect}
+                  onReconnectEnd={onReconnectEnd}
+                  // The left button draws a selection box, and the middle one pans.
+                  selectionOnDrag={!readOnly}
+                  selectionMode={SelectionMode.Partial}
+                  panOnDrag={readOnly ? true : [1]}
+                  // The wheel and a touchpad move the view, and Ctrl+wheel or a pinch zooms it.
+                  panOnScroll
+                  panOnScrollMode={PanOnScrollMode.Free}
+                  zoomOnScroll={false}
+                  zoomOnPinch
+                  zoomActivationKeyCode="Control"
+                  onNodeClick={(_event, node) => {
+                    setFocused(node.id);
+                    setMoving(false);
+                  }}
+                  onNodeDoubleClick={(_event, node) => {
+                    if (readOnly) {
+                      if (node.type === 'block') onOpenBlock?.(node.id);
+                    } else if (node.type === 'note') {
+                      setEditingNote(node.id);
+                    }
+                  }}
+                  onPaneClick={() => {
+                    // A click on the empty canvas lets go of everything, keyboard focus included.
+                    onSelect(new Set());
+                    setFocused(undefined);
+                    setMoving(false);
+                  }}
+                  onEdgeClick={() => {
+                    setFocused(undefined);
+                    setMoving(false);
+                  }}
+                  onEdgeDoubleClick={(_event, edge) => {
+                    deleteConnection(edge.id);
+                  }}
+                  onPaneContextMenu={(event) => {
+                    event.preventDefault();
+                    if (readOnly) return;
+                    setMenu(undefined);
+                    setPaneMenu({
+                      x: event.clientX,
+                      y: event.clientY,
+                      at: placed(flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })),
+                    });
+                  }}
+                  onNodeContextMenu={(event, node) => {
+                    event.preventDefault();
+                    if (readOnly || node.type === 'frame') return;
+                    openMenu(node.id, event.clientX, event.clientY);
+                  }}
+                  zoomOnDoubleClick={false}
+                  onConnectStart={onConnectStart}
+                  onConnectEnd={onConnectEnd}
+                  isValidConnection={isValidConnection}
+                  nodesDraggable={!readOnly}
+                  nodesConnectable={!readOnly}
+                  elevateNodesOnSelect={false}
+                  nodesFocusable={false}
+                  edgesFocusable={false}
+                  deleteKeyCode={null}
+                  onlyRenderVisibleElements={document.blocks.length >= CULL_FROM}
+                  minZoom={MIN_ZOOM}
+                  maxZoom={MAX_ZOOM}
+                  proOptions={{ hideAttribution: true }}
+                  snapToGrid={snapToGrid}
+                  snapGrid={[GRID, GRID]}
+                >
+                  {showGrid ? <Background gap={GRID} /> : null}
+                  {showNavigator ? (
+                    <MiniMap pannable zoomable ariaLabel={t('canvas.overview')} />
+                  ) : null}
+                  <Controls showInteractive={false} />
+                  {children}
+                </ReactFlow>
+              </PortHoverContext>
+            </InputTonesContext>
+          </PortLayoutsContext>
         </CanvasActionsContext>
       </RightAnglesContext>
+      {hoveredPort === undefined || hoveredBlock === undefined ? null : (
+        <PortTooltip
+          text={portText(
+            hoveredBlock.type,
+            hoveredPort.input ? { input: true } : { input: false, output: hoveredPort.port },
+          )}
+          box={hoveredPort.box}
+          side={hoveredPort.side}
+        />
+      )}
       {rectangle === undefined ? null : (
         <div
           className="scale-rectangle"

@@ -554,12 +554,21 @@ test('a selected connection is deleted alone, by Delete or a double-click', asyn
   await expect(block(window, 'extract')).toBeVisible();
   const edges = window.locator('.react-flow__edge');
   await expect(edges).toHaveCount(5);
-  await expect(window.locator('marker.react-flow__arrowhead').first()).toBeAttached();
+  // No arrowhead: the input's triangle ends a connection, in the color of what comes in.
+  await expect(window.locator('marker')).toHaveCount(0);
+  await expect(block(window, 'notify').locator('.handle--in')).toHaveAttribute(
+    'data-tone',
+    'error',
+  );
 
   // A block clicked first keeps keyboard focus, which Delete must not fall back to.
   await block(window, 'extract').click();
   await clickConnection(connection(window, 'Start', 'Next', 'extract'));
   await expect(connection(window, 'Start', 'Next', 'extract')).toHaveClass(/selected/);
+  await expect(block(window, 'extract').locator('.handle--in')).toHaveAttribute(
+    'data-tone',
+    'accent',
+  );
   await shot(window, 'edge-selected');
   await window.keyboard.press('Delete');
   await expect(edges).toHaveCount(4);
@@ -577,6 +586,95 @@ test('a selected connection is deleted alone, by Delete or a double-click', asyn
   await expect(window.getByTestId('canvas')).not.toHaveAttribute('data-focused');
   await window.getByTestId('canvas').press('Delete');
   await expect(window.getByTestId('canvas-block')).toHaveCount(5);
+});
+
+test('a port under the pointer names itself and lights up where it leads', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('branched', BRANCHED);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Branched');
+  await expect(block(window, 'extract')).toBeVisible();
+  const tooltip = window.getByTestId('port-tooltip');
+  await expect(tooltip).toHaveCount(0);
+
+  const error = await block(window, 'extract').locator('[data-output="error"]').boundingBox();
+  if (error === null) throw new Error('The Error port is not on screen.');
+  await window.mouse.move(error.x + error.width / 2, error.y + error.height / 2);
+  await expect(tooltip).toHaveRole('tooltip');
+  await expect(tooltip).toContainText('Error');
+  await expect(tooltip).toContainText('Continues here if this step fails');
+  await expect(connection(window, 'extract', 'Error', 'notify')).toHaveClass(/edge--port-hover/);
+  await expect(block(window, 'notify').getByTestId('canvas-block')).toHaveClass(/is-port-peer/);
+  await expect(block(window, 'report').getByTestId('canvas-block')).not.toHaveClass(/is-port-peer/);
+  // The block's own tooltip stays away while one of its ports is named.
+  await expect(block(window, 'extract').getByTestId('canvas-block')).not.toHaveAttribute('title');
+  await shot(window, 'port-hover');
+
+  // An input lets the pointer through to the connection under it, and is named all the same.
+  const input = await block(window, 'extract').locator('.handle--in').boundingBox();
+  if (input === null) throw new Error('The input is not on screen.');
+  await window.mouse.move(input.x + input.width / 2, input.y + input.height / 2);
+  await expect(tooltip).toContainText('Input');
+  await expect(connection(window, 'Start', 'Next', 'extract')).toHaveClass(/edge--port-hover/);
+  await expect(block(window, 'start').getByTestId('canvas-block')).toHaveClass(/is-port-peer/);
+
+  await window.mouse.move(5, 5);
+  await expect(tooltip).toHaveCount(0);
+  await expect(window.locator('.is-port-peer')).toHaveCount(0);
+});
+
+const LINEAR = `name: Linear
+blocks:
+  - { id: start, type: start }
+  - { id: extract, type: run, tool: acme.extract }
+  - { id: report, type: run, tool: acme.report }
+connections:
+  - { from: start, to: extract }
+  - { from: extract, to: report }
+`;
+
+test('a block is disabled from its card or Ctrl+E, and the run passes through it', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('linear', LINEAR);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Linear');
+  await block(window, 'extract').click();
+  const card = window.getByTestId('block-settings');
+  const menu = window.locator('.context-menu-root');
+  const shown = (id: string) => block(window, id).getByTestId('canvas-block');
+
+  // The card has one way into its actions: its ⋯ button, or a right-click on the name.
+  await expect(card.getByRole('button', { name: 'Rename…' })).toHaveCount(0);
+  await card.getByTestId('block-settings-name').click({ button: 'right' });
+  await expect(menu.getByRole('menuitem', { name: /Show on the canvas/ })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: /Copy its id \(extract\)/ })).toBeVisible();
+  await window.keyboard.press('Escape');
+  await card.getByRole('button', { name: 'More actions' }).click();
+  await shot(window, 'block-card-menu');
+  await menu.getByRole('menuitem', { name: /^Disable/ }).click();
+  await expect(shown('extract')).toHaveClass(/is-disabled/);
+  await expect(card).toContainText('Disabled · ');
+
+  // Ctrl+E turns it back on, and off again.
+  await block(window, 'extract').click();
+  await window.keyboard.press('Control+e');
+  await expect(shown('extract')).not.toHaveClass(/is-disabled/);
+  await window.keyboard.press('Control+e');
+  await expect(shown('extract')).toHaveClass(/is-disabled/);
+  await shot(window, 'block-disabled');
+
+  await window.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect
+    .poll(() => readFile(automationFile('linear'), 'utf8'))
+    .toMatch(/id: extract[\s\S]*disabled: true/);
+
+  await window.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(shown('report')).toHaveAttribute('data-state', 'completed', { timeout: 30_000 });
+  await expect(shown('extract')).toHaveAttribute('data-state', 'disabled');
+  await expect(shown('extract')).toHaveClass(/is-disabled/);
+  await shot(window, 'run-disabled');
 });
 
 test('a note is written in place, and the writing undoes as one', async () => {
@@ -1482,6 +1580,7 @@ test('a block menu duplicates and takes out, and Selection selects downstream', 
     /^Connect an output…/,
     /^Rename…/,
     /^Replace…/,
+    /^Disable/,
     /^Copy/,
     /^Duplicate/,
     /^Take out of the flow/,
@@ -1550,7 +1649,7 @@ test('the menus act on the automation on view, and are disabled for other tabs',
   await rail(window, 'Run history').click();
   await selection.click();
   const items = window.getByRole('menu', { name: 'Selection' }).getByRole('menuitem');
-  await expect(items).toHaveCount(10);
+  await expect(items).toHaveCount(11);
   for (const item of await items.all()) {
     await expect(item).toHaveAttribute('aria-disabled', 'true');
   }

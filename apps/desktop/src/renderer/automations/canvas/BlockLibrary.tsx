@@ -1,27 +1,24 @@
 import { useId, useState } from 'react';
-import { ChevronLeft, Clock, GitBranch, GitFork, Hand, ListTree, StickyNote } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+import { ChevronLeft, StickyNote } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { t } from '../../../shared/i18n/translate.js';
 import type { ToolView } from '../../../shared/ipc-contract.js';
-import { ProgramIcon } from '../../shell/ProgramIcon.js';
+import { BlockSwatch } from './BlockIcon.js';
 import { kindLabel } from './block-text.js';
 import { LIBRARY_DRAG_TYPE } from './Canvas.js';
 import { matches } from './KeyboardDialogs.js';
 import type { AddChoice } from './KeyboardDialogs.js';
 
-const CONTROLS: readonly { readonly choice: AddChoice; readonly icon: LucideIcon }[] = [
-  { choice: { kind: 'wait-for-time' }, icon: Clock },
-  { choice: { kind: 'wait-for-manual-action' }, icon: Hand },
-  { choice: { kind: 'if' }, icon: GitBranch },
-  { choice: { kind: 'switch' }, icon: ListTree },
-  { choice: { kind: 'parallel' }, icon: GitFork },
-];
+/** The blocks that steer the flow, in the order the library lists them. */
+export const CONTROL_KINDS = [
+  'wait-for-time',
+  'wait-for-manual-action',
+  'if',
+  'switch',
+  'parallel',
+] as const;
 
-/** The icon the library draws for a block that steers the flow. */
-export function controlIcon(kind: AddChoice['kind']): LucideIcon | undefined {
-  return CONTROLS.find(({ choice }) => choice.kind === kind)?.icon;
-}
+const CONTROLS = CONTROL_KINDS.map((kind) => ({ choice: { kind } satisfies AddChoice }));
 
 export interface BlockLibraryProps {
   readonly tools: readonly ToolView[];
@@ -69,9 +66,7 @@ export function BlockLibrary({ tools, onAdd, onCollapse }: BlockLibraryProps) {
   const searchId = useId();
   const [filter, setFilter] = useState('');
   const shownTools = tools.filter(({ name }) => matches(name, filter));
-  const shownControls = CONTROLS.filter(({ choice }) =>
-    matches(choice.kind === 'run' || choice.kind === 'note' ? '' : kindLabel(choice.kind), filter),
-  );
+  const shownControls = CONTROLS.filter(({ choice }) => matches(kindLabel(choice.kind), filter));
   const showNote = matches(t('canvas.kindNote'), filter);
   const nothing = shownTools.length === 0 && shownControls.length === 0 && !showNote;
   return (
@@ -119,7 +114,7 @@ export function BlockLibrary({ tools, onAdd, onCollapse }: BlockLibraryProps) {
               key={tool.key}
               choice={{ kind: 'run', tool: tool.id }}
               label={tool.name}
-              icon={<ProgramIcon tool={tool} />}
+              icon={<BlockSwatch kind="run" tool={tool} />}
               onAdd={onAdd}
             />
           ))}
@@ -129,14 +124,12 @@ export function BlockLibrary({ tools, onAdd, onCollapse }: BlockLibraryProps) {
         <>
           <h2>{t('canvas.libraryControl')}</h2>
           <ul className="library-list">
-            {shownControls.map(({ choice, icon: Icon }) => (
+            {shownControls.map(({ choice }) => (
               <Item
                 key={choice.kind}
                 choice={choice}
-                label={
-                  choice.kind === 'run' || choice.kind === 'note' ? '' : kindLabel(choice.kind)
-                }
-                icon={<Icon className="icon" aria-hidden="true" />}
+                label={kindLabel(choice.kind)}
+                icon={<BlockSwatch kind={choice.kind} />}
                 onAdd={onAdd}
               />
             ))}
@@ -150,7 +143,14 @@ export function BlockLibrary({ tools, onAdd, onCollapse }: BlockLibraryProps) {
             <Item
               choice={{ kind: 'note' }}
               label={t('canvas.kindNote')}
-              icon={<StickyNote className="icon" aria-hidden="true" />}
+              icon={
+                <span
+                  className="block-swatch block-swatch--small block-swatch--note"
+                  aria-hidden="true"
+                >
+                  <StickyNote className="icon" />
+                </span>
+              }
               onAdd={onAdd}
             />
           </ul>

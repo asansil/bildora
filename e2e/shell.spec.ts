@@ -405,6 +405,9 @@ test('a submenu opens from the keyboard and the pointer, and checks the current 
   await window.keyboard.press('ArrowRight');
   await expect(window.getByRole('menuitem', { name: 'View' })).toBeFocused();
   await window.keyboard.press('Enter');
+  // Scale and Options wait for an automation; the side panel comes first, then the theme.
+  await expect(view.getByRole('menuitemcheckbox', { name: 'Side panel' })).toBeFocused();
+  await window.keyboard.press('ArrowDown');
   await expect(themeItem).toBeFocused();
   await expect(themeItem).toHaveAttribute('aria-haspopup', 'menu');
   await expect(themeItem).toHaveAttribute('aria-expanded', 'false');

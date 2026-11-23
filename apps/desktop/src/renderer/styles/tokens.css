@@ -39,6 +39,21 @@
   /* Text on a filled dangerous action, such as a delete under the pointer. */
   --bildora-on-danger: light-dark(oklch(0.995 0.002 25), oklch(0.2 0.02 25));
 
+  /*
+   * Block families: each block's icon takes its family's color, on its family's tint. They mark
+   * what a block is; selection keeps the accent and run states keep their own icon and color.
+   */
+  --bildora-family-start: light-dark(oklch(0.52 0.13 150), oklch(0.78 0.14 150));
+  --bildora-family-start-tint: light-dark(oklch(0.95 0.04 150), oklch(0.31 0.05 150));
+  --bildora-family-tool: light-dark(oklch(0.52 0.14 250), oklch(0.77 0.11 250));
+  --bildora-family-tool-tint: light-dark(oklch(0.95 0.03 250), oklch(0.31 0.05 250));
+  --bildora-family-condition: light-dark(oklch(0.52 0.15 305), oklch(0.77 0.13 305));
+  --bildora-family-condition-tint: light-dark(oklch(0.95 0.035 305), oklch(0.31 0.06 305));
+  --bildora-family-parallel: light-dark(oklch(0.55 0.15 50), oklch(0.78 0.13 55));
+  --bildora-family-parallel-tint: light-dark(oklch(0.95 0.035 55), oklch(0.31 0.05 55));
+  --bildora-family-wait: light-dark(oklch(0.52 0.11 90), oklch(0.82 0.13 95));
+  --bildora-family-wait-tint: light-dark(oklch(0.95 0.04 95), oklch(0.31 0.05 95));
+
   /* Type. System faces, so the app sits naturally beside Windows 11 applications. */
   --bildora-font-ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
   --bildora-font-mono: 'Cascadia Mono', Consolas, ui-monospace, monospace;
@@ -69,6 +84,11 @@
   --bildora-control-height: 28px;
   --bildora-shadow-overlay: 0 8px 28px
     light-dark(oklch(0.3 0.01 235 / 0.18), oklch(0.05 0.01 235 / 0.55));
+  /* Canvas blocks: slightly rounder than controls, lifted off the canvas by a soft shadow. */
+  --bildora-radius-block: 6px;
+  --bildora-shadow-block:
+    0 1px 2px light-dark(oklch(0.3 0.01 235 / 0.14), oklch(0.05 0.01 235 / 0.5)),
+    0 3px 8px light-dark(oklch(0.3 0.01 235 / 0.1), oklch(0.05 0.01 235 / 0.4));
 
   /* Motion: brief, and only on opacity and transform. */
   --bildora-motion-fast: 80ms;

@@ -114,6 +114,17 @@ describe('theme tokens', () => {
       ).toBeGreaterThanOrEqual(4.5);
     });
 
+    it.each(['start', 'tool', 'condition', 'parallel', 'wait'])(
+      'shows the %s family icon on its tint and on a block',
+      (family) => {
+        for (const surface of [`family-${family}-tint`, 'surface-raised']) {
+          expect(
+            contrast(colorOf(`family-${family}`, scheme), colorOf(surface, scheme)),
+          ).toBeGreaterThanOrEqual(3);
+        }
+      },
+    );
+
     it('makes the focus ring and control borders visible', () => {
       for (const surface of SURFACES) {
         expect(

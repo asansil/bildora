@@ -16,6 +16,7 @@ import {
   TriangleAlert,
   Undo2,
 } from 'lucide-react';
+import { blockingProblems, isWarning } from '@bildora/protocol';
 import type { AutomationBlock, AutomationPosition } from '@bildora/protocol';
 import { t } from '../../shared/i18n/translate.js';
 import type {
@@ -36,9 +37,13 @@ import { PanelResizer } from '../shell/PanelResizer.js';
 import { RunStateBadge } from '../shell/RunStateBadge.js';
 import { ConsolePane } from '../tools/ConsolePane.js';
 import { commandFor } from './automation-draft.js';
-import { ProgramIcon } from '../shell/ProgramIcon.js';
-import { BlockLibrary, controlIcon } from './canvas/BlockLibrary.js';
+import { BlockSwatch } from './canvas/BlockIcon.js';
+import { BlockLibrary, CONTROL_KINDS } from './canvas/BlockLibrary.js';
 import { BlockSettings } from './canvas/BlockSettings.js';
+import { blockCardMenu } from './canvas/block-menu.js';
+import type { BlockTab } from './canvas/BlockSettings.js';
+import { PanelSectionsContext } from './canvas/PanelSection.js';
+import type { PanelSections } from './canvas/PanelSection.js';
 import { blockKindText, blockNames, kindLabel } from './canvas/block-text.js';
 import { Canvas } from './canvas/Canvas.js';
 import type { CanvasRun } from './canvas/Canvas.js';
@@ -181,14 +186,16 @@ function Problems({ problems, refusal, nameOf, onPick }: ProblemsProps) {
           <span className="problem-text">{refusal}</span>
         </li>
       )}
-      {problems.map((problem, index) => {
+      {[...blockingProblems(problems), ...problems.filter(isWarning)].map((problem, index) => {
         const { what, fix } = problemText(problem, nameOf);
+        const warning = isWarning(problem);
         return (
           <li key={`${problem.code}-${String(index)}`}>
             <button
               type="button"
-              className="problem-item"
+              className={warning ? 'problem-item problem-item--warning' : 'problem-item'}
               data-testid="automation-problem"
+              data-severity={warning ? 'warning' : 'error'}
               data-block-id={problem.blockId}
               disabled={problem.blockId === undefined}
               onClick={() => {
@@ -232,6 +239,7 @@ function RunDetails({ block, step, name, live, tools, onContinue, onShowTool }: 
       <p className="muted">{blockKindText(block, tools)}</p>
       <RunStateBadge state={state} />
       {state === 'skipped' ? <p className="muted">{t('automation.skipped')}</p> : null}
+      {state === 'disabled' ? <p className="muted">{t('automation.disabled')}</p> : null}
       {step?.durationMs === undefined ? null : <p>{formatDuration(step.durationMs)}</p>}
       {step?.failure === undefined ? null : <p className="field-problem">{step.failure.message}</p>}
       {waiting ? (
@@ -459,6 +467,8 @@ function FlowEditor({
   const [lower, setLower] = useState<'problems' | 'runs' | 'outline' | 'output' | 'data'>(
     'problems',
   );
+  /** The tab of the block panel, kept while other blocks are chosen. */
+  const [blockTab, setBlockTab] = useState<BlockTab>('settings');
   const nameField = useRef<HTMLInputElement>(null);
   /** False once the tab has gone, such as after a new automation is saved under its id. */
   const mounted = useRef(true);
@@ -609,12 +619,22 @@ function FlowEditor({
     runRequestsForNewTabs.delete(automation.id);
     return automation.id;
   });
+  /** The canvas's commands, which the selected block's card offers too, passed on to the app. */
+  const [canvasCommands, setCanvasCommands] = useState<CanvasCommands | undefined>();
+  const keepCommands = useCallback(
+    (commands: CanvasCommands | undefined) => {
+      setCanvasCommands(commands);
+      onCommands?.(commands);
+    },
+    [onCommands],
+  );
   /** The block the Rename dialog is open for. */
   const [renaming, setRenaming] = useState<string | undefined>();
   const nameOf = useCallback((id: string) => names.get(id) ?? id, [names]);
   const problemCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const { blockId } of checked) {
+    // A block's mark counts what keeps the flow from running; warnings are listed in Problems.
+    for (const { blockId } of blockingProblems(checked)) {
       if (blockId !== undefined) counts.set(blockId, (counts.get(blockId) ?? 0) + 1);
     }
     return counts;
@@ -741,19 +761,14 @@ function FlowEditor({
       ...tools.map((tool) => ({
         choice: { kind: 'run' as const, tool: tool.id },
         label: tool.name,
-        icon: <ProgramIcon tool={tool} />,
+        icon: <BlockSwatch kind="run" tool={tool} />,
         ...(tool.category === undefined ? {} : { group: tool.category }),
       })),
-      ...(['wait-for-time', 'wait-for-manual-action', 'if', 'switch', 'parallel'] as const).map(
-        (kind) => {
-          const Icon = controlIcon(kind);
-          return {
-            choice: { kind },
-            label: kindLabel(kind),
-            ...(Icon === undefined ? {} : { icon: <Icon className="icon" aria-hidden="true" /> }),
-          };
-        },
-      ),
+      ...CONTROL_KINDS.map((kind) => ({
+        choice: { kind },
+        label: kindLabel(kind),
+        icon: <BlockSwatch kind={kind} />,
+      })),
     ],
     [tools],
   );
@@ -788,6 +803,20 @@ function FlowEditor({
     onPanels({ ...panels, ...change }, commit);
   }
 
+  const folded = panels.foldedSections;
+  const sections = useMemo(
+    (): PanelSections => ({
+      folded: new Set(folded),
+      onFold: (key, fold) => {
+        const rest = (folded ?? []).filter((section) => section !== key);
+        onPanels({ ...panels, foldedSections: fold ? [...rest, key] : rest }, true);
+      },
+    }),
+    // `panels` changes with every resize; the folded list is what the sections depend on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [folded, onPanels],
+  );
+
   /** Shows a tab of the lower panel, opening the panel if it was folded away. */
   function showLower(tab: typeof lower): void {
     setLower(tab);
@@ -815,7 +844,7 @@ function FlowEditor({
     if (dirty || automation === undefined) {
       const stored = await store();
       id = stored.id;
-      problems = stored.problems;
+      problems = blockingProblems(stored.problems);
       if (automation === undefined) {
         // The tab reopens under the new id, so the refusal, or the run that asks for inputs
         // first, is handed to it.
@@ -829,8 +858,9 @@ function FlowEditor({
       }
     } else {
       id = automation.id;
-      problems = await api.checkAutomation(draft);
-      setChecked(problems);
+      const found = await api.checkAutomation(draft);
+      setChecked(found);
+      problems = blockingProblems(found);
       if (problems.length > 0) refuse(refusalOf(problems));
     }
     if (problems.length > 0) return;
@@ -1174,7 +1204,7 @@ function FlowEditor({
           options={canvasOptions}
           onOptions={onCanvasOptions}
           editor={editor}
-          onCommands={onCommands}
+          onCommands={keepCommands}
           onError={onError}
         />
         {settingsCollapsed ? (
@@ -1273,30 +1303,58 @@ function FlowEditor({
               )}
             </>
           ) : (
-            <BlockSettings
-              key={`${selectedBlock.id}:${String(undoCount)}`}
-              block={selectedBlock}
-              blocks={document.blocks}
-              tools={tools}
-              names={names}
-              context={valueContext}
-              problems={checked.filter(({ blockId }) => blockId === selectedBlock.id)}
-              onChange={(block, renamed) => {
-                change(
-                  (current) => updateBlock(current, block, renamed),
-                  renamed === undefined ? `block:${block.id}` : undefined,
-                );
-              }}
-              onRename={() => {
-                setRenaming(selectedBlock.id);
-              }}
-              onDone={() => {
-                const id = selectedBlock.id;
-                setFocusRequest((current) => ({ id, count: (current?.count ?? 0) + 1 }));
-              }}
-              onGoTo={pick}
-              onError={onError}
-            />
+            <PanelSectionsContext value={sections}>
+              <BlockSettings
+                key={`${selectedBlock.id}:${String(undoCount)}`}
+                block={selectedBlock}
+                blocks={document.blocks}
+                connections={document.connections}
+                tab={blockTab}
+                onTab={setBlockTab}
+                tools={tools}
+                names={names}
+                context={valueContext}
+                problems={checked.filter(({ blockId }) => blockId === selectedBlock.id)}
+                onChange={(block, renamed) => {
+                  change(
+                    (current) => updateBlock(current, block, renamed),
+                    renamed === undefined ? `block:${block.id}` : undefined,
+                  );
+                }}
+                onRename={() => {
+                  setRenaming(selectedBlock.id);
+                }}
+                menu={blockCardMenu(selectedBlock, canvasCommands, {
+                  rename: () => {
+                    setRenaming(selectedBlock.id);
+                  },
+                  showOnCanvas: () => {
+                    const id = selectedBlock.id;
+                    setReveal((current) => ({
+                      id,
+                      count: (current?.count ?? 0) + 1,
+                      center: true,
+                    }));
+                  },
+                  copyId: () => {
+                    void navigator.clipboard.writeText(selectedBlock.id).catch(onError);
+                  },
+                  openTool:
+                    selectedBlock.type === 'run' &&
+                    tools.some(({ id }) => id === selectedBlock.tool)
+                      ? () => {
+                          onShowTool(selectedBlock.tool);
+                        }
+                      : undefined,
+                })}
+                onDone={() => {
+                  const id = selectedBlock.id;
+                  setFocusRequest((current) => ({ id, count: (current?.count ?? 0) + 1 }));
+                }}
+                onGoTo={pick}
+                onError={onError}
+              />
+            </PanelSectionsContext>
           )}
         </aside>
       </div>
