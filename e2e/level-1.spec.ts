@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
+import { startTrace, stopTraces } from './fixtures/trace.js';
 
 const MANIFEST = resolve('examples/level-1-file-report/tool.yaml');
 const MENU_MANIFEST = resolve('examples/level-1-menu-cli/tool.yaml');
@@ -29,6 +30,7 @@ async function launchShell(): Promise<{ app: ElectronApplication; window: Page }
     env: electronEnvironment({ BILDORA_DATA_DIR: dataDir }),
   });
   open.push(app);
+  await startTrace(app);
   const window = await app.firstWindow();
   window.on('console', (message) => {
     if (message.type() === 'error' || /Content Security Policy/i.test(message.text())) {
@@ -70,6 +72,7 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
+  await stopTraces(open);
   await Promise.all(open.map((app) => app.close().catch(() => undefined)));
   open = [];
   await rm(folder, { recursive: true, force: true });

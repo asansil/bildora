@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
+import { startTrace, stopTraces } from './fixtures/trace.js';
 
 function electronEnvironment(extra: Record<string, string>): Record<string, string> {
   const inherited = Object.entries(process.env).filter(
@@ -31,6 +32,7 @@ async function launchShell(): Promise<Session> {
     env: electronEnvironment({ BILDORA_DATA_DIR: dataDir }),
   });
   open.push(app);
+  await startTrace(app);
   return { app, window: await app.firstWindow() };
 }
 
@@ -114,6 +116,7 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
+  await stopTraces(open);
   for (const app of open) {
     await app
       .evaluate(({ app: electronApp }) => {

@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
+import { startTrace, stopTraces } from './fixtures/trace.js';
 
 /** VS Code leaks ELECTRON_RUN_AS_NODE to child processes, which stops Electron opening a window. */
 function electronEnvironment(extra: Record<string, string> = {}): Record<string, string> {
@@ -35,6 +36,7 @@ async function launchShell(): Promise<Session> {
     env: electronEnvironment({ BILDORA_DATA_DIR: dataDir }),
   });
   open.push(app);
+  await startTrace(app);
   return { app, window: await app.firstWindow() };
 }
 
@@ -127,6 +129,7 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
+  await stopTraces(open);
   for (const pid of toolPids.filter(isAlive)) {
     process.kill(pid);
   }

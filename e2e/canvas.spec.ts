@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
+import { startTrace, stopTraces } from './fixtures/trace.js';
 
 const FAKE_TOOL = resolve('examples/fixtures/fake-tool.mjs');
 /** Where screenshots go when a run asks for them, for a person to look at. */
@@ -28,6 +29,7 @@ async function launchShell(): Promise<{ app: ElectronApplication; window: Page }
     env: electronEnvironment({ BILDORA_DATA_DIR: dataDir }),
   });
   open.push(app);
+  await startTrace(app);
   const window = await app.firstWindow();
   await window.setViewportSize({ width: 1400, height: 900 });
   return { app, window };
@@ -97,6 +99,7 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
+  await stopTraces(open);
   await Promise.all(open.map((app) => app.close().catch(() => undefined)));
   open = [];
   await rm(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
