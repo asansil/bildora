@@ -75,6 +75,8 @@ export interface AutomationPanels {
   readonly libraryCollapsed?: boolean;
   readonly settingsCollapsed?: boolean;
   readonly lowerCollapsed?: boolean;
+  /** Sections of the settings panel folded shut, such as `run.failure`. */
+  readonly foldedSections?: readonly string[];
 }
 
 /**
@@ -197,13 +199,17 @@ function isWithin(value: unknown, limits: { readonly min: number; readonly max: 
   );
 }
 
+/** How many folded settings sections a Workspace keeps, and what their keys look like. */
+export const FOLDED_SECTIONS_MAX = 64;
+const FOLDED_SECTION = /^[a-z][a-z0-9-]{0,31}(?:\.[a-z][a-z0-9-]{0,31})?$/;
+
 /** The panel sizes and states that make sense, or nothing when none do. */
 function automationPanelsOf(value: unknown): { automationPanels?: AutomationPanels } {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return {};
   }
   const fields: Record<string, unknown> = { ...value };
-  const panels: Record<string, number | boolean> = {};
+  const panels: Record<string, number | boolean | readonly string[]> = {};
   for (const [key, limits] of Object.entries(AUTOMATION_PANEL_LIMITS)) {
     const size = fields[key];
     if (typeof size === 'number' && isWithin(size, limits)) panels[key] = size;
@@ -211,6 +217,10 @@ function automationPanelsOf(value: unknown): { automationPanels?: AutomationPane
   for (const key of ['libraryCollapsed', 'settingsCollapsed', 'lowerCollapsed']) {
     if (fields[key] === true) panels[key] = true;
   }
+  const folded = [
+    ...new Set(stringsIn(fields['foldedSections']).filter((key) => FOLDED_SECTION.test(key))),
+  ].slice(0, FOLDED_SECTIONS_MAX);
+  if (folded.length > 0) panels['foldedSections'] = folded;
   return Object.keys(panels).length === 0 ? {} : { automationPanels: panels };
 }
 

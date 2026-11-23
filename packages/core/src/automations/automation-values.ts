@@ -9,6 +9,7 @@ import {
   fitsParameter,
   isExpressionValue,
   linkCycles,
+  namesOf,
   parseCached,
   targetOf,
   toParameterValue,
@@ -176,6 +177,12 @@ function nameTypes(context: ValueContext, certain: Guarantee, label: string) {
   };
 }
 
+/** Whether a block is set to be passed through, so that it leaves nothing for later blocks. */
+export function isDisabledBlock(automation: Automation, id: string): boolean {
+  const block = automation.blocks.find((candidate) => candidate.id === id);
+  return block !== undefined && 'disabled' in block && block.disabled === true;
+}
+
 const ERROR_CODES: Record<ExpressionError['code'], AutomationProblemCode> = {
   syntax: 'expression-syntax',
   name: 'expression-name',
@@ -200,15 +207,26 @@ export function checkExpression(
   if (tree instanceof ExpressionError) {
     return { problems: [found(ERROR_CODES[tree.code], { label, detail: tree.message })] };
   }
+  // Outputs of a disabled block are warned about, whatever else the expression gets wrong.
+  const disabled = new Set<string>();
+  for (const name of namesOf(tree)) {
+    const target = targetOf(name);
+    if (target.kind === 'output' && isDisabledBlock(context.automation, target.block)) {
+      disabled.add(target.block);
+    }
+  }
+  const warnings = [...disabled].map((source) => found('output-from-disabled', { label, source }));
   let type: ValueType;
   try {
     type = typeOfExpression(tree, nameTypes(context, certain, label));
   } catch (error) {
     if (error instanceof NameProblem) {
-      return { problems: error.problem === undefined ? [] : [error.problem] };
+      return { problems: error.problem === undefined ? warnings : [error.problem, ...warnings] };
     }
     if (error instanceof ExpressionError) {
-      return { problems: [found(ERROR_CODES[error.code], { label, detail: error.message })] };
+      return {
+        problems: [found(ERROR_CODES[error.code], { label, detail: error.message }), ...warnings],
+      };
     }
     throw error;
   }
@@ -220,11 +238,12 @@ export function checkExpression(
           label,
           detail: `it gives ${typeWord(type)}, and needs ${needed}`,
         }),
+        ...warnings,
       ],
       type,
     };
   }
-  return { problems: [], type };
+  return { problems: warnings, type };
 }
 
 /** Values linked to one another in a circle, each reported on the block where it starts. */
