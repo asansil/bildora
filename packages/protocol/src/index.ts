@@ -79,7 +79,9 @@ export type {
 export {
   AUTOMATION_PROBLEM_CODES,
   automationProblem,
+  blockingProblems,
   describeProblem,
+  isWarning,
   problemsOfIssues,
 } from './automation-problems.js';
 export type {
@@ -104,8 +106,10 @@ export {
   ERROR_OUTPUT,
   buildGraph,
   connectionOutput,
+  disabledOutput,
   graphIssues,
   guarantees,
+  isDisableable,
   outputsOf,
   reachableFrom,
   topologicalOrder,
