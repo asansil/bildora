@@ -6,6 +6,8 @@ import { t } from '../../shared/i18n/translate.js';
 import type { AutomationListView, AutomationRunStateView } from '../../shared/ipc-contract.js';
 import { ContextMenu } from '../shell/ContextMenu.js';
 import { RunStateIcon, runStateLabel } from '../shell/RunStateBadge.js';
+import { LIBRARY_DRAG_TYPE } from './canvas/Canvas.js';
+import type { NewBlock } from './canvas/flow-document.js';
 
 interface AutomationsPanelProps {
   readonly id: string;
@@ -93,6 +95,17 @@ export function AutomationsPanel({
                 aria-describedby={notes.length === 0 ? undefined : noteId}
                 aria-current={item.id === current ? 'true' : undefined}
                 id={rowId(item.id)}
+                // Dragged onto another automation's canvas, it becomes a Run automation block there.
+                draggable
+                onDragStart={(event) => {
+                  const choice: NewBlock = {
+                    kind: 'run-automation',
+                    automation: item.id,
+                    automationName: item.name,
+                  };
+                  event.dataTransfer.setData(LIBRARY_DRAG_TYPE, JSON.stringify(choice));
+                  event.dataTransfer.effectAllowed = 'copy';
+                }}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   setMenu({ id: item.id, x: event.clientX, y: event.clientY });

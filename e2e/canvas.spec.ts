@@ -412,7 +412,7 @@ test('a Switch takes the case that holds, and parallel branches meet at the Join
   await shot(window, 'switch-parallel-run');
 });
 
-test('a Parallel comes with its Join, and branches are led to it from the keyboard', async () => {
+test('a Parallel comes alone, its Join is added from the library, and branches are led to it from the keyboard', async () => {
   await fakeTool('acme.extract', 'Extract', ['exit', '0']);
   await fakeTool('acme.report', 'Report', ['exit', '0']);
   const { window } = await launchShell();
@@ -421,10 +421,20 @@ test('a Parallel comes with its Join, and branches are led to it from the keyboa
   await window.getByLabel('Name', { exact: true }).fill('Both');
   const library = window.getByTestId('block-library');
 
+  // A Join ends a Parallel, so it waits for one.
+  const join = library.getByRole('button', { name: 'Join', exact: true });
+  await expect(join).toBeDisabled();
   await library.getByRole('button', { name: 'Parallel', exact: true }).click();
-  await expect(window.getByTestId('canvas-block')).toHaveCount(3);
+  await expect(window.getByTestId('canvas-block')).toHaveCount(2);
+  await expect(join).toBeEnabled();
+  await join.click();
   await expect(block(window, 'Join1')).toBeVisible();
-  // With the Parallel selected, each tool added becomes a branch of its own.
+  await expect(join).toBeDisabled();
+  await expect(window.locator('.react-flow__edge')).toHaveCount(1);
+  // With the Parallel selected, each tool added becomes a branch of its own. The canvas showed
+  // the Join, which may have left the Parallel under the side panel's edge.
+  await block(window, 'Parallel1').dispatchEvent('click');
+  await expect(window.getByTestId('block-settings')).toHaveAttribute('data-block-id', 'Parallel1');
   await library.getByRole('button', { name: 'Extract' }).click();
   await block(window, 'Parallel1').click();
   await library.getByRole('button', { name: 'Report' }).click();
@@ -775,7 +785,7 @@ test('a tool dragged from the side panel becomes a block, and the library finds 
   await window.getByLabel('Name', { exact: true }).fill('Dragged');
 
   const library = window.getByTestId('block-library');
-  await library.getByRole('searchbox').fill('rep');
+  await library.getByRole('searchbox').fill('repo');
   await expect(library.getByTestId('library-item')).toHaveText(['Report']);
   await library.getByRole('searchbox').fill('');
 

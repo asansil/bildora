@@ -8,6 +8,8 @@ import {
   Hand,
   ListTree,
   Play,
+  ListOrdered,
+  RefreshCw,
   SquareTerminal,
   Workflow,
 } from 'lucide-react';
@@ -30,6 +32,8 @@ import { formatDuration, formatTime, historyState } from './history-format.js';
 import { RunFacts } from './RunFacts.js';
 import { timelineOf } from './run-timeline.js';
 import type { Timeline, TimelineRow } from './run-timeline.js';
+import { CalledBy } from '../automations/CalledBy.js';
+import { roundText } from '../automations/canvas/block-text.js';
 
 const api = window.bildora;
 
@@ -46,6 +50,9 @@ const KIND_ICONS: Readonly<Record<string, LucideIcon>> = {
   switch: ListTree,
   parallel: GitFork,
   join: GitMerge,
+  for: ListOrdered,
+  while: RefreshCw,
+  'run-automation': Workflow,
 };
 
 type AutomationEntry = Extract<HistoryEntryView, { kind: 'automation' }>;
@@ -112,6 +119,9 @@ function whatHappened(row: TimelineRow, branches: number): string {
       return t('history.block.waited', { duration: formatDuration(row.durationMs) });
     case 'wait-for-manual-action':
       return t('history.block.asked', { message: row.block.message });
+    case 'for':
+    case 'while':
+      return row.rounds === undefined ? '' : t('automation.roundsRun', { count: row.rounds });
     case 'parallel':
       return t('history.block.branches', { count: branches });
     case 'join':
@@ -310,8 +320,8 @@ export function AutomationRunDetail({
       ? undefined
       : timeline?.rows.find(
           (row) => toolOf(row, tools)?.id === focusTool || row.toolId === focusTool,
-        )?.id;
-  const shown = timeline?.rows.find((row) => row.id === (chosen ?? focused));
+        )?.key;
+  const shown = timeline?.rows.find((row) => row.key === (chosen ?? focused));
   const ranCount = timeline?.rows.filter(({ state }) => ran(state)).length;
   const ticks =
     timeline === undefined
@@ -337,6 +347,14 @@ export function AutomationRunDetail({
         <dd>{formatDuration(entry.durationMs)}</dd>
         <dt>{t('history.startedFrom')}</dt>
         <dd>{t(entry.trigger === 'cli' ? 'history.fromCli' : 'history.fromApp')}</dd>
+        {entry.caller === undefined ? null : (
+          <>
+            <dt>{t('history.caller')}</dt>
+            <dd>
+              <CalledBy caller={entry.caller} onShowRun={onShowRun} />
+            </dd>
+          </>
+        )}
         {timeline === undefined || ranCount === undefined ? null : (
           <>
             <dt>{t('history.blocks')}</dt>
@@ -380,14 +398,15 @@ export function AutomationRunDetail({
               const name = rowName(row);
               return (
                 <button
-                  key={row.id}
+                  key={row.key}
                   type="button"
                   className="timeline-row"
                   data-block={row.id}
+                  data-round={row.round}
                   data-state={shownState(row)}
-                  aria-current={row.id === shown?.id ? 'true' : undefined}
+                  aria-current={row.key === shown?.key ? 'true' : undefined}
                   onClick={() => {
-                    setChosen(row.id);
+                    setChosen(row.key);
                   }}
                 >
                   <span
@@ -399,6 +418,9 @@ export function AutomationRunDetail({
                     <span className="truncate" title={name}>
                       {name}
                     </span>
+                    {row.round === undefined ? null : (
+                      <span className="muted">{roundText(row.round)}</span>
+                    )}
                     {row.tries.length > 1 ? (
                       <span className="muted">
                         {t('history.tries', { count: row.tries.length })}
@@ -418,15 +440,36 @@ export function AutomationRunDetail({
           {shown === undefined ? (
             <p className="muted">{t('history.pickBlock')}</p>
           ) : (
-            <BlockDetail
-              key={`${entry.runId}:${shown.id}`}
-              row={shown}
-              tools={tools}
-              branches={data?.run.paths.filter(({ from }) => from === shown.id).length ?? 0}
-              step={data?.run.steps.find(({ id }) => id === shown.id)}
-              revision={revision}
-              onError={onError}
-            />
+            <>
+              <BlockDetail
+                key={`${entry.runId}:${shown.key}`}
+                row={shown}
+                tools={tools}
+                branches={
+                  data?.run.paths.filter(
+                    ({ from, round }) => from === shown.id && round === shown.round,
+                  ).length ?? 0
+                }
+                step={data?.run.steps.find(
+                  ({ id, round }) => id === shown.id && round === shown.round,
+                )}
+                revision={revision}
+                onError={onError}
+              />
+              {shown.block?.type === 'run-automation' && shown.calledRunId !== undefined ? (
+                <button
+                  type="button"
+                  data-testid="history-open-called-run"
+                  onClick={() => {
+                    if (shown.block?.type === 'run-automation' && shown.calledRunId !== undefined) {
+                      onShowRun(shown.block.automation, shown.calledRunId);
+                    }
+                  }}
+                >
+                  {t('automation.openRun')}
+                </button>
+              ) : null}
+            </>
           )}
         </>
       )}

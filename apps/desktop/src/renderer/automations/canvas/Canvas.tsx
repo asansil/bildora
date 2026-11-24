@@ -27,21 +27,31 @@ import { ChevronDown, ChevronUp, StickyNote, X } from 'lucide-react';
 import '@xyflow/react/dist/style.css';
 import './canvas.css';
 import {
+  BODY_OUTPUT,
   ERROR_OUTPUT,
   connectionOutput,
   isDisableable,
+  isLoopBlock,
+  isLoopType,
+  loopBody,
   outputsOf,
   validTargets,
 } from '@bildora/protocol';
-import type { AutomationConnection, AutomationGroup, AutomationPosition } from '@bildora/protocol';
+import type {
+  AutomationBlock,
+  AutomationConnection,
+  AutomationGroup,
+  AutomationPosition,
+} from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
 import type {
   AutomationCanvasView,
+  RunCallerView,
   StepRunView,
   TakenPathView,
   ToolView,
 } from '../../../shared/ipc-contract.js';
-import { blockKindText, outputLabel, portText } from './block-text.js';
+import { blockKindText, loopHeader, loopSummary, outputLabel, portText } from './block-text.js';
 import {
   NOTE_SIZE,
   blockOf,
@@ -52,19 +62,24 @@ import {
   disablesChosen,
   disconnect,
   downstreamOf,
+  dropInLoops,
   duplicateItems,
   extractBlock,
   isDisabled,
   isInFlow,
+  loopAtPoint,
+  loopOf,
   moveItems,
   pasteItems,
   removeItems,
+  resizeLoop,
   sizeOf,
   spliceEnds,
   spliceInto,
   toggleDisabled,
   updateNote,
   upstreamOf,
+  withFramePositions,
 } from './flow-document.js';
 import type { ConnectionRef, FlowClip } from './flow-document.js';
 import { ContextMenu } from '../../shell/ContextMenu.js';
@@ -86,6 +101,7 @@ import { layoutBlocks } from './layout.js';
 import {
   CanvasActionsContext,
   InputTonesContext,
+  LoopRoundsContext,
   NO_PORT_HOVER,
   PortHoverContext,
   PortLayoutsContext,
@@ -97,14 +113,17 @@ import { PortTooltip } from './PortTooltip.js';
 import type { PortBox } from './PortTooltip.js';
 import { layoutPorts } from './port-sides.js';
 import type { PortRect, Side } from './port-sides.js';
-import type { CanvasActions } from './canvas-actions.js';
+import type { CanvasActions, ChooseRound } from './canvas-actions.js';
 import { edgeTypes } from './edges.js';
 import { AddDialog, ConnectDialog } from './KeyboardDialogs.js';
 import type { AddChoice, LibraryChoice } from './KeyboardDialogs.js';
 import { describeBlock, domId, isDirection, nearestInDirection, neighbourOf } from './keyboard.js';
 import type { FlowDocument, NewBlock } from './flow-document.js';
 import { nodeTypes } from './nodes.js';
-import type { BlockNodeData, CanvasNode } from './nodes.js';
+import type { BlockNodeData, CanvasNode, LoopNodeData } from './nodes.js';
+import { LOOP_BODY_PORT_X, LOOP_BODY_PORT_Y, LOOP_HEADER, frameRects } from './loop-frames.js';
+import type { Rect } from './loop-frames.js';
+import { isShownPath, shownRounds } from './run-rounds.js';
 import { usedByCounts } from './values.js';
 import { matchingBlocks } from './find.js';
 
@@ -120,6 +139,8 @@ const GRID = 16;
 /** How far an arrow key moves a selected block. */
 const NUDGE = GRID;
 const NO_OPTIONS: AutomationCanvasView = {};
+const NO_ROUNDS: ReadonlyMap<string, number> = new Map();
+const NO_AUTOMATIONS: readonly { readonly id: string; readonly name: string }[] = [];
 /** The zoom range, as wide as Scale's presets go. */
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 4;
@@ -302,13 +323,19 @@ function stateOf(commands: CanvasCommands): string {
 }
 
 export interface CanvasRun {
+  /** Which run it is, so that rounds picked in one are not kept for the next. */
+  readonly runId?: string;
   readonly steps: readonly StepRunView[];
   readonly paths: readonly TakenPathView[];
+  /** Set when a Run automation block of another run started this one. */
+  readonly caller?: RunCallerView;
 }
 
 export interface CanvasProps {
   readonly document: FlowDocument;
   readonly names: ReadonlyMap<string, string>;
+  /** The automations Run automation blocks can call, which their text names. */
+  readonly automations?: readonly { readonly id: string; readonly name: string }[];
   /** The Workspace's tools, whose program icons Run tool blocks show. */
   readonly tools: readonly ToolView[];
   readonly problemCounts: ReadonlyMap<string, number>;
@@ -317,6 +344,10 @@ export interface CanvasProps {
   readonly active: boolean;
   /** Set in the run view, which shows block states and changes nothing. */
   readonly run?: CanvasRun;
+  /** The round each loop's frame shows in the run view; a loop not here follows its latest. */
+  readonly roundChoices?: ReadonlyMap<string, number>;
+  /** Chooses the round a loop's frame shows, or its latest again for undefined. */
+  readonly onChooseRound?: ChooseRound;
   /**
    * Brings a block into view, such as the one a problem is about, or one just added. Changes each
    * time it is asked. `center` moves the view even when the block is already in sight.
@@ -329,6 +360,13 @@ export interface CanvasProps {
    * dropped onto a connection goes into it, through `into`.
    */
   readonly onAddAt: (choice: AddChoice, at: AutomationPosition, into?: ConnectionRef) => void;
+  /** The automation on the canvas, which cannot be dropped onto itself to call itself. */
+  readonly automationId?: string;
+  /**
+   * Opens what a Run automation block calls, on a double-click: the automation while editing, or
+   * the run it started in a run view. Says whether there was one.
+   */
+  readonly onOpenCall?: (id: string) => boolean;
   /** What A offers to add after the focused block. */
   readonly library: readonly LibraryChoice[];
   /** In the run view, a double-click on a block goes back to editing it. */
@@ -383,7 +421,7 @@ function edgeUnder(
 /** The block drawn under a point of the screen, if any. */
 function blockUnder(x: number, y: number, within: HTMLElement | null): string | undefined {
   for (const element of window.document.elementsFromPoint(x, y)) {
-    const node = element.closest('.react-flow__node-block');
+    const node = element.closest('.react-flow__node-block, .react-flow__node-loop');
     const id = node?.getAttribute('data-id');
     if (id !== null && id !== undefined && within?.contains(node ?? null) === true) return id;
   }
@@ -478,8 +516,106 @@ function stillDragged(built: readonly CanvasNode[], current: readonly CanvasNode
   });
 }
 
+/** Loops nest behind each other, and every loop sits behind the blocks it holds. */
+const LOOP_Z = -20;
+
+/**
+ * Each loop's frame around the blocks inside it, wherever they are now. A block being dragged does
+ * not count, so the frame shows what stays in it, and a block dragged out leaves it.
+ */
+function framedLoops(
+  nodes: readonly CanvasNode[],
+  blocks: readonly AutomationBlock[],
+  positions: Readonly<Record<string, AutomationPosition>>,
+  released: ReadonlySet<string> = new Set(),
+): CanvasNode[] {
+  if (!blocks.some(isLoopBlock)) return [...nodes];
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const rectOf = (id: string): Rect | undefined => {
+    const node = byId.get(id);
+    if (node?.type !== 'block' || node.hidden === true) return undefined;
+    return { ...node.position, width: node.width ?? 0, height: node.height ?? 0 };
+  };
+  // A loop being dragged keeps its own place; others keep theirs when nothing stays inside. A
+  // frame being resized takes the size it is dragged to, never less than its blocks.
+  const positionOf = (id: string): AutomationPosition | undefined => {
+    const node = byId.get(id);
+    const kept = positions[id];
+    if (node?.resizing === true && node.width !== undefined && node.height !== undefined) {
+      return { ...node.position, width: node.width, height: node.height };
+    }
+    // A frame just let go is where it was dropped, not where the flow had it before.
+    if (node?.dragging !== true && !released.has(id)) return kept ?? node?.position;
+    if (node === undefined) return kept;
+    // A frame given a size keeps it while it is dragged.
+    return kept?.width === undefined || kept.height === undefined
+      ? node.position
+      : { ...node.position, width: kept.width, height: kept.height };
+  };
+  // What is being dragged belongs to no frame until it is let go.
+  const loose = blocks.map((block) => ({
+    id: block.id,
+    type: block.type,
+    loop: byId.get(block.id)?.dragging === true ? undefined : loopOf(block),
+  }));
+  const frames = frameRects(loose, rectOf, positionOf);
+  return nodes.map((node): CanvasNode => {
+    if (node.type !== 'loop') return node;
+    const frame = frames.get(node.id);
+    if (frame === undefined) return node;
+    const { x, y, width, height } = frame;
+    if (
+      node.position.x === x &&
+      node.position.y === y &&
+      node.width === width &&
+      node.height === height
+    ) {
+      return node;
+    }
+    return { ...node, position: { x, y }, width, height };
+  });
+}
+
+function blockById(blocks: readonly AutomationBlock[], id: string): AutomationBlock | undefined {
+  return blocks.find((block) => block.id === id);
+}
+
+/** Loop frames, then each group's frame around its blocks and loops. */
+function framed(
+  nodes: readonly CanvasNode[],
+  blocks: readonly AutomationBlock[],
+  positions: Readonly<Record<string, AutomationPosition>>,
+  groups: readonly AutomationGroup[],
+  released?: ReadonlySet<string>,
+): CanvasNode[] {
+  return framedGroups(framedLoops(nodes, blocks, positions, released), groups);
+}
+
+/** What moves with an item dragged by itself: a loop's blocks, or a group's blocks and loops. */
+function carriedBy(
+  id: string,
+  blocks: readonly AutomationBlock[],
+  groups: readonly AutomationGroup[],
+): string[] {
+  const group = groups.find((item) => item.id === id);
+  const held = group === undefined ? [id] : group.blocks;
+  return [
+    ...new Set(
+      held.flatMap((member) =>
+        isLoopType(blockById(blocks, member)?.type ?? '')
+          ? [member, ...loopBody(blocks, member)]
+          : [member],
+      ),
+    ),
+  ];
+}
+
 /** Each group's frame around its blocks, wherever those blocks are now, dragged ones included. */
-function framed(nodes: readonly CanvasNode[], groups: readonly AutomationGroup[]): CanvasNode[] {
+function framedGroups(
+  nodes: readonly CanvasNode[],
+  groups: readonly AutomationGroup[],
+): CanvasNode[] {
+  if (groups.length === 0) return [...nodes];
   const byId = new Map(nodes.map((node) => [node.id, node]));
   return nodes.map((node): CanvasNode => {
     if (node.type !== 'frame') return node;
@@ -514,15 +650,20 @@ function framed(nodes: readonly CanvasNode[], groups: readonly AutomationGroup[]
 export function Canvas({
   document,
   names,
+  automations = NO_AUTOMATIONS,
   tools,
   problemCounts,
   selected,
   active,
   run,
+  roundChoices = NO_ROUNDS,
+  onChooseRound,
   reveal,
   onChange,
   onSelect,
   onAddAt,
+  automationId,
+  onOpenCall,
   library,
   onOpenBlock,
   onRenameBlock,
@@ -568,6 +709,10 @@ export function Canvas({
   const flow = useReactFlow<CanvasNode>();
   const zoom = useStore((state) => state.transform[2]);
   const readOnly = run !== undefined;
+  const shown = useMemo(
+    () => shownRounds(document.blocks, run?.steps ?? [], roundChoices),
+    [document.blocks, run, roundChoices],
+  );
   const snapToGrid = options.snapToGrid === true && !readOnly;
   const rightAngles = options.rightAngles === true;
   const showGrid = options.hideGrid !== true;
@@ -619,19 +764,44 @@ export function Canvas({
     [find, matches],
   );
   const data = useMemo(() => {
-    const states = new Map(run?.steps.map((step) => [step.id, step]));
+    const states = shown.steps;
     return new Map(
-      document.blocks.map((block): [string, BlockNodeData] => {
+      document.blocks.map((block): [string, BlockNodeData | LoopNodeData] => {
         const step = states.get(block.id);
         const tool = block.type === 'run' ? toolsById.get(block.tool) : undefined;
         const detail = stepDetail(step);
+        if (isLoopBlock(block)) {
+          const nameOf = (id: string): string => names.get(id) ?? id;
+          const header = loopHeader(block, nameOf);
+          const summary = loopSummary(block, nameOf);
+          const rounds = shown.rounds.get(block.id);
+          return [
+            block.id,
+            {
+              kind: block.type,
+              name: names.get(block.id) ?? block.id,
+              kindLabel: blockKindText(block, tools, automations),
+              ...(header === undefined ? {} : { header }),
+              ...(summary === undefined ? {} : { summary }),
+              resizable: !readOnly,
+              domId: domId(prefix, block.id),
+              blockId: block.id,
+              description: describeBlock(document, block.id, (id) => names.get(id) ?? id),
+              problems: readOnly ? 0 : (problemCounts.get(block.id) ?? 0),
+              usedBy: usedBy.get(block.id) ?? 0,
+              ...(run === undefined ? {} : { state: step?.state ?? 'idle' }),
+              ...(detail === undefined ? {} : { detail }),
+              ...(rounds === undefined ? {} : { rounds }),
+            },
+          ];
+        }
         return [
           block.id,
           {
             kind: block.type,
             name: names.get(block.id) ?? block.id,
             // Start's name already says what it is, so its second line says when it runs.
-            kindLabel: blockKindText(block, tools),
+            kindLabel: blockKindText(block, tools, automations),
             outputs: outputsOf(block).map((id) => ({ id, label: outputLabel(id) })),
             domId: domId(prefix, block.id),
             blockId: block.id,
@@ -654,9 +824,11 @@ export function Canvas({
     names,
     toolsById,
     tools,
+    automations,
     problemCounts,
     usedBy,
     run,
+    shown,
     readOnly,
     prefix,
   ]);
@@ -672,9 +844,38 @@ export function Canvas({
       zIndex: -1,
       deletable: !readOnly,
     }));
+    const loopDepths = new Map(
+      document.blocks.filter(isLoopBlock).map(({ id }) => {
+        let depth = 0;
+        for (
+          let at = loopOf(blockOf(document, id));
+          at !== undefined;
+          at = loopOf(blockOf(document, at))
+        ) {
+          depth += 1;
+          if (depth > document.blocks.length) break;
+        }
+        return [id, depth];
+      }),
+    );
     const blocks = document.blocks.map((block): CanvasNode => {
       const size = sizeOf(block);
       const position = document.positions[block.id];
+      if (isLoopBlock(block)) {
+        const inside = document.blocks.some((item) => loopOf(item) === block.id);
+        return {
+          id: block.id,
+          type: 'loop',
+          position: position ?? { x: 0, y: 0 },
+          hidden: position === undefined && !inside,
+          width: size.width,
+          height: size.height,
+          data: data.get(block.id) as LoopNodeData,
+          dragHandle: '.loop-header',
+          zIndex: LOOP_Z + (loopDepths.get(block.id) ?? 0),
+          deletable: !readOnly,
+        };
+      }
       return {
         id: block.id,
         type: 'block',
@@ -687,6 +888,7 @@ export function Canvas({
         deletable: block.type !== 'start' && !readOnly,
       };
     });
+    // Loops come before the blocks they hold, so a frame never covers them.
     const notes = document.notes.map((note): CanvasNode => ({
       id: note.id,
       type: 'note',
@@ -696,8 +898,17 @@ export function Canvas({
       data: { text: note.text, placeholder: t('canvas.notePlaceholder'), readOnly },
       deletable: !readOnly,
     }));
-    return framed([...frames, ...blocks, ...notes], document.groups);
-  }, [document.blocks, document.positions, document.notes, document.groups, data, readOnly]);
+    const ordered = [
+      ...blocks.filter(({ type }) => type === 'loop'),
+      ...blocks.filter(({ type }) => type !== 'loop'),
+    ];
+    return framed(
+      [...frames, ...ordered, ...notes],
+      document.blocks,
+      document.positions,
+      document.groups,
+    );
+  }, [document, data, readOnly]);
   // Blocks move here while dragged, and start again from the document whenever it changes, but
   // for a block still being dragged, which a check finishing meanwhile must not snap back.
   // Selection and the targets of a connection being drawn only mark the blocks as they are.
@@ -725,8 +936,15 @@ export function Canvas({
   }
 
   const taken = useMemo(
-    () => new Set(run?.paths.map(({ from, output, to }) => edgeId(from, output, to))),
-    [run],
+    () =>
+      new Set(
+        run?.paths
+          .filter((path) => isShownPath(path, loopOf(blockOf(document, path.from)), shown.keys))
+          .map(({ from, output, to }) => edgeId(from, output, to)),
+      ),
+    // `document` stands for its blocks here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [run, shown, document.blocks],
   );
   const edgesFor = useCallback(
     (connections: readonly AutomationConnection[]) =>
@@ -766,35 +984,78 @@ export function Canvas({
     setEdges(builtEdges);
   }
 
+  const announce = useCallback((message: string) => {
+    // Clearing first makes the same message speak again.
+    setAnnouncement('');
+    requestAnimationFrame(() => {
+      setAnnouncement(message);
+    });
+  }, []);
+
   const onNodesChange = useCallback(
     (changes: NodeChange<CanvasNode>[]) => {
       let next = applyNodeChanges(changes, nodes);
-      // Dragging a frame by its name moves the blocks it holds.
+      // A frame resized from a corner moves too; its blocks stay where they are.
+      const resizing = new Set(
+        changes.flatMap((change) =>
+          change.type === 'dimensions' && change.resizing !== undefined ? [change.id] : [],
+        ),
+      );
+      // Where each frame let go of a resize ends up, before frames are drawn around their blocks.
+      const resizedRects = new Map(
+        changes.flatMap((change) => {
+          if (change.type !== 'dimensions' || change.resizing !== false || !change.dimensions) {
+            return [];
+          }
+          const node = next.find((item) => item.id === change.id);
+          return node?.type === 'loop'
+            ? [[change.id, { ...node.position, ...change.dimensions }]]
+            : [];
+        }),
+      );
+      const dragged = new Set(
+        changes.flatMap((change) => (change.type === 'position' ? [change.id] : [])),
+      );
+      // Dragging a frame by its header moves what it holds: a group's blocks, a loop's body.
       for (const change of changes) {
         if (change.type !== 'position' || change.position === undefined) continue;
+        if (resizing.has(change.id)) continue;
         const before = nodes.find(({ id }) => id === change.id);
-        const group = document.groups.find(({ id }) => id === change.id);
-        if (before === undefined || group === undefined) continue;
+        if (before === undefined || (before.type !== 'frame' && before.type !== 'loop')) continue;
+        const carried = new Set(
+          carriedBy(change.id, document.blocks, document.groups).filter(
+            (id) => id !== change.id && !dragged.has(id),
+          ),
+        );
+        if (carried.size === 0) continue;
         const dx = change.position.x - before.position.x;
         const dy = change.position.y - before.position.y;
         next = next.map((node) =>
-          group.blocks.includes(node.id)
+          carried.has(node.id)
             ? { ...node, position: { x: node.position.x + dx, y: node.position.y + dy } }
             : node,
         );
       }
-      next = framed(next, document.groups);
-      setNodes(next);
+      const released = new Set(
+        changes.flatMap((change) =>
+          change.type === 'position' && change.dragging === false && !resizing.has(change.id)
+            ? [change.id]
+            : [],
+        ),
+      );
+      next = framed(next, document.blocks, document.positions, document.groups, released);
 
       // A drag or a resize reaches the document once it ends.
       const moved: Record<string, AutomationPosition> = {};
       const resized: { id: string; width: number; height: number }[] = [];
+      const dropped: string[] = [];
       for (const change of changes) {
-        if (change.type === 'position' && change.dragging === false) {
-          const group = document.groups.find(({ id }) => id === change.id);
-          for (const id of group?.blocks ?? [change.id]) {
-            const node = next.find((item) => item.id === id);
-            if (node !== undefined && node.type !== 'frame') moved[id] = node.position;
+        if (change.type === 'position' && change.dragging === false && !resizing.has(change.id)) {
+          const node = next.find((item) => item.id === change.id);
+          if (node?.type === 'block' || node?.type === 'loop') dropped.push(change.id);
+          for (const id of carriedBy(change.id, document.blocks, document.groups)) {
+            const item = next.find((candidate) => candidate.id === id);
+            if (item !== undefined && item.type !== 'frame') moved[id] = item.position;
           }
         }
         if (change.type === 'dimensions' && change.resizing === false && change.dimensions) {
@@ -807,9 +1068,46 @@ export function Canvas({
         splice.current !== undefined && moved[splice.current.node] !== undefined
           ? splice.current
           : undefined;
+      // Blocks let go over a frame go into its loop, and out of it when let go outside. A move
+      // that would make a connection cross a frame is refused, and the blocks go back.
+      const landed =
+        dropped.length === 0
+          ? undefined
+          : dropInLoops(
+              document,
+              shifted === undefined
+                ? moveItems(document, moved)
+                : extractBlock(moveItems(document, moved), shifted.node),
+              dropped,
+            );
+      if (dropped.length > 0 && landed === undefined) {
+        announce(t('canvas.crossesLoop'));
+        setNodes(marked(built, selected, targets, focused, matched));
+        return;
+      }
+      setNodes(next);
+      if (landed !== undefined) {
+        const entered = dropped.filter(
+          (id) => loopOf(blockOf(landed, id)) !== loopOf(blockOf(document, id)),
+        );
+        const into = loopOf(blockOf(landed, entered[0] ?? ''));
+        if (entered.length > 0) {
+          announce(
+            into === undefined
+              ? t('canvas.movedOutOfLoop', { count: entered.length })
+              : t('canvas.movedIntoLoop', {
+                  count: entered.length,
+                  loop: names.get(into) ?? into,
+                }),
+          );
+        }
+      }
       if (Object.keys(moved).length > 0 || resized.length > 0) {
         onChange((current) => {
           let updated = moveItems(current, moved);
+          if (dropped.length > 0) {
+            updated = dropInLoops(current, updated, dropped) ?? updated;
+          }
           if (shifted !== undefined) {
             updated = extractBlock(updated, shifted.node);
             const ends = spliceEnds(updated, shifted.node);
@@ -818,9 +1116,15 @@ export function Canvas({
               updated = spliceInto(updated, into, ends.first, ends.tail) ?? updated;
             }
           }
+          updated = withFramePositions(updated);
           for (const { id, width, height } of resized) {
             const note = updated.notes.find((item) => item.id === id);
             const node = next.find((item) => item.id === id);
+            const rect = resizedRects.get(id);
+            if (rect !== undefined) {
+              updated = resizeLoop(updated, id, rect);
+              continue;
+            }
             if (note === undefined || node === undefined) continue;
             updated = updateNote(updated, {
               ...note,
@@ -843,7 +1147,19 @@ export function Canvas({
         onSelect(chosen);
       }
     },
-    [nodes, document.groups, onChange, onSelect, selected],
+    [
+      nodes,
+      document,
+      onChange,
+      onSelect,
+      selected,
+      built,
+      targets,
+      focused,
+      matched,
+      names,
+      announce,
+    ],
   );
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
@@ -934,32 +1250,48 @@ export function Canvas({
       new Map(
         document.blocks.map((block) => [
           block.id,
-          { hasInput: block.type !== 'start', outputs: outputsOf(block) },
+          {
+            hasInput: block.type !== 'start',
+            // A loop's body port sits inside its frame, always in the same place.
+            outputs: outputsOf(block).filter((output) => output !== BODY_OUTPUT),
+          },
         ]),
       ),
     [document.blocks],
   );
-  const portLayouts = useMemo(
-    () =>
-      layoutPorts(
-        nodes.flatMap((node): PortRect[] => {
-          const shape = node.type === 'block' ? portShapes.get(node.id) : undefined;
-          if (shape === undefined || node.hidden === true) return [];
-          return [
-            {
-              id: node.id,
-              x: node.position.x,
-              y: node.position.y,
-              width: node.width ?? 0,
-              height: node.height ?? 0,
-              ...shape,
-            },
-          ];
-        }),
-        drawnEdges,
-      ),
-    [nodes, drawnEdges, portShapes],
-  );
+  const portLayouts = useMemo(() => {
+    const rects = nodes.flatMap((node): PortRect[] => {
+      const shape =
+        node.type === 'block' || node.type === 'loop' ? portShapes.get(node.id) : undefined;
+      if (shape === undefined || node.hidden === true) return [];
+      const rect = {
+        id: node.id,
+        x: node.position.x,
+        y: node.position.y,
+        width: node.width ?? 0,
+        height: node.height ?? 0,
+        ...shape,
+      };
+      if (node.type !== 'loop') return [rect];
+      // Blocks the body starts at face the body port, not the middle of the frame.
+      const body = {
+        id: `${node.id}\u0000${BODY_OUTPUT}`,
+        x: node.position.x + LOOP_BODY_PORT_X,
+        y: node.position.y + LOOP_HEADER + LOOP_BODY_PORT_Y,
+        width: 1,
+        height: 1,
+        hasInput: false,
+        outputs: [],
+      };
+      return [rect, body];
+    });
+    const links = drawnEdges.map((edge) =>
+      edge.sourceHandle === BODY_OUTPUT
+        ? { ...edge, source: `${edge.source}\u0000${BODY_OUTPUT}`, sourceHandle: 'next' }
+        : edge,
+    );
+    return layoutPorts(rects, links);
+  }, [nodes, drawnEdges, portShapes]);
 
   /** The flow without a block, worked out once per drag. */
   const extractionOf = useCallback(
@@ -1063,14 +1395,6 @@ export function Canvas({
     splice.current = undefined;
     extraction.current = undefined;
     setPreview(undefined);
-  }, []);
-
-  const announce = useCallback((message: string) => {
-    // Clearing first makes the same message speak again.
-    setAnnouncement('');
-    requestAnimationFrame(() => {
-      setAnnouncement(message);
-    });
   }, []);
 
   const nameOf = useCallback((id: string) => names.get(id) ?? id, [names]);
@@ -1392,7 +1716,8 @@ export function Canvas({
     if (clipboard === undefined) return;
     const corner = clipCorner(clipboard);
     const at = where ?? { x: corner.x + NUDGE, y: corner.y + NUDGE };
-    const pasted = pasteItems(document, clipboard, placed(at));
+    const into = loopAtPoint(document, placed(at));
+    const pasted = pasteItems(document, clipboard, placed(at), into);
     if (pasted === undefined) {
       announce(t('canvas.pasteTooMany'));
       return;
@@ -1903,6 +2228,10 @@ export function Canvas({
     if (readOnly || text === '') return;
     event.preventDefault();
     const choice = JSON.parse(text) as AddChoice;
+    if (choice.kind === 'run-automation' && choice.automation === automationId) {
+      announce(t('canvas.callsItself'));
+      return;
+    }
     const at = placed(flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
     if (edge === undefined) onAddAt(choice, at);
     else onAddAt(choice, at, connectionOf(edge));
@@ -2014,104 +2343,109 @@ export function Canvas({
           <PortLayoutsContext value={portLayouts}>
             <InputTonesContext value={tones}>
               <PortHoverContext value={portHover}>
-                <ReactFlow
-                  nodes={nodes}
-                  edges={shownEdges}
-                  onMove={forgetPort}
-                  onEdgeMouseEnter={(_event, edge) => {
-                    // As its line does, the end of a connection lights up only where it can be edited.
-                    if (!readOnly) setHoveredEdge(edge.id);
-                  }}
-                  onEdgeMouseLeave={() => {
-                    setHoveredEdge(undefined);
-                  }}
-                  nodeTypes={nodeTypes}
-                  edgeTypes={edgeTypes}
-                  onNodesChange={onNodesChange}
-                  onNodeDrag={onNodeDrag}
-                  onNodeDragStop={onNodeDragStop}
-                  onEdgesChange={onEdgesChange}
-                  onConnect={onConnect}
-                  edgesReconnectable={!readOnly}
-                  // A chosen connection is drawn above the blocks, so its output end can be taken too.
-                  elevateEdgesOnSelect
-                  reconnectRadius={12}
-                  onReconnectStart={onReconnectStart}
-                  onReconnect={onReconnect}
-                  onReconnectEnd={onReconnectEnd}
-                  // The left button draws a selection box, and the middle one pans.
-                  selectionOnDrag={!readOnly}
-                  selectionMode={SelectionMode.Partial}
-                  panOnDrag={readOnly ? true : [1]}
-                  // The wheel and a touchpad move the view, and Ctrl+wheel or a pinch zooms it.
-                  panOnScroll
-                  panOnScrollMode={PanOnScrollMode.Free}
-                  zoomOnScroll={false}
-                  zoomOnPinch
-                  zoomActivationKeyCode="Control"
-                  onNodeClick={(_event, node) => {
-                    setFocused(node.id);
-                    setMoving(false);
-                  }}
-                  onNodeDoubleClick={(_event, node) => {
-                    if (readOnly) {
-                      if (node.type === 'block') onOpenBlock?.(node.id);
-                    } else if (node.type === 'note') {
-                      setEditingNote(node.id);
-                    }
-                  }}
-                  onPaneClick={() => {
-                    // A click on the empty canvas lets go of everything, keyboard focus included.
-                    onSelect(new Set());
-                    setFocused(undefined);
-                    setMoving(false);
-                  }}
-                  onEdgeClick={() => {
-                    setFocused(undefined);
-                    setMoving(false);
-                  }}
-                  onEdgeDoubleClick={(_event, edge) => {
-                    deleteConnection(edge.id);
-                  }}
-                  onPaneContextMenu={(event) => {
-                    event.preventDefault();
-                    if (readOnly) return;
-                    setMenu(undefined);
-                    setPaneMenu({
-                      x: event.clientX,
-                      y: event.clientY,
-                      at: placed(flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })),
-                    });
-                  }}
-                  onNodeContextMenu={(event, node) => {
-                    event.preventDefault();
-                    if (readOnly || node.type === 'frame') return;
-                    openMenu(node.id, event.clientX, event.clientY);
-                  }}
-                  zoomOnDoubleClick={false}
-                  onConnectStart={onConnectStart}
-                  onConnectEnd={onConnectEnd}
-                  isValidConnection={isValidConnection}
-                  nodesDraggable={!readOnly}
-                  nodesConnectable={!readOnly}
-                  elevateNodesOnSelect={false}
-                  nodesFocusable={false}
-                  edgesFocusable={false}
-                  deleteKeyCode={null}
-                  onlyRenderVisibleElements={document.blocks.length >= CULL_FROM}
-                  minZoom={MIN_ZOOM}
-                  maxZoom={MAX_ZOOM}
-                  proOptions={{ hideAttribution: true }}
-                  snapToGrid={snapToGrid}
-                  snapGrid={[GRID, GRID]}
-                >
-                  {showGrid ? <Background gap={GRID} /> : null}
-                  {showNavigator ? (
-                    <MiniMap pannable zoomable ariaLabel={t('canvas.overview')} />
-                  ) : null}
-                  <Controls showInteractive={false} />
-                  {children}
-                </ReactFlow>
+                <LoopRoundsContext value={readOnly ? onChooseRound : undefined}>
+                  <ReactFlow
+                    nodes={nodes}
+                    edges={shownEdges}
+                    onMove={forgetPort}
+                    onEdgeMouseEnter={(_event, edge) => {
+                      // As its line does, the end of a connection lights up only where it can be edited.
+                      if (!readOnly) setHoveredEdge(edge.id);
+                    }}
+                    onEdgeMouseLeave={() => {
+                      setHoveredEdge(undefined);
+                    }}
+                    nodeTypes={nodeTypes}
+                    edgeTypes={edgeTypes}
+                    onNodesChange={onNodesChange}
+                    onNodeDrag={onNodeDrag}
+                    onNodeDragStop={onNodeDragStop}
+                    onEdgesChange={onEdgesChange}
+                    onConnect={onConnect}
+                    edgesReconnectable={!readOnly}
+                    // A chosen connection is drawn above the blocks, so its output end can be taken too.
+                    elevateEdgesOnSelect
+                    reconnectRadius={12}
+                    onReconnectStart={onReconnectStart}
+                    onReconnect={onReconnect}
+                    onReconnectEnd={onReconnectEnd}
+                    // The left button draws a selection box, and the middle one pans.
+                    selectionOnDrag={!readOnly}
+                    selectionMode={SelectionMode.Partial}
+                    panOnDrag={readOnly ? true : [1]}
+                    // The wheel and a touchpad move the view, and Ctrl+wheel or a pinch zooms it.
+                    panOnScroll
+                    panOnScrollMode={PanOnScrollMode.Free}
+                    zoomOnScroll={false}
+                    zoomOnPinch
+                    zoomActivationKeyCode="Control"
+                    onNodeClick={(_event, node) => {
+                      setFocused(node.id);
+                      setMoving(false);
+                    }}
+                    onNodeDoubleClick={(_event, node) => {
+                      if (node.type === 'block' && onOpenCall?.(node.id) === true) return;
+                      if (readOnly) {
+                        if (node.type === 'block' || node.type === 'loop') onOpenBlock?.(node.id);
+                      } else if (node.type === 'note') {
+                        setEditingNote(node.id);
+                      }
+                    }}
+                    onPaneClick={() => {
+                      // A click on the empty canvas lets go of everything, keyboard focus included.
+                      onSelect(new Set());
+                      setFocused(undefined);
+                      setMoving(false);
+                    }}
+                    onEdgeClick={() => {
+                      setFocused(undefined);
+                      setMoving(false);
+                    }}
+                    onEdgeDoubleClick={(_event, edge) => {
+                      deleteConnection(edge.id);
+                    }}
+                    onPaneContextMenu={(event) => {
+                      event.preventDefault();
+                      if (readOnly) return;
+                      setMenu(undefined);
+                      setPaneMenu({
+                        x: event.clientX,
+                        y: event.clientY,
+                        at: placed(
+                          flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+                        ),
+                      });
+                    }}
+                    onNodeContextMenu={(event, node) => {
+                      event.preventDefault();
+                      if (readOnly || node.type === 'frame') return;
+                      openMenu(node.id, event.clientX, event.clientY);
+                    }}
+                    zoomOnDoubleClick={false}
+                    onConnectStart={onConnectStart}
+                    onConnectEnd={onConnectEnd}
+                    isValidConnection={isValidConnection}
+                    nodesDraggable={!readOnly}
+                    nodesConnectable={!readOnly}
+                    elevateNodesOnSelect={false}
+                    nodesFocusable={false}
+                    edgesFocusable={false}
+                    deleteKeyCode={null}
+                    onlyRenderVisibleElements={document.blocks.length >= CULL_FROM}
+                    minZoom={MIN_ZOOM}
+                    maxZoom={MAX_ZOOM}
+                    proOptions={{ hideAttribution: true }}
+                    snapToGrid={snapToGrid}
+                    snapGrid={[GRID, GRID]}
+                  >
+                    {showGrid ? <Background gap={GRID} /> : null}
+                    {showNavigator ? (
+                      <MiniMap pannable zoomable ariaLabel={t('canvas.overview')} />
+                    ) : null}
+                    <Controls showInteractive={false} />
+                    {children}
+                  </ReactFlow>
+                </LoopRoundsContext>
               </PortHoverContext>
             </InputTonesContext>
           </PortLayoutsContext>

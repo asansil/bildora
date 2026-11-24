@@ -1,11 +1,23 @@
-import { Clock, GitBranch, GitFork, GitMerge, Play, Split, UserRound, Wrench } from 'lucide-react';
+import {
+  Clock,
+  GitBranch,
+  GitFork,
+  GitMerge,
+  Play,
+  ListOrdered,
+  RefreshCw,
+  Split,
+  UserRound,
+  Workflow,
+  Wrench,
+} from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { ToolView } from '../../../shared/ipc-contract.js';
 import { ProgramIcon } from '../../shell/ProgramIcon.js';
 import type { BlockKind } from './flow-document.js';
 
 /** The families blocks are colored by. */
-export type BlockFamily = 'start' | 'tool' | 'condition' | 'parallel' | 'wait';
+export type BlockFamily = 'start' | 'tool' | 'condition' | 'parallel' | 'wait' | 'loop';
 
 const FAMILIES: Readonly<Record<BlockKind, BlockFamily>> = {
   start: 'start',
@@ -16,6 +28,9 @@ const FAMILIES: Readonly<Record<BlockKind, BlockFamily>> = {
   join: 'parallel',
   'wait-for-time': 'wait',
   'wait-for-manual-action': 'wait',
+  for: 'loop',
+  while: 'loop',
+  'run-automation': 'tool',
 };
 
 export function familyOf(kind: BlockKind): BlockFamily {
@@ -30,6 +45,9 @@ const ICONS: Readonly<Record<Exclude<BlockKind, 'run'>, LucideIcon>> = {
   join: GitMerge,
   'wait-for-time': Clock,
   'wait-for-manual-action': UserRound,
+  for: ListOrdered,
+  while: RefreshCw,
+  'run-automation': Workflow,
 };
 
 /**

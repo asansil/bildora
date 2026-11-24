@@ -53,6 +53,8 @@
   --bildora-family-parallel-tint: light-dark(oklch(0.95 0.035 55), oklch(0.31 0.05 55));
   --bildora-family-wait: light-dark(oklch(0.52 0.11 90), oklch(0.82 0.13 95));
   --bildora-family-wait-tint: light-dark(oklch(0.95 0.04 95), oklch(0.31 0.05 95));
+  --bildora-family-loop: light-dark(oklch(0.53 0.16 340), oklch(0.78 0.13 340));
+  --bildora-family-loop-tint: light-dark(oklch(0.95 0.035 340), oklch(0.31 0.06 340));
 
   /* Type. System faces, so the app sits naturally beside Windows 11 applications. */
   --bildora-font-ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;

@@ -7,6 +7,8 @@ import type { BlockIdProblem } from './flow-document.js';
 interface RenameDialogProps {
   /** The block's name now. */
   readonly current: string;
+  /** The automations that read the block through a call, whose links the rename updates too. */
+  readonly callers?: readonly string[];
   /** Why another name cannot name the block, or undefined when it can. */
   readonly problemOf: (next: string) => BlockIdProblem | undefined;
   readonly onRename: (next: string) => void;
@@ -17,7 +19,13 @@ interface RenameDialogProps {
  * Asks for a block's new name in links, in the middle of the window with the name selected. Enter
  * accepts, Escape cancels, and the dialog says why a name cannot be used.
  */
-export function RenameDialog({ current, problemOf, onRename, onClose }: RenameDialogProps) {
+export function RenameDialog({
+  current,
+  callers = [],
+  problemOf,
+  onRename,
+  onClose,
+}: RenameDialogProps) {
   const [name, setName] = useState(current);
   const fieldId = useId();
   const problemId = useId();
@@ -57,6 +65,11 @@ export function RenameDialog({ current, problemOf, onRename, onClose }: RenameDi
               : t(`canvas.blockIdProblem.${problem}`)}
           </p>
         </div>
+        {callers.length === 0 ? null : (
+          <p className="field-hint" data-testid="rename-callers">
+            {t('canvas.renameCallers', { names: callers.join(', ') })}
+          </p>
+        )}
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>
             {t('form.cancel')}

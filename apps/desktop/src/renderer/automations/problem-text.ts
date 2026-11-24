@@ -3,7 +3,7 @@ import type { MessageKey } from '../../shared/i18n/translate.js';
 import type { AutomationProblemView } from '../../shared/ipc-contract.js';
 
 /** Parameters that hold a block id, which a person knows by the block's name instead. */
-const BLOCK_PARAMETERS = ['block', 'source', 'parallel', 'from', 'to'] as const;
+const BLOCK_PARAMETERS = ['block', 'source', 'parallel', 'from', 'to', 'loop'] as const;
 
 export interface ProblemText {
   /** What is wrong. */

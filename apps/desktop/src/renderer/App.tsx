@@ -31,6 +31,8 @@ import type {
 import { PANEL_WIDTH_DEFAULT, PANEL_WIDTH_MAX, PANEL_WIDTH_MIN } from '../shared/ipc-contract.js';
 import { AutomationTab } from './automations/AutomationTab.js';
 import { documentOf, draftOf } from './automations/canvas/flow-document.js';
+import { affectedCallers, renamedCallerBlocks } from './automations/canvas/caller-rename.js';
+import type { CalledRename } from './automations/canvas/caller-rename.js';
 import {
   commandItem,
   optionsEntries,
@@ -181,6 +183,10 @@ export function App() {
   /** Asks an automation tab to show one of its past runs; `count` repeats the same request. */
   const [runShown, setRunShown] = useState<
     { id: string; runId: string; count: number } | undefined
+  >(undefined);
+  /** The latest rename that open automation tabs follow in the automations they call. */
+  const [callerRename, setCallerRename] = useState<
+    { readonly rename: CalledRename; readonly count: number } | undefined
   >(undefined);
   /** Tabs whose automation has edits that are not saved. */
   const [unsaved, setUnsaved] = useState<ReadonlySet<string>>(NO_KEYS);
@@ -666,6 +672,24 @@ export function App() {
   function launch(target: ToolView, request?: RunRequest): void {
     pinTab(tabKey({ kind: 'tool', id: target.id }));
     void api.startRun(target.id, request).catch(report);
+  }
+
+  /**
+   * Follows a block renamed in an automation others call: an automation open in a tab is updated
+   * there, keeping its unsaved changes, and the others are saved again.
+   */
+  function renameInCallers(rename: CalledRename): void {
+    const open = new Set(tabs.tabs.flatMap((tab) => (tab.kind === 'automation' ? [tab.id] : [])));
+    const all = automations.automations;
+    const saves = affectedCallers(all, rename).flatMap((caller) => {
+      if (open.has(caller.id)) return [];
+      const stored = all.find(({ id }) => id === caller.id);
+      const blocks = renamedCallerBlocks(caller, all, rename);
+      if (stored === undefined || blocks === undefined) return [];
+      return [api.saveAutomation({ ...draftOf(documentOf(stored), stored.id), blocks })];
+    });
+    setCallerRename((asked) => ({ rename, count: (asked?.count ?? 0) + 1 }));
+    void Promise.all(saves).then(reload).catch(report);
   }
 
   async function saveAutomation(draft: AutomationDraft) {
@@ -1197,6 +1221,7 @@ export function App() {
           automation={automation}
           run={automationRunOf(tab.id)}
           tools={allTools}
+          automations={automations.automations}
           active={tab.key === tabs.activeKey}
           revision={catalog}
           panels={automationPanels}
@@ -1222,6 +1247,15 @@ export function App() {
             setHistoryRun((asked) => ({ runId, count: (asked?.count ?? 0) + 1 }));
             showHistory({ automationId });
           }}
+          onOpenAutomation={(id) => {
+            openTab({ kind: 'automation', id }, true);
+          }}
+          onShowRun={(id, runId) => {
+            setRunShown((asked) => ({ id, runId, count: (asked?.count ?? 0) + 1 }));
+            openTab({ kind: 'automation', id }, true);
+          }}
+          onRenameInCallers={renameInCallers}
+          callerRename={callerRename}
           onDirty={(dirty) => {
             markUnsaved(tab.key, dirty);
           }}

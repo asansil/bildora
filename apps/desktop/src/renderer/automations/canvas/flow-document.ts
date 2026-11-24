@@ -2,14 +2,18 @@ import {
   AUTOMATION_BLOCK_LIMIT,
   AUTOMATION_CONNECTION_LIMIT,
   AUTOMATION_NOTE_LIMIT,
+  BODY_OUTPUT,
   DEFAULT_OUTPUT,
   ERROR_OUTPUT,
   connectionOutput,
   isDisableable,
   findStepOutputReferences,
+  isLoopType,
   isReservedBlockId,
+  loopBody,
   outputsOf,
   renameInBlockExpressions,
+  staysInFrame,
   stepOutputReference,
   validTargets,
 } from '@bildora/protocol';
@@ -22,6 +26,8 @@ import type {
   AutomationPosition,
 } from '@bildora/protocol';
 import type { AutomationDraft, AutomationView } from '../../../shared/ipc-contract.js';
+import { LOOP_EMPTY, centreOf, frameRects, insideCorner, loopAt } from './loop-frames.js';
+import type { Rect } from './loop-frames.js';
 
 /** What the canvas edits: the automation as its file holds it, with every section present. */
 export interface FlowDocument {
@@ -55,6 +61,8 @@ const OUTPUT_ROW = 16;
  * them apart; Error rests on the bottom, so it never counts.
  */
 export function sizeOf(block: AutomationBlock): Size {
+  // A loop is drawn as a frame around its blocks; this is the frame with nothing in it.
+  if (isLoopType(block.type)) return LOOP_EMPTY;
   const beside = outputsOf(block).filter((output) => output !== ERROR_OUTPUT).length;
   return { width: BLOCK_WIDTH, height: Math.max(BLOCK_HEIGHT, beside * OUTPUT_ROW + 8) };
 }
@@ -205,7 +213,41 @@ export function renameBlock(document: FlowDocument, from: string, to: string): F
  */
 export type NewBlock =
   | { readonly kind: 'run'; readonly tool: string; readonly toolName?: string }
-  | { readonly kind: Exclude<BlockKind, 'run' | 'start' | 'join'> };
+  | {
+      readonly kind: 'run-automation';
+      readonly automation: string;
+      readonly automationName?: string;
+    }
+  /** A Join, ending `parallel`, or the Parallel `parallelFor` picks when left out. */
+  | { readonly kind: 'join'; readonly parallel?: string }
+  | { readonly kind: Exclude<BlockKind, 'run' | 'start' | 'join' | 'run-automation'> };
+
+/** The Parallel blocks that no Join ends yet. */
+export function openParallels(document: FlowDocument): string[] {
+  const ended = new Set(
+    document.blocks.flatMap((block) => (block.type === 'join' ? [block.parallel] : [])),
+  );
+  return document.blocks
+    .filter((block) => block.type === 'parallel' && !ended.has(block.id))
+    .map(({ id }) => id);
+}
+
+/**
+ * The Parallel a new Join ends: the only one with no Join yet, `near` when it is one of them, or
+ * the one nearest to `near`. Undefined when every Parallel has its Join.
+ */
+export function parallelFor(document: FlowDocument, near?: string): string | undefined {
+  const open = openParallels(document);
+  if (open.length <= 1) return open[0];
+  if (near !== undefined && open.includes(near)) return near;
+  const at = near === undefined ? undefined : document.positions[near];
+  if (at === undefined) return open[0];
+  const distance = (id: string): number => {
+    const other = document.positions[id];
+    return other === undefined ? Infinity : Math.hypot(other.x - at.x, other.y - at.y);
+  };
+  return [...open].sort((a, b) => distance(a) - distance(b))[0];
+}
 
 /** A choice with its tool's name, which a new Run tool block is named after. */
 export function namedChoice<Choice extends NewBlock>(
@@ -265,12 +307,27 @@ export function createBlocks(
           cases: [{ id: 'case-1', condition: firstCondition(document, near) }],
         },
       ];
-    case 'parallel': {
-      const parallel = id('Parallel');
+    case 'parallel':
+      return [{ id: id('Parallel'), type: 'parallel' }];
+    case 'join': {
+      const parallel = choice.parallel ?? parallelFor(document, near);
+      return parallel === undefined ? [] : [{ id: id('Join'), type: 'join', parallel }];
+    }
+    case 'for':
+      return [{ id: id('For'), type: 'for', items: { kind: 'count', count: 3 } }];
+    case 'while':
       return [
-        { id: parallel, type: 'parallel' },
-        { id: id('Join'), type: 'join', parallel },
+        {
+          id: id('While'),
+          type: 'while',
+          // Goes on for three rounds until the person writes what it waits for.
+          condition: { expression: 'loop.index < 3' },
+          maxRounds: 10,
+        },
       ];
+    case 'run-automation': {
+      const base = nameBase(choice.automationName ?? choice.automation);
+      return [{ id: id(base), type: 'run-automation', automation: choice.automation }];
     }
   }
 }
@@ -325,8 +382,20 @@ export function freeSpot(
   document: FlowDocument,
   at: AutomationPosition,
   size: Size,
+  inside?: string,
 ): AutomationPosition {
+  // The frames a block goes into hold it; every other frame is in the way like a block.
+  const holders = new Set<string>();
+  for (let loop = inside; loop !== undefined && !holders.has(loop);) {
+    holders.add(loop);
+    loop = loopOf(blockOf(document, loop));
+  }
+  const frames = documentFrames(document);
   const placed = document.blocks.flatMap((block) => {
+    if (isLoopType(block.type)) {
+      const frame = frames.get(block.id);
+      return frame === undefined || holders.has(block.id) ? [] : [frame];
+    }
     const position = document.positions[block.id];
     return position === undefined ? [] : [{ ...position, ...sizeOf(block) }];
   });
@@ -347,7 +416,7 @@ export function addBlocks(
   let x = at.x;
   for (const block of blocks) {
     const size = sizeOf(block);
-    const spot = freeSpot(current, { x, y: at.y }, size);
+    const spot = freeSpot(current, { x, y: at.y }, size, loopOf(block));
     current = {
       ...current,
       blocks: [...current.blocks, block],
@@ -514,25 +583,85 @@ export function spliceInto(
   return connect(led, tailId, DEFAULT_OUTPUT, to);
 }
 
-/** Adds a block after another, joined from the anchor's first free output that is not Error. */
+/** Each loop's frame as the document places its blocks. */
+export function documentFrames(document: FlowDocument): Map<string, Rect> {
+  const byId = new Map(document.blocks.map((block) => [block.id, block]));
+  return frameRects(
+    document.blocks,
+    (id) => {
+      const block = byId.get(id);
+      const at = document.positions[id];
+      return block === undefined || at === undefined ? undefined : { ...at, ...sizeOf(block) };
+    },
+    (id) => document.positions[id],
+  );
+}
+
+/** The innermost loop whose frame holds a point, as the document places its blocks. */
+export function loopAtPoint(document: FlowDocument, point: AutomationPosition): string | undefined {
+  return loopAt(document.blocks, documentFrames(document), point);
+}
+
+/** Puts new blocks into a loop, or leaves them outside every loop. */
+export function inLoop(
+  blocks: readonly AutomationBlock[],
+  loop: string | undefined,
+): AutomationBlock[] {
+  return blocks.map((block) => withLoop(block, loop));
+}
+
+/**
+ * Joins blocks that have just gone into a loop to its body, when nothing starts the body yet: the
+ * first of them with nothing coming in becomes the first block of the body.
+ */
+export function joinBodies(document: FlowDocument, entered: readonly string[]): FlowDocument {
+  let current = document;
+  for (const id of entered) {
+    const loop = loopOf(blockOf(current, id));
+    if (loop === undefined || !freeOutputs(current, loop).includes(BODY_OUTPUT)) continue;
+    if (current.connections.some(({ to }) => to === id)) continue;
+    if (!validTargets(current, loop, BODY_OUTPUT).includes(id)) continue;
+    current = connect(current, loop, BODY_OUTPUT, id);
+  }
+  return current;
+}
+
+/**
+ * Adds a block after another, joined from the anchor's first free output that is not Error. After
+ * a loop whose body is empty, it goes inside, as the first block of the body. Otherwise it joins
+ * the anchor's own frame.
+ */
 export function addAfter(
   document: FlowDocument,
   anchorId: string,
-  blocks: readonly AutomationBlock[],
+  added: readonly AutomationBlock[],
 ): { readonly document: FlowDocument; readonly output?: string } {
   const anchor = blockOf(document, anchorId);
-  const [first] = blocks;
   const at = document.positions[anchorId];
-  if (anchor === undefined || first === undefined || at === undefined) {
-    return { document };
+  if (anchor === undefined || at === undefined) return { document };
+  if (isLoopType(anchor.type) && freeOutputs(document, anchorId).includes(BODY_OUTPUT)) {
+    const blocks = inLoop(added, anchorId);
+    const [first] = blocks;
+    if (first === undefined) return { document };
+    const frame = documentFrames(document).get(anchorId);
+    const placed = addBlocks(document, blocks, insideCorner(frame ?? at));
+    return { document: connect(placed, anchorId, BODY_OUTPUT, first.id), output: BODY_OUTPUT };
   }
-  const placed = addBlocks(document, blocks, { x: at.x + sizeOf(anchor).width + GAP_X, y: at.y });
-  const free = freeOutputs(document, anchorId).find((name) => name !== ERROR_OUTPUT);
+  const blocks = inLoop(added, loopOf(anchor));
+  const [first] = blocks;
+  if (first === undefined) return { document };
+  const right = isLoopType(anchor.type)
+    ? (documentFrames(document).get(anchorId) ?? { ...at, ...sizeOf(anchor) })
+    : { ...at, ...sizeOf(anchor) };
+  const placed = addBlocks(document, blocks, { x: right.x + right.width + GAP_X, y: at.y });
+  const free = freeOutputs(document, anchorId).find(
+    (name) => name !== ERROR_OUTPUT && name !== BODY_OUTPUT,
+  );
   if (free !== undefined) {
     return { document: connect(placed, anchorId, free, first.id), output: free };
   }
   // A block whose only way on is taken gets the new one in between, as a list would.
-  const ways = outputsOf(anchor).filter((name) => name !== ERROR_OUTPUT);
+  const ways = outputsOf(anchor).filter((name) => name !== ERROR_OUTPUT && name !== BODY_OUTPUT);
   const [only] = ways;
   const after = document.connections.find(
     (connection) => connection.from === anchorId && connectionOutput(connection) === only,
@@ -561,9 +690,21 @@ export function removeItems(document: FlowDocument, ids: ReadonlySet<string>): F
       gone.add(block.parallel);
     }
   }
+  // The blocks of a deleted loop stay, in the loop that held it, if any.
+  const holder = (loop: string | undefined): string | undefined => {
+    let at = loop;
+    while (at !== undefined && gone.has(at)) at = loopOf(blockOf(document, at));
+    return at;
+  };
   return {
     ...document,
-    blocks: document.blocks.filter(({ id }) => !gone.has(id)),
+    blocks: document.blocks
+      .filter(({ id }) => !gone.has(id))
+      .map((block) =>
+        loopOf(block) === undefined || !gone.has(loopOf(block) ?? '')
+          ? block
+          : withLoop(block, holder(loopOf(block))),
+      ),
     connections: document.connections.filter(({ from, to }) => !gone.has(from) && !gone.has(to)),
     positions: Object.fromEntries(
       Object.entries(document.positions).filter(([id]) => !gone.has(id)),
@@ -584,8 +725,11 @@ export function moveItems(
     const to = moves[note.id];
     return to === undefined ? note : { ...note, x: to.x, y: to.y };
   });
+  // A loop keeps the size of its frame when it moves.
   const blockMoves = Object.fromEntries(
-    Object.entries(moves).filter(([id]) => document.blocks.some((block) => block.id === id)),
+    Object.entries(moves)
+      .filter(([id]) => document.blocks.some((block) => block.id === id))
+      .map(([id, to]) => [id, withSize({ x: to.x, y: to.y }, document.positions[id])]),
   );
   return { ...document, positions: { ...document.positions, ...blockMoves }, notes };
 }
@@ -623,7 +767,15 @@ export function isDisabled(block: AutomationBlock): boolean {
 }
 
 function withDisabled(block: AutomationBlock, disabled: boolean): AutomationBlock {
-  if (block.type === 'start' || block.type === 'parallel' || block.type === 'join') return block;
+  if (
+    block.type === 'start' ||
+    block.type === 'parallel' ||
+    block.type === 'join' ||
+    block.type === 'for' ||
+    block.type === 'while'
+  ) {
+    return block;
+  }
   if (disabled) return { ...block, disabled: true };
   const enabled = { ...block };
   delete enabled.disabled;
@@ -717,6 +869,173 @@ export function ungroup(document: FlowDocument, id: string): FlowDocument {
   return { ...document, groups: document.groups.filter((group) => group.id !== id) };
 }
 
+/** The loop a block is inside, if any. */
+export function loopOf(block: AutomationBlock | undefined): string | undefined {
+  return block === undefined || block.type === 'start' ? undefined : block.loop;
+}
+
+/** A block inside a loop, or outside every loop when `loop` is undefined. */
+export function withLoop(block: AutomationBlock, loop: string | undefined): AutomationBlock {
+  // Start never goes into a loop.
+  if (block.type === 'start') return block;
+  if (loop === undefined) {
+    if (block.loop === undefined) return block;
+    const outside = { ...block };
+    delete outside.loop;
+    return outside;
+  }
+  return block.loop === loop ? block : { ...block, loop };
+}
+
+/**
+ * Puts blocks into a loop, or takes them out of every loop when `loop` is undefined. Blocks inside
+ * moved loops go with them. Gives nothing when a connection would cross a frame, or a loop would
+ * end up inside itself; nothing is changed then, so the blocks go back.
+ */
+export function placeInLoop(
+  document: FlowDocument,
+  ids: readonly string[],
+  loop: string | undefined,
+): FlowDocument | undefined {
+  return placeInLoops(document, new Map(ids.map((id) => [id, loop])));
+}
+
+/** Puts each block into the loop it is given, or outside every loop for undefined, all at once. */
+export function placeInLoops(
+  document: FlowDocument,
+  assignments: ReadonlyMap<string, string | undefined>,
+): FlowDocument | undefined {
+  const moved = new Set(
+    [...assignments.keys()].filter((id) => blockOf(document, id)?.type !== 'start'),
+  );
+  if (moved.size === 0) return document;
+  for (const id of moved) {
+    const loop = assignments.get(id);
+    if (loop !== undefined && !isLoopType(blockOf(document, loop)?.type ?? '')) return undefined;
+  }
+  const blocks = document.blocks.map((block) =>
+    moved.has(block.id) ? withLoop(block, assignments.get(block.id)) : block,
+  );
+  const byId = new Map(blocks.map((block) => [block.id, block]));
+  // A loop never ends up inside itself, however far down.
+  for (const id of moved) {
+    const seen = new Set<string>();
+    for (let at = loopOf(byId.get(id)); at !== undefined; at = loopOf(byId.get(at))) {
+      if (at === id || seen.has(at)) return undefined;
+      seen.add(at);
+    }
+  }
+  const crosses = document.connections.some((connection) => {
+    if (!moved.has(connection.from) && !moved.has(connection.to)) return false;
+    const source = byId.get(connection.from);
+    const target = byId.get(connection.to);
+    return (
+      source !== undefined &&
+      target !== undefined &&
+      !staysInFrame(source, connectionOutput(connection), target)
+    );
+  });
+  if (crosses) return undefined;
+  const changed = blocks.some((block, index) => block !== document.blocks[index]);
+  return changed ? { ...document, blocks } : document;
+}
+
+/**
+ * What a drag that ended changes about loops: each block let go, with the blocks of a loop let go,
+ * lands in the innermost frame under its centre, or outside every loop. `before` is the flow when
+ * the drag began, `after` the flow with its new positions. Frames are measured without what moved,
+ * so a block dragged out of a frame is out of it. Gives `after` with the new loops, or nothing
+ * when a connection would cross a frame, so the move is refused.
+ */
+export function dropInLoops(
+  before: FlowDocument,
+  after: FlowDocument,
+  dropped: readonly string[],
+): FlowDocument | undefined {
+  const isLoop = (id: string): boolean => isLoopType(blockOf(after, id)?.type ?? '');
+  const carried = new Set(dropped.flatMap((id) => (isLoop(id) ? loopBody(after.blocks, id) : [])));
+  // A block moved with its loop stays in it.
+  const roots = dropped.filter((id) => !carried.has(id) && blockOf(after, id) !== undefined);
+  const moving = new Set([...roots, ...carried]);
+  const staying = after.blocks.filter(({ id }) => !moving.has(id));
+  const byId = new Map(after.blocks.map((block) => [block.id, block]));
+  const rectOf = (id: string): Rect | undefined => {
+    const block = byId.get(id);
+    const at = after.positions[id];
+    return block === undefined || at === undefined ? undefined : { ...at, ...sizeOf(block) };
+  };
+  const frames = frameRects(staying, rectOf, (id) => before.positions[id]);
+  const ownFrames = documentFrames(after);
+  const assignments = new Map<string, string | undefined>();
+  for (const id of roots) {
+    const block = byId.get(id);
+    const rect = isLoop(id) ? ownFrames.get(id) : rectOf(id);
+    if (block === undefined || block.type === 'start' || rect === undefined) continue;
+    const target = loopAt(after.blocks, frames, centreOf(rect), moving);
+    if (target !== loopOf(block)) assignments.set(id, target);
+  }
+  if (assignments.size === 0) return after;
+  const placed = placeInLoops(after, assignments);
+  const entered = [...assignments].flatMap(([id, loop]) => (loop === undefined ? [] : [id]));
+  return placed === undefined ? undefined : joinBodies(placed, entered);
+}
+
+/** A position with the frame size another one kept, if it kept one. */
+function withSize(
+  at: { readonly x: number; readonly y: number },
+  kept: AutomationPosition | undefined,
+): AutomationPosition {
+  return {
+    ...at,
+    ...(kept?.width === undefined ? {} : { width: kept.width }),
+    ...(kept?.height === undefined ? {} : { height: kept.height }),
+  };
+}
+
+/**
+ * Sets the rect a loop's frame keeps, which it never gets smaller than. Its frame still grows
+ * around its blocks.
+ */
+export function resizeLoop(
+  document: FlowDocument,
+  id: string,
+  rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+): FlowDocument {
+  if (!isLoopType(blockOf(document, id)?.type ?? '')) return document;
+  return {
+    ...document,
+    positions: {
+      ...document.positions,
+      [id]: {
+        x: rect.x,
+        y: rect.y,
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      },
+    },
+  };
+}
+
+/**
+ * Keeps each loop's own position at the top-left corner of its frame, so a frame left empty stays
+ * where it was drawn.
+ */
+export function withFramePositions(document: FlowDocument): FlowDocument {
+  const frames = documentFrames(document);
+  let positions: Record<string, AutomationPosition> | undefined;
+  for (const block of document.blocks) {
+    const frame = frames.get(block.id);
+    const at = document.positions[block.id];
+    if (frame === undefined || (at !== undefined && at.x === frame.x && at.y === frame.y)) continue;
+    // A frame given a size keeps the rect it was given; it is drawn around it and its blocks.
+    if (at?.width !== undefined) continue;
+    if (!document.blocks.some((inner) => loopOf(inner) === block.id)) continue;
+    positions ??= { ...document.positions };
+    positions[block.id] = withSize({ x: frame.x, y: frame.y }, at);
+  }
+  return positions === undefined ? document : { ...document, positions };
+}
+
 /** Blocks and notes copied from a flow, with the connections between them. */
 export interface FlowClip {
   readonly blocks: readonly AutomationBlock[];
@@ -731,6 +1050,12 @@ export interface FlowClip {
  */
 export function copyItems(document: FlowDocument, ids: ReadonlySet<string>): FlowClip | undefined {
   const chosen = new Set(ids);
+  // A loop goes with the blocks inside it.
+  for (const id of ids) {
+    if (isLoopType(blockOf(document, id)?.type ?? '')) {
+      for (const inside of loopBody(document.blocks, id)) chosen.add(inside);
+    }
+  }
   for (const block of document.blocks) {
     if (block.type === 'join' && (chosen.has(block.id) || chosen.has(block.parallel))) {
       chosen.add(block.id);
@@ -796,6 +1121,15 @@ function renamedBlock(block: AutomationBlock, ids: ReadonlyMap<string, string>):
 }
 
 function renamedFields(block: AutomationBlock, ids: ReadonlyMap<string, string>): AutomationBlock {
+  const current = loopOf(block);
+  const loop = current === undefined ? undefined : ids.get(current);
+  return renamedOwnFields(loop === undefined ? block : withLoop(block, loop), ids);
+}
+
+function renamedOwnFields(
+  block: AutomationBlock,
+  ids: ReadonlyMap<string, string>,
+): AutomationBlock {
   const id = ids.get(block.id) ?? block.id;
   switch (block.type) {
     case 'run': {
@@ -835,6 +1169,7 @@ export function pasteItems(
   document: FlowDocument,
   clip: FlowClip,
   at: AutomationPosition,
+  into?: string,
 ): { readonly document: FlowDocument; readonly ids: readonly string[] } | undefined {
   if (
     document.blocks.length + clip.blocks.length > AUTOMATION_BLOCK_LIMIT ||
@@ -863,7 +1198,10 @@ export function pasteItems(
     ids.set(id, fresh);
   }
   const newId = (id: string): string => ids.get(id) ?? id;
-  const blocks = clip.blocks.map((block) => renamedBlock(block, ids));
+  // Blocks whose loop was not copied land in the loop they are pasted into, if any.
+  const blocks = clip.blocks.map((block) =>
+    renamedBlock(ids.has(loopOf(block) ?? '') ? block : withLoop(block, into), ids),
+  );
   const connections = clip.connections.map((connection) => ({
     ...connection,
     from: newId(connection.from),

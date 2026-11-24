@@ -36,6 +36,7 @@ export function linkMenuItems(
 ): MenuEntry[] {
   const run = choices.filter(({ group }) => group === 'run');
   const inputs = choices.filter(({ group }) => group === 'input');
+  const loops = choices.filter(({ group }) => group === 'loop');
   const results = choices.filter(({ group }) => group === 'result');
   const settings = choices.filter(({ group }) => group === 'setting');
   const groups: MenuEntry[] = run.map((choice) => item(choice, pick));
@@ -44,6 +45,9 @@ export function linkMenuItems(
       label: t('canvas.linkInputs'),
       items: inputs.map((choice) => item(choice, pick)),
     });
+  }
+  if (loops.length > 0) {
+    groups.push({ label: t('canvas.linkLoops'), items: byBlock(loops, nameOf, pick) });
   }
   if (results.length > 0) {
     groups.push({ label: t('canvas.linkResults'), items: byBlock(results, nameOf, pick) });
@@ -64,7 +68,9 @@ export function blockMenuItems(
   const settings = own
     .filter(({ group }) => group === 'setting')
     .map((choice) => item(choice, pick));
-  const results = own.filter(({ group }) => group === 'result').map((choice) => item(choice, pick));
+  const results = own
+    .filter(({ group }) => group === 'result' || group === 'loop')
+    .map((choice) => item(choice, pick));
   if (settings.length === 0 && results.length === 0) {
     return [{ label: t('canvas.linkNothingHere'), disabled: true }];
   }

@@ -114,7 +114,7 @@ describe('theme tokens', () => {
       ).toBeGreaterThanOrEqual(4.5);
     });
 
-    it.each(['start', 'tool', 'condition', 'parallel', 'wait'])(
+    it.each(['start', 'tool', 'condition', 'parallel', 'wait', 'loop'])(
       'shows the %s family icon on its tint and on a block',
       (family) => {
         for (const surface of [`family-${family}-tint`, 'surface-raised']) {

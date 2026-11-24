@@ -5,12 +5,15 @@
  */
 import {
   ExpressionError,
+  endGuarantee,
   evaluateExpression,
   expressionsOf,
   findStepOutputReferences,
   fitsParameter,
   guarantees,
   isExpressionValue,
+  isLoopType,
+  loopChain,
   parseCached,
   runtimeText,
   targetOf,
@@ -21,8 +24,10 @@ import {
 import type {
   AutomationBlock,
   AutomationInputDeclaration,
+  Guarantee,
   GraphConnection,
   LiteralValue,
+  LoopValue,
   NameNode,
   ParameterKind,
   RuntimeValue,
@@ -36,6 +41,14 @@ import type {
   ToolView,
 } from '../../../shared/ipc-contract.js';
 
+/** An automation a Run automation block can call, as far as values need it. */
+export interface CalledFlow {
+  readonly id: string;
+  readonly name: string;
+  readonly blocks: readonly AutomationBlock[];
+  readonly connections: readonly GraphConnection[];
+}
+
 /** What the canvas knows of a flow's blocks while it is edited. */
 export interface ValueContext {
   readonly blocks: readonly AutomationBlock[];
@@ -43,6 +56,78 @@ export interface ValueContext {
   readonly tools: readonly ToolView[];
   /** The profile each block uses, by block id, once it has been read. */
   readonly profiles: ReadonlyMap<string, ProfileView>;
+  /** The automations of the Workspace, whose outputs Run automation blocks hand back. */
+  readonly automations?: readonly CalledFlow[];
+}
+
+/**
+ * The loops a value of `blockId` is read inside: those around the block, and for a While,
+ * the loop itself too, since its condition reads what the previous round left.
+ */
+export function readerLoops(blocks: readonly AutomationBlock[], blockId: string): string[] {
+  const block = blocks.find(({ id }) => id === blockId);
+  const around = loopChain(blocks, blockId);
+  return block?.type === 'while' ? [blockId, ...around] : around;
+}
+
+/** What a loop's item, position or folder is. */
+export function loopValueType(loop: AutomationBlock | undefined, value: LoopValue): ValueType {
+  if (value === 'index') return 'integer';
+  if (value === 'folder') return 'path';
+  if (loop?.type !== 'for') return 'integer';
+  switch (loop.items.kind) {
+    case 'list':
+      return 'text';
+    case 'folder':
+      return 'path';
+    case 'count':
+      return 'integer';
+  }
+}
+
+/**
+ * Whether a block's outputs can be read from inside `loops`, and as one value or as a list with
+ * one per round: a block inside loops that are not around the reader is read after them, as a list,
+ * once the outermost of those loops runs on every path.
+ */
+function readableAs(
+  blocks: readonly AutomationBlock[],
+  certain: Guarantee,
+  source: string,
+  loops: readonly string[],
+): 'one' | 'list' | undefined {
+  const between = loopChain(blocks, source).filter((loop) => !loops.includes(loop));
+  const outermost = between.at(-1);
+  if (outermost === undefined) return certain.completed.has(source) ? 'one' : undefined;
+  return certain.ran.has(outermost) ? 'list' : undefined;
+}
+
+/** The outputs of a called automation that a caller can read: those of blocks that always finish. */
+function calledOutputs(
+  context: ValueContext,
+  called: CalledFlow,
+): readonly { readonly block: string; readonly output: string; readonly type: ValueType }[] {
+  const end = endGuarantee(called, undefined);
+  return called.blocks.flatMap((block) => {
+    if (block.type !== 'run') return [];
+    const each = readableAs(called.blocks, end, block.id, []);
+    if (each === undefined) return [];
+    const tool = context.tools.find(({ id }) => id === block.tool);
+    return (tool?.outputDetails ?? []).flatMap((output) => [
+      {
+        block: block.id,
+        output: output.name,
+        type: each === 'list' ? ('list' as const) : output.type,
+      },
+      ...(output.fields ?? [])
+        .filter(({ secret }) => secret !== true)
+        .map((field) => ({
+          block: block.id,
+          output: `${output.name}.${field.name}`,
+          type: each === 'list' ? ('list' as const) : FIELD_TYPES[field.type],
+        })),
+    ]);
+  });
 }
 
 export function toolOfBlock(context: ValueContext, blockId: string): ToolView | undefined {
@@ -94,6 +179,8 @@ export function shownValue(context: ValueContext, expression: string): ShownValu
       const target = targetOf(name);
       switch (target.kind) {
         case 'link': {
+          const linked = context.blocks.find(({ id }) => id === target.block);
+          if (linked !== undefined && isLoopType(linked.type)) throw new Later();
           const parameter = linkableParameters(context, target.block).find(
             ({ name: candidate }) => candidate === target.parameter,
           );
@@ -137,7 +224,7 @@ export function shownValue(context: ValueContext, expression: string): ShownValu
 /** A value a field or a rule can read, as a list offers it. */
 export interface ValueChoice {
   /** What the list groups it under. */
-  readonly group: 'run' | 'input' | 'result' | 'setting';
+  readonly group: 'run' | 'input' | 'loop' | 'result' | 'setting';
   /** The block it comes from, for results and settings. */
   readonly block?: string;
   /** Its own name, such as a parameter's label or `result › count`. */
@@ -179,33 +266,91 @@ export function valueChoices(
       fits: fits(type),
     };
   });
-  const completed = guarantees(context).get(blockId)?.completed ?? new Set<string>();
+  const own = context.blocks.find(({ id }) => id === blockId);
+  // A While's condition reads what each round left, as at the end of its body.
+  const certain =
+    own?.type === 'while'
+      ? endGuarantee(context, blockId)
+      : (guarantees(context).get(blockId) ?? { completed: new Set(), ran: new Set() });
+  const loops = readerLoops(context.blocks, blockId);
+  const byId = new Map(context.blocks.map((block) => [block.id, block]));
+  // The nearest loop reads as `loop`, and the others around it by their names.
+  const loopValues = loops.flatMap((loop, depth): ValueChoice[] =>
+    (['item', 'index', 'folder'] as const).map((value) => {
+      const type = loopValueType(byId.get(loop), value);
+      return {
+        group: 'loop',
+        block: loop,
+        label: t(`canvas.loopValue.${value}`),
+        expression: depth === 0 ? `loop.${value}` : `${loop}.${value}`,
+        type,
+        fits: fits(type),
+      };
+    }),
+  );
+  /** A result, read as a list after the loops it repeats in. */
+  const result = (
+    block: string,
+    label: string,
+    expression: string,
+    type: ValueType,
+    each: 'one' | 'list',
+  ): ValueChoice => {
+    const read = each === 'list' ? 'list' : type;
+    return {
+      group: 'result',
+      block,
+      label: each === 'list' ? t('canvas.eachRound', { label }) : label,
+      expression,
+      type: read,
+      fits: fits(read),
+    };
+  };
   const results = context.blocks.flatMap((block): ValueChoice[] => {
-    if (block.type !== 'run' || !completed.has(block.id)) return [];
+    if (block.id === blockId) return [];
+    const each = readableAs(context.blocks, certain, block.id, loops);
+    if (each === undefined) return [];
+    if (isLoopType(block.type)) {
+      return [
+        result(
+          block.id,
+          t('canvas.loopRounds'),
+          `steps.${block.id}.outputs.rounds`,
+          'integer',
+          each,
+        ),
+      ];
+    }
+    if (block.type === 'run-automation') {
+      const called = context.automations?.find(({ id }) => id === block.automation);
+      if (called === undefined) return [];
+      return calledOutputs(context, called).map(({ block: inner, output, type }) => {
+        const [name = output, field] = output.split('.');
+        return result(
+          block.id,
+          `${inner} › ${name}${field === undefined ? '' : ` › ${field}`}`,
+          `steps.${block.id}.${inner}.outputs.${output}`,
+          type,
+          each,
+        );
+      });
+    }
+    if (block.type !== 'run') return [];
     const tool = toolOfBlock(context, block.id);
     return (tool?.outputDetails ?? []).flatMap((output) => {
       const base = `steps.${block.id}.outputs.${output.name}`;
-      const whole: ValueChoice = {
-        group: 'result',
-        block: block.id,
-        label: output.name,
-        expression: base,
-        type: output.type,
-        fits: fits(output.type),
-      };
+      const whole = result(block.id, output.name, base, output.type, each);
       const fields = (output.fields ?? [])
         .filter(({ secret }) => secret !== true)
-        .map((field): ValueChoice => {
-          const type = FIELD_TYPES[field.type];
-          return {
-            group: 'result',
-            block: block.id,
-            label: `${output.name} › ${field.name}`,
-            expression: `${base}.${field.name}`,
-            type,
-            fits: fits(type),
-          };
-        });
+        .map((field) =>
+          result(
+            block.id,
+            `${output.name} › ${field.name}`,
+            `${base}.${field.name}`,
+            FIELD_TYPES[field.type],
+            each,
+          ),
+        );
       return [whole, ...fields];
     });
   });
@@ -231,14 +376,19 @@ export function valueChoices(
     type: 'path',
     fits: fits('path'),
   };
-  return [folder, ...inputs, ...results, ...settings];
+  return [folder, ...inputs, ...loopValues, ...results, ...settings];
 }
 
 /**
  * The type an expression gives, as far as the flow being edited tells, or undefined when it cannot
  * be worked out, which a problem of the flow then explains.
  */
-export function expressionType(context: ValueContext, expression: string): ValueType | undefined {
+export function expressionType(
+  context: ValueContext,
+  expression: string,
+  reader?: string,
+): ValueType | undefined {
+  const loops = reader === undefined ? [] : readerLoops(context.blocks, reader);
   const tree = parseCached(expression);
   if (tree instanceof ExpressionError) return undefined;
   const unknown = (name: NameNode) => new ExpressionError('name', 'unknown', name.span);
@@ -248,6 +398,13 @@ export function expressionType(context: ValueContext, expression: string): Value
         const target = targetOf(name);
         switch (target.kind) {
           case 'link': {
+            const linked = context.blocks.find(({ id }) => id === target.block);
+            if (linked !== undefined && isLoopType(linked.type)) {
+              if (!loops.includes(linked.id)) throw unknown(name);
+              const value = target.parameter;
+              if (value !== 'item' && value !== 'index' && value !== 'folder') throw unknown(name);
+              return loopValueType(linked, value);
+            }
             const parameter = linkableParameters(context, target.block).find(
               ({ name: candidate }) => candidate === target.parameter,
             );
@@ -260,14 +417,48 @@ export function expressionType(context: ValueContext, expression: string): Value
             return typeOfParameter(input.type);
           }
           case 'output': {
+            const source = context.blocks.find(({ id }) => id === target.block);
+            const asList = (type: ValueType): ValueType =>
+              loopChain(context.blocks, target.block).some((loop) => !loops.includes(loop))
+                ? 'list'
+                : type;
+            if (source !== undefined && isLoopType(source.type)) {
+              if (target.output !== 'rounds') throw unknown(name);
+              return asList('integer');
+            }
+            if (source?.type === 'run-automation') {
+              const called = context.automations?.find(({ id }) => id === source.automation);
+              const [inner] = target.inner ?? [];
+              const key =
+                target.field === undefined ? target.output : `${target.output}.${target.field}`;
+              const found =
+                called === undefined
+                  ? undefined
+                  : calledOutputs(context, called).find(
+                      (item) => item.block === inner && item.output === key,
+                    );
+              if (found === undefined) throw unknown(name);
+              return asList(found.type);
+            }
             const output = toolOfBlock(context, target.block)?.outputDetails?.find(
               ({ name: n }) => n === target.output,
             );
             if (output === undefined) throw unknown(name);
-            if (target.field === undefined) return output.type;
+            if (target.field === undefined) return asList(output.type);
             const field = output.fields?.find(({ name: n }) => n === target.field);
             if (field === undefined) throw unknown(name);
-            return FIELD_TYPES[field.type];
+            return asList(FIELD_TYPES[field.type]);
+          }
+          case 'result':
+            if (!context.blocks.some(({ id }) => id === target.block)) throw unknown(name);
+            return 'text';
+          case 'loop': {
+            const [nearest] = loops;
+            if (nearest === undefined) throw unknown(name);
+            return loopValueType(
+              context.blocks.find(({ id }) => id === nearest),
+              target.value,
+            );
           }
           default:
             return 'path';
@@ -334,6 +525,25 @@ export function sharedValues(context: ValueContext, blockId: string): readonly S
       expression: `inputs.${input.name}`,
       type: typeOfParameter(input.type),
     }));
+  }
+  if (block !== undefined && isLoopType(block.type)) {
+    return [
+      {
+        label: t('canvas.loopRounds'),
+        expression: `steps.${blockId}.outputs.rounds`,
+        type: 'integer',
+      },
+    ];
+  }
+  if (block?.type === 'run-automation') {
+    const called = context.automations?.find(({ id }) => id === block.automation);
+    return called === undefined
+      ? []
+      : calledOutputs(context, called).map(({ block: inner, output, type }) => ({
+          label: `${inner} › ${output.replace('.', ' › ')}`,
+          expression: `steps.${blockId}.${inner}.outputs.${output}`,
+          type,
+        }));
   }
   if (block?.type !== 'run') return [];
   const results = (toolOfBlock(context, blockId)?.outputDetails ?? []).flatMap((output) => {

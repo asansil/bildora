@@ -11,7 +11,11 @@ import {
 import type { AutomationBlock, AutomationConnection } from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
 import type { MessageKey } from '../../../shared/i18n/translate.js';
-import type { AutomationProblemView, ToolView } from '../../../shared/ipc-contract.js';
+import type {
+  AutomationProblemView,
+  AutomationView,
+  ToolView,
+} from '../../../shared/ipc-contract.js';
 import { without } from '../automation-draft.js';
 import { ContextMenu } from '../../shell/ContextMenu.js';
 import type { MenuEntry } from '../../shell/menu-model.js';
@@ -22,6 +26,7 @@ import { ConditionEditor } from './ConditionEditor.js';
 import { NumberField, Select } from './fields.js';
 import { InputsEditor } from './InputsEditor.js';
 import { isDisabled } from './flow-document.js';
+import { ForSettings, WhileSettings } from './LoopSettings.js';
 import { PanelSection } from './PanelSection.js';
 import { RunFields } from './RunFields.js';
 import { sharedValues, usersOf, valueChoices } from './values.js';
@@ -85,6 +90,10 @@ export interface BlockSettingsProps {
   readonly tab: BlockTab;
   readonly onTab: (tab: BlockTab) => void;
   readonly tools: readonly ToolView[];
+  /** The automations of the Workspace, which a Run automation block calls. */
+  readonly automations: readonly AutomationView[];
+  /** Opens the automation a Run automation block calls. */
+  readonly onOpenAutomation: (id: string) => void;
   readonly names: ReadonlyMap<string, string>;
   /** What links and rules can read, and what linked values resolve to. */
   readonly context: ValueContext;
@@ -113,6 +122,8 @@ export function BlockSettings({
   tab,
   onTab,
   tools,
+  automations,
+  onOpenAutomation,
   names,
   context,
   problems,
@@ -316,11 +327,72 @@ export function BlockSettings({
             ) : null}
           </PanelSection>
         );
+      case 'run-automation':
+        return (
+          <RunFields
+            key={block.automation}
+            block={block}
+            tools={tools}
+            automations={automations}
+            onOpenAutomation={onOpenAutomation}
+            context={context}
+            problems={fieldProblems}
+            nameOf={nameOf}
+            onChange={onChange}
+            onGoTo={onGoTo}
+            onError={onError}
+          />
+        );
+      case 'for':
+        return (
+          <ForSettings
+            key={block.id}
+            block={block}
+            sources={sources}
+            choices={choices}
+            context={context}
+            problems={fieldProblems}
+            nameOf={nameOf}
+            onChange={onChange}
+            onError={onError}
+          />
+        );
+      case 'while':
+        return (
+          <WhileSettings
+            key={block.id}
+            block={block}
+            sources={sources}
+            choices={choices}
+            context={context}
+            problems={fieldProblems}
+            nameOf={nameOf}
+            onChange={onChange}
+            onError={onError}
+          />
+        );
       case 'parallel':
         return <p className="muted block-tab-empty">{t('canvas.noSettings')}</p>;
       case 'join':
         return (
           <PanelSection id="join.branches" title={t('canvas.sectionBranches')}>
+            <Select
+              label={t('canvas.joinEnds')}
+              value={block.parallel}
+              options={context.blocks
+                .filter(
+                  (other) =>
+                    other.type === 'parallel' &&
+                    (other.id === block.parallel ||
+                      !context.blocks.some(
+                        (join) => join.type === 'join' && join.parallel === other.id,
+                      )),
+                )
+                .map(({ id }) => ({ value: id, label: nameOf(id) }))}
+              onChange={(parallel) => {
+                onChange({ ...block, parallel });
+              }}
+            />
             <Select
               label={t('canvas.branchFailure')}
               value={block.onBranchFailure ?? 'stop-others'}
@@ -381,8 +453,8 @@ export function BlockSettings({
           </h2>
           <span className="block-card-kind truncate">
             {isDisabled(block)
-              ? t('canvas.disabledKind', { kind: blockKindText(block, tools) })
-              : blockKindText(block, tools)}
+              ? t('canvas.disabledKind', { kind: blockKindText(block, tools, automations) })
+              : blockKindText(block, tools, automations)}
           </span>
         </div>
         <div className="block-card-actions">
@@ -597,6 +669,9 @@ const KIND_HELP: Readonly<Record<AutomationBlock['type'], readonly MessageKey[]>
   join: ['canvas.joinHint'],
   'wait-for-time': ['canvas.helpTime'],
   'wait-for-manual-action': ['canvas.helpManual'],
+  for: ['canvas.forHint'],
+  while: ['canvas.whileHint'],
+  'run-automation': ['canvas.callHint'],
 };
 
 /** What the block does and how to use it, kept out of the way of its fields. */

@@ -5,6 +5,7 @@ import {
   getAutomation,
   listAutomations,
   newAutomationId,
+  readCallTree,
   readPathVariables,
   removeAutomation,
   saveAutomation,
@@ -12,7 +13,9 @@ import {
 } from '@bildora/core';
 import type {
   AutomationRun,
+  AutomationRunOptions,
   AutomationRunView,
+  CallTree,
   ManualAnswer,
   ManualRequest,
   RecordedToolRun,
@@ -102,8 +105,22 @@ export class AutomationService {
     this.options = options;
   }
 
-  private async viewOf(automation: Automation, workspaceId: string): Promise<AutomationView> {
+  /** Every automation `automation` can call, read from the Workspace's files. */
+  private callTree(automation: Automation, workspaceId: string): Promise<CallTree> {
+    const { dataDir } = this.options;
+    return readCallTree(automation, (id) => getAutomation(dataDir, workspaceId, id));
+  }
+
+  private async problemsOf(
+    automation: Automation,
+    workspaceId: string,
+  ): Promise<readonly AutomationProblem[]> {
     const { registry } = this.options;
+    const calls = await this.callTree(automation, workspaceId);
+    return checkAutomation(automation, registry, workspaceId, calls);
+  }
+
+  private async viewOf(automation: Automation, workspaceId: string): Promise<AutomationView> {
     const { id, name, description, blocks, connections } = automation;
     return {
       id,
@@ -114,7 +131,7 @@ export class AutomationService {
       positions: automation.positions ?? {},
       notes: automation.notes ?? [],
       groups: automation.groups ?? [],
-      problems: await checkAutomation(automation, registry, workspaceId),
+      problems: await this.problemsOf(automation, workspaceId),
     };
   }
 
@@ -151,11 +168,9 @@ export class AutomationService {
 
   /** What keeps a draft from running, for the canvas. Nothing is stored. */
   async check(draft: ReceivedAutomationDraft): Promise<readonly AutomationProblemView[]> {
-    const { registry, workspaceId } = this.options;
+    const { workspaceId } = this.options;
     const parsed = parseDraft(draft, draft.id ?? 'draft');
-    return parsed.ok
-      ? await checkAutomation(parsed.automation, registry, workspaceId())
-      : parsed.problems;
+    return parsed.ok ? await this.problemsOf(parsed.automation, workspaceId()) : parsed.problems;
   }
 
   async remove(id: string): Promise<void> {
@@ -191,7 +206,11 @@ export class AutomationService {
     if (automation === undefined) {
       throw new Error('This automation no longer exists');
     }
-    const [problem] = blockingProblems(await checkAutomation(automation, registry, workspace));
+    // Every automation it can call is read once, so that checking and running see the same files.
+    const calls = await this.callTree(automation, workspace);
+    const [problem] = blockingProblems(
+      await checkAutomation(automation, registry, workspace, calls),
+    );
     if (problem !== undefined) {
       throw new Error(
         problem.blockId === undefined
@@ -210,6 +229,8 @@ export class AutomationService {
         workspaceId: workspace,
         trigger: 'app',
         inputs,
+        calls,
+        startCalled: (called) => this.startCalled(called),
         dataDir,
         history,
         pathVariables,
@@ -223,14 +244,41 @@ export class AutomationService {
       }),
     };
     const { run } = entry;
+    this.follow(entry);
+    return run.view();
+  }
+
+  /** Keeps a run in view while it goes on, and as its automation's latest once it ends. */
+  private follow(entry: ActiveAutomation): void {
+    const { run, workspaceId, automationId } = entry;
     this.active.set(run.runId, entry);
     void run.result.then(() => {
       this.active.delete(run.runId);
-      this.lastFinished.set(`${workspace}/${id}`, run.view());
+      this.lastFinished.set(`${workspaceId}/${automationId}`, run.view());
       this.sendChanges();
     });
     this.scheduleUpdate();
-    return run.view();
+  }
+
+  /**
+   * Starts a run a Run automation block calls. It is followed like any other, so its tab shows it
+   * live, and a person answers its manual blocks under its own run.
+   */
+  private startCalled(options: AutomationRunOptions): AutomationRun {
+    const entry: ActiveAutomation = {
+      workspaceId: options.workspaceId,
+      automationId: options.automation.id,
+      answers: new Map(),
+      run: startAutomationRun({
+        ...options,
+        askForAction: (request) => this.waitForAnswer(entry, request),
+        onChange: () => {
+          this.scheduleUpdate();
+        },
+      }),
+    };
+    this.follow(entry);
+    return entry.run;
   }
 
   private waitForAnswer(

@@ -13,6 +13,7 @@ import {
   Redo2,
   Save,
   Square,
+  SquareArrowOutUpRight,
   TriangleAlert,
   Undo2,
 } from 'lucide-react';
@@ -39,12 +40,16 @@ import { ConsolePane } from '../tools/ConsolePane.js';
 import { commandFor } from './automation-draft.js';
 import { BlockSwatch } from './canvas/BlockIcon.js';
 import { BlockLibrary, CONTROL_KINDS } from './canvas/BlockLibrary.js';
+import { shownRounds } from './canvas/run-rounds.js';
+import { CalledBy } from './CalledBy.js';
+import { affectedCallers, renamedCallerBlocks } from './canvas/caller-rename.js';
+import type { CalledRename } from './canvas/caller-rename.js';
 import { BlockSettings } from './canvas/BlockSettings.js';
 import { blockCardMenu } from './canvas/block-menu.js';
 import type { BlockTab } from './canvas/BlockSettings.js';
 import { PanelSectionsContext } from './canvas/PanelSection.js';
 import type { PanelSections } from './canvas/PanelSection.js';
-import { blockKindText, blockNames, kindLabel } from './canvas/block-text.js';
+import { blockKindText, blockNames, kindLabel, roundText } from './canvas/block-text.js';
 import { Canvas } from './canvas/Canvas.js';
 import type { CanvasRun } from './canvas/Canvas.js';
 import type { CanvasCommands, EditorCommands } from './canvas/canvas-commands.js';
@@ -52,6 +57,11 @@ import {
   GAP_X,
   addAfter,
   addBlocks,
+  inLoop,
+  joinBodies,
+  loopAtPoint,
+  loopOf,
+  openParallels,
   blockIdProblem,
   blockOf,
   createBlocks,
@@ -221,12 +231,25 @@ interface RunDetailsProps {
   readonly name: string;
   readonly live: boolean;
   readonly tools: readonly ToolView[];
+  readonly automations: readonly AutomationView[];
   readonly onContinue: (blockId: string) => void;
   readonly onShowTool: (id: string) => void;
+  /** Opens a run in its automation's tab, such as the run a Run automation block started. */
+  readonly onShowRun: (automationId: string, runId: string) => void;
 }
 
 /** What one block did in the run on view. */
-function RunDetails({ block, step, name, live, tools, onContinue, onShowTool }: RunDetailsProps) {
+function RunDetails({
+  block,
+  step,
+  name,
+  live,
+  tools,
+  automations,
+  onContinue,
+  onShowTool,
+  onShowRun,
+}: RunDetailsProps) {
   if (block === undefined) {
     return <p className="field-hint">{t('canvas.runPick')}</p>;
   }
@@ -236,8 +259,16 @@ function RunDetails({ block, step, name, live, tools, onContinue, onShowTool }: 
   return (
     <div className="run-details" data-testid="run-details" data-block-id={block.id}>
       <h2>{name}</h2>
-      <p className="muted">{blockKindText(block, tools)}</p>
+      <p className="muted">{blockKindText(block, tools, automations)}</p>
       <RunStateBadge state={state} />
+      {step?.round === undefined ? null : (
+        <p className="muted" data-testid="run-details-round">
+          {roundText(step.round)}
+        </p>
+      )}
+      {step?.rounds === undefined ? null : (
+        <p data-testid="run-details-rounds">{t('automation.roundsRun', { count: step.rounds })}</p>
+      )}
       {state === 'skipped' ? <p className="muted">{t('automation.skipped')}</p> : null}
       {state === 'disabled' ? <p className="muted">{t('automation.disabled')}</p> : null}
       {step?.durationMs === undefined ? null : <p>{formatDuration(step.durationMs)}</p>}
@@ -255,6 +286,18 @@ function RunDetails({ block, step, name, live, tools, onContinue, onShowTool }: 
             {t('automation.continue')}
           </button>
         </>
+      ) : null}
+      {block.type === 'run-automation' && step?.calledRunId !== undefined ? (
+        <button
+          type="button"
+          data-testid="open-called-run"
+          onClick={() => {
+            onShowRun(block.automation, step.calledRunId ?? '');
+          }}
+        >
+          <SquareArrowOutUpRight className="icon" aria-hidden="true" />
+          {t('automation.openRun')}
+        </button>
       ) : null}
       {block.type === 'run' && hasTool && step?.toolRunId !== undefined ? (
         <button
@@ -372,6 +415,8 @@ interface AutomationTabProps {
   readonly automation: AutomationView | undefined;
   readonly run: AutomationRunStateView | undefined;
   readonly tools: readonly ToolView[];
+  /** Every automation of the Workspace, which Run automation blocks can call. */
+  readonly automations: readonly AutomationView[];
   /** False while another tab is shown. */
   readonly active: boolean;
   /** Changes when a past run may have appeared, such as one from the CLI. */
@@ -394,6 +439,14 @@ interface AutomationTabProps {
   readonly onShowTool: (id: string) => void;
   /** Shows one of the automation's past runs in Run history. */
   readonly onOpenInHistory: (automationId: string, runId: string) => void;
+  /** Opens another automation in its tab, such as the one a Run automation block calls. */
+  readonly onOpenAutomation: (id: string) => void;
+  /** Opens an automation's tab on one of its runs, such as a called run or its caller. */
+  readonly onShowRun: (automationId: string, runId: string) => void;
+  /** A block of this automation was renamed: the automations that read it through calls follow. */
+  readonly onRenameInCallers: (rename: CalledRename) => void;
+  /** Asks this tab to follow a rename in an automation it calls; a new `count` asks again. */
+  readonly callerRename?: { readonly rename: CalledRename; readonly count: number } | undefined;
   readonly onDirty: (dirty: boolean) => void;
   readonly onUsed: () => void;
   readonly onError: (error: unknown) => void;
@@ -418,6 +471,7 @@ function FlowEditor({
   automation,
   run,
   tools,
+  automations,
   active,
   revision,
   panels,
@@ -429,6 +483,10 @@ function FlowEditor({
   onRun,
   onShowTool,
   onOpenInHistory,
+  onOpenAutomation,
+  onShowRun,
+  onRenameInCallers,
+  callerRename,
   onDirty,
   onUsed,
   onError,
@@ -436,6 +494,13 @@ function FlowEditor({
   renameRequest,
   showRunRequest,
 }: AutomationTabProps) {
+  /** A rename asked for by an automation this one calls, applied once as an edit of this tab. */
+  const [handledCallerRename, setHandledCallerRename] = useState(callerRename?.count);
+  /** What a Run automation block of this one can call: every other automation. */
+  const callable = useMemo(
+    () => automations.filter(({ id }) => id !== automation?.id),
+    [automations, automation?.id],
+  );
   const [saved, setSaved] = useState(() => documentOf(automation));
   const [history, setHistory] = useState(() => startHistory(saved));
   const document = history.present;
@@ -515,6 +580,17 @@ function FlowEditor({
 
   // History asks for a past run, which shows once the list of past runs holds it.
   const [handledShow, setHandledShow] = useState<number | undefined>(undefined);
+  // A run asked for while it still goes on, such as a called run opened from its caller.
+  if (
+    showRunRequest !== undefined &&
+    showRunRequest.count !== handledShow &&
+    run?.runId === showRunRequest.runId
+  ) {
+    setHandledShow(showRunRequest.count);
+    setView({ kind: 'live' });
+    setSelected(new Set());
+    setRefusal(undefined);
+  }
   const askedRun =
     showRunRequest === undefined || showRunRequest.count === handledShow
       ? undefined
@@ -612,8 +688,14 @@ function FlowEditor({
   const names = useMemo(() => blockNames(document.blocks), [document.blocks]);
   const profiles = useBlockProfiles(document.blocks, onError);
   const valueContext: ValueContext = useMemo(
-    () => ({ blocks: document.blocks, connections: document.connections, tools, profiles }),
-    [document.blocks, document.connections, tools, profiles],
+    () => ({
+      blocks: document.blocks,
+      connections: document.connections,
+      tools,
+      profiles,
+      automations,
+    }),
+    [document.blocks, document.connections, tools, profiles, automations],
   );
   /** The automation whose inputs Run is asking for, while the form is open. */
   const [asking, setAsking] = useState<string | undefined>(() => {
@@ -733,10 +815,29 @@ function FlowEditor({
     if (first === undefined) return undefined;
     let next: FlowDocument;
     if (at !== undefined) {
-      next = addBlocks(document, blocks, at);
+      // Dropped inside a loop's frame, it goes into that loop.
+      const centre = { x: at.x + sizeOf(first).width / 2, y: at.y + sizeOf(first).height / 2 };
+      const holder = loopAtPoint(document, centre);
+      next = addBlocks(document, inLoop(blocks, holder), at);
+      // Inside a loop whose body starts nowhere yet, it becomes the first block of the body.
+      if (holder !== undefined && into === undefined) {
+        next = joinBodies(
+          next,
+          blocks.map(({ id }) => id),
+        );
+      }
       // Dropped onto a connection, it goes into it, unless it has no way on from there.
       const tail = blocks.find(({ type }) => type === 'join') ?? first;
       if (into !== undefined) next = spliceInto(next, into, first.id, tail.id) ?? next;
+    } else if (first.type === 'join' && anchor === first.parallel) {
+      // A Join added with its Parallel chosen goes past where its branches will be, unjoined.
+      const parallel = blockOf(document, first.parallel);
+      const place = document.positions[first.parallel] ?? { x: 0, y: 0 };
+      const past = parallel === undefined ? 0 : sizeOf(parallel).width;
+      next = addBlocks(document, inLoop(blocks, loopOf(parallel)), {
+        x: place.x + past + 216 + GAP_X * 2,
+        y: place.y,
+      });
     } else if (anchor !== undefined) {
       next = addAfter(document, anchor, blocks).document;
     } else {
@@ -758,6 +859,7 @@ function FlowEditor({
     return first.id;
   }
 
+  const canJoin = openParallels(document).length > 0;
   const library = useMemo(
     (): LibraryChoice[] => [
       ...tools.map((tool) => ({
@@ -766,13 +868,24 @@ function FlowEditor({
         icon: <BlockSwatch kind="run" tool={tool} />,
         ...(tool.category === undefined ? {} : { group: tool.category }),
       })),
-      ...CONTROL_KINDS.map((kind) => ({
+      // A Join is offered while some Parallel has none.
+      ...CONTROL_KINDS.filter((kind) => kind !== 'join' || canJoin).map((kind) => ({
         choice: { kind },
         label: kindLabel(kind),
         icon: <BlockSwatch kind={kind} />,
       })),
+      ...callable.map((item) => ({
+        choice: {
+          kind: 'run-automation' as const,
+          automation: item.id,
+          automationName: item.name,
+        },
+        label: item.name,
+        icon: <BlockSwatch kind="run-automation" />,
+        group: t('canvas.libraryAutomations'),
+      })),
     ],
-    [tools],
+    [tools, callable, canJoin],
   );
   const [focusRequest, setFocusRequest] = useState<{ id: string; count: number } | undefined>(
     undefined,
@@ -893,12 +1006,49 @@ function FlowEditor({
     setReveal((current) => ({ id: blockId, count: (current?.count ?? 0) + 1, center: true }));
   }
 
+  // A block renamed in an automation this one calls: its reads follow, kept as unsaved changes.
+  if (callerRename !== undefined && callerRename.count !== handledCallerRename) {
+    setHandledCallerRename(callerRename.count);
+    const own = { id: automation?.id ?? '', name: document.name, blocks: document.blocks };
+    const blocks = renamedCallerBlocks(own, automations, callerRename.rename);
+    if (blocks !== undefined) change((current) => ({ ...current, blocks }));
+  }
+  /** The automations a rename of the block being renamed would also update. */
+  const renamingCallers =
+    renaming === undefined || automation === undefined
+      ? []
+      : affectedCallers(automations, {
+          called: automation.id,
+          from: renaming,
+          to: `${renaming}\u0000`,
+        });
   const runOnView: CanvasRun | undefined =
     view.kind === 'live' && run !== undefined
       ? run
       : view.kind === 'past'
         ? view.record
         : undefined;
+  /** The round each loop's frame shows in the run on view; a loop not here follows its latest. */
+  const [roundChoices, setRoundChoices] = useState<{
+    readonly runId: string | undefined;
+    readonly rounds: ReadonlyMap<string, number>;
+  }>({ runId: undefined, rounds: new Map() });
+  if (roundChoices.runId !== runOnView?.runId) {
+    setRoundChoices({ runId: runOnView?.runId, rounds: new Map() });
+  }
+  const chooseRound = useCallback((loop: string, index: number | undefined) => {
+    setRoundChoices((current) => {
+      const rounds = new Map(current.rounds);
+      if (index === undefined) rounds.delete(loop);
+      else rounds.set(loop, index);
+      return { ...current, rounds };
+    });
+  }, []);
+  /** The step each block shows: inside loops, the one of the round its frame shows. */
+  const shownSteps = useMemo(
+    () => shownRounds(document.blocks, runOnView?.steps ?? [], roundChoices.rounds).steps,
+    [document.blocks, runOnView, roundChoices],
+  );
   // Fixing what stopped the run answers the notice about it.
   if (refusal?.kind === 'problems' && checked.length === 0) setRefusal(undefined);
   if (refusal?.kind === 'unnamed' && named) setRefusal(undefined);
@@ -1017,6 +1167,9 @@ function FlowEditor({
               runOnView.steps,
             )}
           />
+        )}
+        {runOnView?.caller === undefined ? null : (
+          <CalledBy caller={runOnView.caller} onShowRun={onShowRun} />
         )}
         <div className="actions">
           {view.kind === 'edit' ? null : (
@@ -1149,6 +1302,8 @@ function FlowEditor({
           <>
             <BlockLibrary
               tools={tools}
+              automations={callable}
+              canJoin={canJoin}
               onAdd={(choice) => {
                 if (choice.kind === 'note') note();
                 else add(choice);
@@ -1174,14 +1329,18 @@ function FlowEditor({
         <Canvas
           document={document}
           names={names}
+          automations={automations}
           tools={tools}
           problemCounts={problemCounts}
           selected={selected}
           active={active}
           {...(runOnView === undefined ? {} : { run: runOnView })}
+          roundChoices={roundChoices.rounds}
+          onChooseRound={chooseRound}
           {...(reveal === undefined ? {} : { reveal })}
           onChange={change}
           onSelect={select}
+          {...(automation === undefined ? {} : { automationId: automation.id })}
           onAddAt={(choice, at, into) => {
             if (choice.kind === 'note') note(at);
             else add(choice, at, undefined, into);
@@ -1189,6 +1348,18 @@ function FlowEditor({
           library={library}
           onOpenBlock={(id) => {
             pick(id);
+          }}
+          onOpenCall={(id) => {
+            const block = blockOf(document, id);
+            if (block?.type !== 'run-automation') return false;
+            if (runOnView === undefined) {
+              onOpenAutomation(block.automation);
+              return true;
+            }
+            const called = shownSteps.get(id)?.calledRunId;
+            if (called === undefined) return false;
+            onShowRun(block.automation, called);
+            return true;
           }}
           onRenameBlock={(id) => {
             pick(id);
@@ -1259,10 +1430,12 @@ function FlowEditor({
           {runOnView !== undefined ? (
             <RunDetails
               block={selectedBlock}
-              step={runOnView.steps.find(({ id }) => id === only)}
+              step={only === undefined ? undefined : shownSteps.get(only)}
               name={only === undefined ? '' : nameOf(only)}
               live={view.kind === 'live'}
               tools={tools}
+              automations={automations}
+              onShowRun={onShowRun}
               onContinue={(blockId) => {
                 if (run !== undefined) {
                   void api.confirmAutomation(run.runId, blockId).catch(onError);
@@ -1314,6 +1487,8 @@ function FlowEditor({
                 tab={blockTab}
                 onTab={setBlockTab}
                 tools={tools}
+                automations={automations}
+                onOpenAutomation={onOpenAutomation}
                 names={names}
                 context={valueContext}
                 problems={checked.filter(({ blockId }) => blockId === selectedBlock.id)}
@@ -1454,11 +1629,11 @@ function FlowEditor({
         </div>
         <div className="flow-lower-body" role="tabpanel" hidden={lowerCollapsed}>
           {lower === 'data' && runOnView !== undefined ? (
-            <DataView step={runOnView.steps.find(({ id }) => id === only)} />
+            <DataView step={only === undefined ? undefined : shownSteps.get(only)} />
           ) : lower === 'output' && runOnView !== undefined ? (
             <BlockOutput
               block={selectedBlock}
-              step={runOnView.steps.find(({ id }) => id === only)}
+              step={only === undefined ? undefined : shownSteps.get(only)}
               onError={onError}
             />
           ) : lower === 'outline' ? (
@@ -1523,10 +1698,14 @@ function FlowEditor({
       {renaming === undefined || blockOf(document, renaming) === undefined ? null : (
         <RenameDialog
           current={renaming}
+          callers={renamingCallers.map(({ name }) => name)}
           problemOf={(next) => blockIdProblem(document, renaming, next)}
           onRename={(next) => {
             change((current) => renameBlock(current, renaming, next));
             setSelected(new Set([next]));
+            if (automation !== undefined && renamingCallers.length > 0) {
+              onRenameInCallers({ called: automation.id, from: renaming, to: next });
+            }
           }}
           onClose={() => {
             setRenaming(undefined);
