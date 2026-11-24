@@ -51,6 +51,42 @@ export function outputLabel(output: string): string {
   }
 }
 
+/** A port in words, as its tooltip shows it: its name and what it is for. */
+export interface PortText {
+  readonly name: string;
+  readonly purpose: string;
+}
+
+/** A block's input, or one of its outputs. A Switch case can share the input's id, so this says which. */
+export type PortRef = { readonly input: true } | { readonly input: false; readonly output: string };
+
+export function portText(kind: BlockKind, port: PortRef): PortText {
+  if (port.input) {
+    return { name: t('canvas.portInput'), purpose: t('canvas.portInputPurpose') };
+  }
+  const name = outputLabel(port.output);
+  switch (port.output) {
+    case ERROR_OUTPUT:
+      if (kind !== 'switch') return { name, purpose: t('canvas.portErrorPurpose') };
+      break;
+    case 'true':
+      if (kind === 'if') return { name, purpose: t('canvas.portTruePurpose') };
+      break;
+    case 'false':
+      if (kind === 'if') return { name, purpose: t('canvas.portFalsePurpose') };
+      break;
+    case DEFAULT_CASE:
+      if (kind === 'switch') return { name, purpose: t('canvas.portDefaultPurpose') };
+      break;
+    default:
+      break;
+  }
+  return {
+    name,
+    purpose: t(kind === 'switch' ? 'canvas.portCasePurpose' : 'canvas.portNextPurpose'),
+  };
+}
+
 /** A value as a rule shows it: text in quotes, and a worked-out value after `=`. */
 export function ruleValueText(value: BlockValue | undefined): string {
   if (value === undefined) return '';

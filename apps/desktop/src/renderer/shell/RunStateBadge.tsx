@@ -2,6 +2,7 @@ import {
   Circle,
   CircleCheck,
   CircleDashed,
+  CircleOff,
   CircleSlash,
   CircleX,
   LoaderCircle,
@@ -11,8 +12,11 @@ import { t } from '../../shared/i18n/translate.js';
 import type { MessageKey } from '../../shared/i18n/translate.js';
 import type { ToolState } from '../tools/run-state.js';
 
-/** A block of an automation can also be Skipped, when the run took another path. */
-export type BlockState = ToolState | 'skipped';
+/**
+ * A block of an automation can also be Skipped, when the run took another path, or Disabled, when
+ * the run passed through it.
+ */
+export type BlockState = ToolState | 'skipped' | 'disabled';
 
 const STATES: Readonly<Record<BlockState, { icon: LucideIcon; label: MessageKey }>> = {
   idle: { icon: Circle, label: 'state.idle' },
@@ -21,6 +25,7 @@ const STATES: Readonly<Record<BlockState, { icon: LucideIcon; label: MessageKey 
   failed: { icon: CircleX, label: 'state.failed' },
   cancelled: { icon: CircleSlash, label: 'state.cancelled' },
   skipped: { icon: CircleDashed, label: 'state.skipped' },
+  disabled: { icon: CircleOff, label: 'state.disabled' },
 };
 
 /** The same icon family, so a state reads by shape even with no color at all. */

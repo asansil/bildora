@@ -13,6 +13,7 @@ import { parameterProblem, submittedValues } from '../../tools/parameter-form.js
 import type { FormValue, FormValues } from '../../tools/parameter-form.js';
 import { without } from '../automation-draft.js';
 import { ExpressionField } from './ExpressionField.js';
+import { PanelSection } from './PanelSection.js';
 import { NumberField, Select } from './fields.js';
 import { blockMenuItems, linkMenuItems } from './value-menu.js';
 import { asExpression, shownValue, unlinkedValue, valueChoices } from './values.js';
@@ -393,30 +394,33 @@ export function RunFields({
         <p className="field-problem">{t('automation.toolMissing', { id: block.tool })}</p>
       ) : null}
       {toolLevel === 1 ? (
-        <div className="field">
-          <label className="field-label" htmlFor={profileId}>
-            {t('automation.profile')}
-          </label>
-          <select
-            id={profileId}
-            value={block.profile ?? ''}
-            onChange={(event) => {
-              const rest: RunBlock = without(block, 'profile');
-              onChange(event.target.value === '' ? rest : { ...rest, profile: event.target.value });
-            }}
-          >
-            <option value="">{t('automation.noProfile')}</option>
-            {profiles.map(({ id, name }) => (
-              <option key={id} value={id}>
-                {name}
-              </option>
-            ))}
-          </select>
-        </div>
+        <PanelSection id="run.profile" title={t('canvas.sectionProfile')}>
+          <div className="field">
+            <label className="field-label" htmlFor={profileId}>
+              {t('automation.profile')}
+            </label>
+            <select
+              id={profileId}
+              value={block.profile ?? ''}
+              onChange={(event) => {
+                const rest: RunBlock = without(block, 'profile');
+                onChange(
+                  event.target.value === '' ? rest : { ...rest, profile: event.target.value },
+                );
+              }}
+            >
+              <option value="">{t('automation.noProfile')}</option>
+              {profiles.map(({ id, name }) => (
+                <option key={id} value={id}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </PanelSection>
       ) : null}
       {parameters.length === 0 ? null : (
-        <>
-          <p className="field-hint">{t('automation.valuesHint')}</p>
+        <PanelSection id="run.values" title={t('canvas.sectionValues')} count={parameters.length}>
           <ParameterForm
             parameters={parameters}
             values={form}
@@ -436,47 +440,48 @@ export function RunFields({
             replace={replace}
             decorate={decorate}
           />
-        </>
+        </PanelSection>
       )}
-      <Select
-        label={t('canvas.onFailure')}
-        value={retry === undefined ? 'stop' : 'retry'}
-        options={[
-          { value: 'stop', label: t('canvas.failureStop') },
-          { value: 'retry', label: t('automation.failureRetry') },
-        ]}
-        onChange={(choice) => {
-          const rest: RunBlock = without(block, 'onFailure');
-          onChange(
-            choice === 'stop'
-              ? rest
-              : { ...rest, onFailure: { retry: { attempts: 3, delaySeconds: 30 } } },
-          );
-        }}
-      />
-      {retry === undefined ? null : (
-        <div className="automation-retry">
-          <NumberField
-            label={t('automation.attempts')}
-            value={retry.attempts}
-            min={2}
-            max={20}
-            onChange={(attempts) => {
-              onChange({ ...block, onFailure: { retry: { ...retry, attempts } } });
-            }}
-          />
-          <NumberField
-            label={t('automation.retryDelay')}
-            value={retry.delaySeconds ?? 0}
-            min={0}
-            max={86_400}
-            onChange={(delaySeconds) => {
-              onChange({ ...block, onFailure: { retry: { ...retry, delaySeconds } } });
-            }}
-          />
-        </div>
-      )}
-      <p className="field-hint">{t('canvas.errorOutputHint')}</p>
+      <PanelSection id="run.failure" title={t('canvas.sectionFailure')}>
+        <Select
+          label={t('canvas.onFailure')}
+          value={retry === undefined ? 'stop' : 'retry'}
+          options={[
+            { value: 'stop', label: t('canvas.failureStop') },
+            { value: 'retry', label: t('automation.failureRetry') },
+          ]}
+          onChange={(choice) => {
+            const rest: RunBlock = without(block, 'onFailure');
+            onChange(
+              choice === 'stop'
+                ? rest
+                : { ...rest, onFailure: { retry: { attempts: 3, delaySeconds: 30 } } },
+            );
+          }}
+        />
+        {retry === undefined ? null : (
+          <div className="automation-retry">
+            <NumberField
+              label={t('automation.attempts')}
+              value={retry.attempts}
+              min={2}
+              max={20}
+              onChange={(attempts) => {
+                onChange({ ...block, onFailure: { retry: { ...retry, attempts } } });
+              }}
+            />
+            <NumberField
+              label={t('automation.retryDelay')}
+              value={retry.delaySeconds ?? 0}
+              min={0}
+              max={86_400}
+              onChange={(delaySeconds) => {
+                onChange({ ...block, onFailure: { retry: { ...retry, delaySeconds } } });
+              }}
+            />
+          </div>
+        )}
+      </PanelSection>
       {menu === undefined ? null : (
         <ContextMenu
           x={menu.x}

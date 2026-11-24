@@ -163,24 +163,32 @@ const runBlockSchema = z.strictObject({
   /** Values for this block, by parameter. Secrets never go here, because automations are shared. */
   values: z.record(z.string().regex(NAME_PATTERN), blockValueSchema).optional(),
   onFailure: z.union([z.literal('stop'), retrySchema]).optional(),
+  /** Set when the run passes through this block without doing what it does. */
+  disabled: z.literal(true).optional(),
 });
 
 const waitForTimeBlockSchema = z.strictObject({
   id: blockId,
   type: z.literal('wait-for-time'),
   seconds: z.int().min(1).max(WAIT_SECONDS_MAX),
+  /** Set when the run passes through this block without doing what it does. */
+  disabled: z.literal(true).optional(),
 });
 
 const waitForManualActionBlockSchema = z.strictObject({
   id: blockId,
   type: z.literal('wait-for-manual-action'),
   message: nonEmpty,
+  /** Set when the run passes through this block without doing what it does. */
+  disabled: z.literal(true).optional(),
 });
 
 const ifBlockSchema = z.strictObject({
   id: blockId,
   type: z.literal('if'),
   condition: conditionSchema,
+  /** Set when the run passes through this block without doing what it does. */
+  disabled: z.literal(true).optional(),
 });
 
 const switchBlockSchema = z.strictObject({
@@ -191,6 +199,8 @@ const switchBlockSchema = z.strictObject({
     .array(z.strictObject({ id: blockId, condition: conditionSchema }))
     .min(1)
     .max(SWITCH_CASES_MAX),
+  /** Set when the run passes through this block without doing what it does. */
+  disabled: z.literal(true).optional(),
 });
 
 const parallelBlockSchema = z.strictObject({

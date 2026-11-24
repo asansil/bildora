@@ -109,6 +109,11 @@ const MESSAGES = {
     `"${label}" links to "${source}.${parameter}", and that tool has no such parameter`,
   'link-secret': ({ label, source, parameter }) =>
     `"${label}" links to "${source}.${parameter}", which is secret and cannot be linked`,
+  // Warnings: the automation runs, but something in it will not work as it reads.
+  'output-from-disabled': ({ label, source }) =>
+    `"${label}" reads an output of "${source}", which is disabled and will not run`,
+  'exit-code-from-disabled': ({ label, source }) =>
+    `"${label}" checks the exit code of "${source}", which is disabled and will not run`,
   'link-cycle': ({ label, reference }) =>
     `"${label}" links in a circle, back to itself: ${reference}`,
   'input-unknown': ({ label, input }) => `"${label}" reads input "${input}", which does not exist`,
@@ -123,10 +128,20 @@ export type AutomationProblemParams = Readonly<Partial<Record<ParameterName, str
 
 export const AUTOMATION_PROBLEM_CODES = Object.keys(MESSAGES) as readonly AutomationProblemCode[];
 
-/** Something that keeps an automation from running. */
+/** Codes that warn about an automation without keeping it from running. */
+const WARNINGS: ReadonlySet<AutomationProblemCode> = new Set([
+  'output-from-disabled',
+  'exit-code-from-disabled',
+]);
+
+/**
+ * Something wrong with an automation. An error keeps it from running; a warning, which says so in
+ * `severity`, lets it run.
+ */
 export interface AutomationProblem {
   readonly code: AutomationProblemCode;
   readonly params: AutomationProblemParams;
+  readonly severity?: 'warning';
   /** The block it concerns, when it concerns one. */
   readonly blockId?: string;
   /** The problem in English, for the CLI and logs. The app words it from the code. */
@@ -151,9 +166,21 @@ export function automationProblem(
   return {
     code,
     params,
+    ...(WARNINGS.has(code) ? { severity: 'warning' as const } : {}),
     ...(blockId === undefined ? {} : { blockId }),
     message: describeProblem(code, params),
   };
+}
+
+export function isWarning(problem: { readonly severity?: 'warning' }): boolean {
+  return problem.severity === 'warning';
+}
+
+/** The problems that keep an automation from running: all but the warnings. */
+export function blockingProblems<T extends { readonly severity?: 'warning' }>(
+  problems: readonly T[],
+): T[] {
+  return problems.filter((problem) => !isWarning(problem));
 }
 
 function isCode(value: unknown): value is AutomationProblemCode {

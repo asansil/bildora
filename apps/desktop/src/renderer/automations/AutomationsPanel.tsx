@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { Plus, TriangleAlert } from 'lucide-react';
+import { blockingProblems } from '@bildora/protocol';
 import { t } from '../../shared/i18n/translate.js';
 import type { AutomationListView, AutomationRunStateView } from '../../shared/ipc-contract.js';
 import { ContextMenu } from '../shell/ContextMenu.js';
@@ -71,7 +72,7 @@ export function AutomationsPanel({
       <ul className="nav-list">
         {list.automations.map((item) => {
           const state = stateOf(item.id);
-          const broken = item.problems.length > 0;
+          const broken = blockingProblems(item.problems).length > 0;
           // Said apart from the name, so a row is found by the automation's name alone.
           const notes = [
             ...(state === 'idle' ? [] : [runStateLabel(state)]),

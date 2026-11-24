@@ -135,7 +135,9 @@ export interface RunFinish {
 
 export type AutomationTrigger = 'app' | 'cli';
 
-export type StepState = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped';
+/** `disabled`: the run passed through the block without doing what it does. */
+export type StepState =
+  'idle' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped' | 'disabled';
 
 export interface AutomationFailure {
   readonly stepId: string;

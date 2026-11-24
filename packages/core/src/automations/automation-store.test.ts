@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import {
   automationFileSchema,
   automationSchema,
+  blockingProblems,
+  isWarning,
   automationV1Schema,
   toolManifestSchema,
 } from '@bildora/protocol';
@@ -572,6 +574,41 @@ describe('checkAutomation', () => {
           { inputs },
         ),
       ).toEqual([]);
+    });
+
+    it('warns about reading what a disabled block leaves, and lets it run', async () => {
+      const automation = automationSchema.parse({
+        schemaVersion: 2,
+        id: 'flow',
+        name: 'Flow',
+        blocks: [
+          { id: 'start', type: 'start' },
+          { ...step('a', { out: 'C:\\a.csv' }), disabled: true },
+          step('b', {
+            in: link('steps.a.outputs.csv'),
+            note: '{{steps.a.outputs.csv}}',
+            // A link reads what the block is set to, which a disabled block still is.
+            out: link('a.out'),
+          }),
+          {
+            id: 'check',
+            type: 'if',
+            condition: {
+              match: 'all',
+              rules: [{ block: 'a', field: 'exit-code', operator: 'equals', value: 0 }],
+            },
+          },
+        ],
+        connections: [...chain('a', 'b', 'check')],
+      });
+      const found = await checkAutomation(automation, registry, 'work');
+      expect(found.map(({ blockId, message }) => `${blockId ?? ''}: ${message}`)).toEqual([
+        'b: "Input" reads an output of "a", which is disabled and will not run',
+        'b: "Note" reads an output of "a", which is disabled and will not run',
+        'check: "Rule 1" checks the exit code of "a", which is disabled and will not run',
+      ]);
+      expect(found.every(isWarning)).toBe(true);
+      expect(blockingProblems(found)).toEqual([]);
     });
 
     it('reports missing blocks, parameters, inputs and secrets', async () => {

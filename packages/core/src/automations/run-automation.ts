@@ -6,6 +6,7 @@ import {
   ExpressionError,
   automationRuleIssues,
   connectionOutput,
+  disabledOutput,
   expressionsOf,
   findStepOutputReferences,
   isExpressionValue,
@@ -42,7 +43,7 @@ import { automationRunFolder } from '../storage/data-directory.js';
 import { DEFAULT_PREFERENCES, readPreferences } from '../storage/preferences.js';
 import { resolveInputs } from './automation-inputs.js';
 import { removeRunFolders } from './automation-store.js';
-import { evaluateInRun, parametersOf } from './automation-values.js';
+import { evaluateInRun, isDisabledBlock, parametersOf } from './automation-values.js';
 import type { OutputValue, RunValueContext } from './automation-values.js';
 import { limitStepData, stepOutputs, stepValues } from './step-data.js';
 import { OutputError, readToolOutputs, secretOutputFields } from './tool-outputs.js';
@@ -378,7 +379,11 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     for (const { step, output, field } of findStepOutputReferences(value)) {
       if (outputValue(step, output, field) === undefined) {
         const what = field === undefined ? output : `${output}.${field}`;
-        throw new MissingOutputError(`Step "${step}" did not produce output "${what}"`);
+        throw new MissingOutputError(
+          isDisabledBlock(automation, step)
+            ? `Step "${step}" is disabled, so it did not produce output "${what}"`
+            : `Step "${step}" did not produce output "${what}"`,
+        );
       }
     }
     const replaced = replaceRunReferences(value, {
@@ -407,7 +412,14 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       return evaluateInRun(valueContext(), text);
     } catch (error) {
       if (!(error instanceof ExpressionError)) throw error;
-      const message = `${what}: ${error.message}`;
+      const disabled = targetsOf(text).find(
+        ({ target }) => target.kind === 'output' && isDisabledBlock(automation, target.block),
+      );
+      const reason =
+        error.code === 'name' && disabled?.target.kind === 'output'
+          ? `"${disabled.target.block}" is disabled, so it left no outputs`
+          : error.message;
+      const message = `${what}: ${reason}`;
       throw error.code === 'name' ? new MissingOutputError(message) : new ValueError(message);
     }
   }
@@ -626,7 +638,11 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     }
     const code = known?.exitCode;
     if (code === undefined) {
-      throw new ConditionError(`Block "${rule.block}" left no exit code to read`);
+      throw new ConditionError(
+        isDisabledBlock(automation, rule.block)
+          ? `Block "${rule.block}" is disabled, so it left no exit code to read`
+          : `Block "${rule.block}" left no exit code to read`,
+      );
     }
     switch (rule.operator) {
       case 'equals':
@@ -728,6 +744,11 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     scope: Scope,
     region: Region | undefined,
   ): Promise<void> {
+    if ('disabled' in block && block.disabled === true) {
+      // Passed through: it leaves no result, so rules on it read Skipped, and no outputs.
+      setStep(block.id, { state: 'disabled' });
+      return leave(block.id, disabledOutput(block.type), scope, region);
+    }
     switch (block.type) {
       case 'start':
         passThrough(block.id);

@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   automationSchema,
   buildAutomationJsonSchema,
+  disabledOutput,
   guarantees,
+  isDisableable,
   topologicalOrder,
 } from './index.js';
 
@@ -194,6 +196,27 @@ describe('automationSchema', () => {
     ).not.toEqual([]);
     expect(issues(chain({ ...run('a'), onFailure: { retry: { attempts: 1 } } }))).not.toEqual([]);
     expect(issues(chain({ ...run('a'), onFailure: 'continue' }))).not.toEqual([]);
+  });
+
+  it('lets only blocks the run can pass through be disabled', () => {
+    expect(issues(chain({ ...run('a'), disabled: true }))).toEqual([]);
+    expect(issues(chain({ id: 'w', type: 'wait-for-time', seconds: 5, disabled: true }))).toEqual(
+      [],
+    );
+    const parallel = issues(chain({ id: 'p', type: 'parallel', disabled: true }));
+    expect(parallel.some((issue) => issue.includes('disabled'))).toBe(true);
+    expect(issues(chain({ ...run('a'), disabled: false }))).not.toEqual([]);
+  });
+
+  it('says which output a disabled block leads on through', () => {
+    expect(disabledOutput('run')).toBe('next');
+    expect(disabledOutput('wait-for-manual-action')).toBe('next');
+    expect(disabledOutput('if')).toBe('false');
+    expect(disabledOutput('switch')).toBe('default');
+    expect(['start', 'parallel', 'join'].some(isDisableable)).toBe(false);
+    expect(
+      ['run', 'wait-for-time', 'wait-for-manual-action', 'if', 'switch'].every(isDisableable),
+    ).toBe(true);
   });
 });
 

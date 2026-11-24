@@ -15,6 +15,9 @@ import {
   connect,
   copyItems,
   createBlocks,
+  disablesChosen,
+  isDisabled,
+  toggleDisabled,
   draftOf,
   emptyDocument,
   moveItems,
@@ -502,5 +505,41 @@ describe('replace', () => {
     });
     expect(next?.groups).toEqual([{ id: 'g', name: 'G', blocks: ['Report1'] }]);
     expect(replaceBlock(doc, 'start', { kind: 'run', tool: 'acme.extract' })).toBeUndefined();
+  });
+});
+
+describe('disabling blocks', () => {
+  const doc: FlowDocument = {
+    ...emptyDocument(),
+    blocks: [
+      { id: 'start', type: 'start' },
+      { id: 'a', type: 'run', tool: 'acme.extract' },
+      { id: 'b', type: 'run', tool: 'acme.extract', disabled: true },
+      { id: 'fork', type: 'parallel' },
+    ],
+  };
+  const block = (document: FlowDocument, id: string) =>
+    document.blocks.find((item) => item.id === id);
+
+  it('disables the chosen blocks when any of them is enabled', () => {
+    expect(disablesChosen(doc, new Set(['a', 'b']))).toBe(true);
+    const next = toggleDisabled(doc, new Set(['a', 'b']));
+    expect(block(next, 'a')).toMatchObject({ disabled: true });
+    expect(block(next, 'b')).toMatchObject({ disabled: true });
+  });
+
+  it('enables them when all of them are disabled, leaving no field behind', () => {
+    expect(disablesChosen(doc, new Set(['b']))).toBe(false);
+    const next = toggleDisabled(doc, new Set(['b']));
+    expect(block(next, 'b')).toEqual({ id: 'b', type: 'run', tool: 'acme.extract' });
+    expect(isDisabled(block(next, 'b') ?? { id: 'x', type: 'start' })).toBe(false);
+  });
+
+  it('leaves Start and Parallel as they are', () => {
+    expect(disablesChosen(doc, new Set(['start', 'fork']))).toBeUndefined();
+    expect(toggleDisabled(doc, new Set(['start', 'fork']))).toBe(doc);
+    const next = toggleDisabled(doc, new Set(['start', 'a']));
+    expect(block(next, 'start')).toEqual({ id: 'start', type: 'start' });
+    expect(block(next, 'a')).toMatchObject({ disabled: true });
   });
 });

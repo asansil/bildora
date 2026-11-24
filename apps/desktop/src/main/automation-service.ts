@@ -23,6 +23,7 @@ import type {
 import {
   AUTOMATION_SCHEMA_VERSION,
   automationFileSchema,
+  blockingProblems,
   problemsOfIssues,
 } from '@bildora/protocol';
 import type { Automation, AutomationProblem } from '@bildora/protocol';
@@ -190,7 +191,7 @@ export class AutomationService {
     if (automation === undefined) {
       throw new Error('This automation no longer exists');
     }
-    const [problem] = await checkAutomation(automation, registry, workspace);
+    const [problem] = blockingProblems(await checkAutomation(automation, registry, workspace));
     if (problem !== undefined) {
       throw new Error(
         problem.blockId === undefined

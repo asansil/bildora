@@ -17,6 +17,7 @@ import {
   startAutomationRun,
   startToolRun,
 } from '@bildora/core';
+import { blockingProblems, isWarning } from '@bildora/protocol';
 import type { LiteralValue } from '@bildora/protocol';
 import type {
   AutomationResult,
@@ -176,12 +177,19 @@ async function runAutomation(
   const { automation, workspaceId, workspaceName } = found;
   const registry = await ToolRegistry.open({ dataDir });
   const problems = await checkAutomation(automation, registry, workspaceId);
-  if (problems.length > 0) {
+  const line = ({ blockId, message }: (typeof problems)[number]): string =>
+    blockId === undefined ? `  ${message}` : `  ${blockId}: ${message}`;
+  const blocking = blockingProblems(problems);
+  if (blocking.length > 0) {
     io.error(`"${automation.name}" cannot run:`);
-    for (const { blockId, message } of problems) {
-      io.error(blockId === undefined ? `  ${message}` : `  ${blockId}: ${message}`);
-    }
+    for (const problem of blocking) io.error(line(problem));
     return EXIT_CODES.cannotStart;
+  }
+  // Warnings let the automation run, and are said first.
+  const warnings = problems.filter(isWarning);
+  if (warnings.length > 0) {
+    io.error(`Warnings for "${automation.name}":`);
+    for (const problem of warnings) io.error(line(problem));
   }
 
   const history = await openHistory(dataDir, io);

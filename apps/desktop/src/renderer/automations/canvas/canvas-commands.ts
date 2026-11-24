@@ -38,6 +38,14 @@ export interface CanvasCommands extends EditorCommands {
   readonly selectUpstream: CanvasCommand;
   readonly selectDownstream: CanvasCommand;
   readonly takeOut: CanvasCommand;
+  /** Swaps the one chosen Run block for another tool, keeping its connections. */
+  readonly replace: CanvasCommand;
+  /** Finds on the canvas the blocks that use the one chosen block's values. */
+  readonly showUses: CanvasCommand;
+  /** Disables the chosen blocks, or enables them when all of them are disabled. */
+  readonly toggleDisabled: CanvasCommand;
+  /** True when toggling disables, so menus say Disable; false when they say Enable. */
+  readonly disables: boolean;
   readonly tidyAll: CanvasCommand;
   readonly tidySelected: CanvasCommand;
   readonly alignToGrid: CanvasCommand;
@@ -147,6 +155,15 @@ export function arrangeEntries(commands: CanvasCommands | undefined): MenuEntry[
   ];
 }
 
+/** Disable or Enable, as the chosen blocks are. */
+export function toggleDisabledItem(commands: CanvasCommands | undefined): MenuEntry {
+  return commandItem(
+    t(commands?.disables === false ? 'command.enable' : 'command.disable'),
+    commands?.toggleDisabled,
+    'Ctrl+E',
+  );
+}
+
 /** The Selection menu of the menu bar. */
 export function selectionEntries(commands: CanvasCommands | undefined): MenuEntry[] {
   return [
@@ -160,6 +177,7 @@ export function selectionEntries(commands: CanvasCommands | undefined): MenuEntr
     commandItem(t('command.group'), commands?.group, 'Ctrl+G'),
     commandItem(t('command.ungroup'), commands?.ungroup),
     commandItem(t('command.takeOut'), commands?.takeOut),
+    toggleDisabledItem(commands),
     'separator',
     commandItem(t('command.tidySelected'), commands?.tidySelected),
     commandItem(t('command.tidyAll'), commands?.tidyAll),

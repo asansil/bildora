@@ -1,14 +1,22 @@
-import { memo, useContext } from 'react';
-import { Handle, NodeResizer, Position } from '@xyflow/react';
+import { memo, use, useContext, useEffect } from 'react';
+import type { CSSProperties } from 'react';
+import { Handle, NodeResizer, Position, useUpdateNodeInternals } from '@xyflow/react';
 import type { Node, NodeProps } from '@xyflow/react';
 import { Link2, TriangleAlert } from 'lucide-react';
 import { ERROR_OUTPUT, NOTE_TEXT_MAX } from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
 import type { StepStateView, ToolView } from '../../../shared/ipc-contract.js';
-import { ProgramIcon } from '../../shell/ProgramIcon.js';
 import { RunStateIcon } from '../../shell/RunStateBadge.js';
-import { CanvasActionsContext } from './canvas-actions.js';
+import { BlockIcon, familyOf } from './BlockIcon.js';
+import {
+  CanvasActionsContext,
+  InputTonesContext,
+  PortHoverContext,
+  PortLayoutsContext,
+} from './canvas-actions.js';
 import type { BlockKind } from './flow-document.js';
+import { INPUT_PORT, layoutKey } from './port-sides.js';
+import type { PortLayout, PortPlace, Side } from './port-sides.js';
 
 export interface OutputView {
   readonly id: string;
@@ -31,6 +39,8 @@ export interface BlockNodeData extends Record<string, unknown> {
   readonly problems: number;
   /** How many other blocks link to this one's values. */
   readonly usedBy: number;
+  /** Set when the run passes through the block, which is then drawn dimmed. */
+  readonly disabled: boolean;
   /** Set in the run view. */
   readonly state?: StepStateView;
   /** A line under the name in the run view, such as a progress message or a failure. */
@@ -39,24 +49,67 @@ export interface BlockNodeData extends Record<string, unknown> {
 
 export type BlockNode = Node<BlockNodeData, 'block'>;
 
-/** Outputs on the right edge, each labeled in words, with Error drawn dashed. */
-function Outputs({ outputs, labelled }: { outputs: readonly OutputView[]; labelled: boolean }) {
+const POSITIONS: Readonly<Record<Side, Position>> = {
+  left: Position.Left,
+  right: Position.Right,
+  top: Position.Top,
+  bottom: Position.Bottom,
+};
+
+/** Where a port sits along its side, as xyflow places a handle. */
+function along(place: PortPlace): CSSProperties {
+  const at = `${String(place.offset * 100)}%`;
+  return place.side === 'left' || place.side === 'right' ? { top: at } : { left: at };
+}
+
+const RESTING: Readonly<Record<string, PortPlace>> = {
+  [INPUT_PORT]: { side: 'left', offset: 0.5 },
+  [ERROR_OUTPUT]: { side: 'bottom', offset: 0.5 },
+};
+
+function placeOf(layout: PortLayout | undefined, port: string): PortPlace {
+  return layout?.get(port) ?? RESTING[port] ?? { side: 'right', offset: 0.5 };
+}
+
+/**
+ * Outputs on whichever side faces where they lead. Each has a shape by kind (a square, a diamond
+ * for Error) and, where a block has several to choose from, a label outside the block.
+ */
+function Outputs({
+  outputs,
+  labelled,
+  layout,
+}: {
+  outputs: readonly OutputView[];
+  labelled: boolean;
+  layout: PortLayout | undefined;
+}) {
   return (
     <>
-      {outputs.map((output, index) => (
-        <Handle
-          key={output.id}
-          id={output.id}
-          type="source"
-          position={Position.Right}
-          className={`handle ${output.id === ERROR_OUTPUT ? 'handle--error' : 'handle--out'}`}
-          style={{ top: `${String(((index + 1) / (outputs.length + 1)) * 100)}%` }}
-          aria-label={t('canvas.outputHandle', { output: output.label })}
-          data-output={output.id}
-        >
-          {labelled ? <span className="handle-label">{output.label}</span> : null}
-        </Handle>
-      ))}
+      {outputs.map((output) => {
+        const place = placeOf(layout, output.id);
+        const error = output.id === ERROR_OUTPUT;
+        const kind = error ? 'error' : labelled ? 'branch' : 'out';
+        return (
+          <Handle
+            key={output.id}
+            id={output.id}
+            type="source"
+            position={POSITIONS[place.side]}
+            className={`handle handle--${kind}`}
+            style={along(place)}
+            aria-label={t('canvas.outputHandle', { output: output.label })}
+            // The canvas shows its own tooltip for a port, not the block's.
+            title=""
+            data-output={output.id}
+            data-side={place.side}
+          >
+            {labelled && !error ? (
+              <span className={`handle-label handle-label--${place.side}`}>{output.label}</span>
+            ) : null}
+          </Handle>
+        );
+      })}
     </>
   );
 }
@@ -85,49 +138,74 @@ function UsedBy({ id, count }: { readonly id: string; readonly count: number }) 
   );
 }
 
-export const BlockNodeView = memo(function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
-  const narrow = data.kind === 'parallel' || data.kind === 'join';
-  const labelled = data.outputs.length > 1 && data.kind !== 'parallel';
+export const BlockNodeView = memo(function BlockNodeView({
+  id,
+  data,
+  selected,
+}: NodeProps<BlockNode>) {
+  // Labels name the outputs a block chooses between; Next and Error read by their shape.
+  const labelled = data.outputs.filter((output) => output.id !== ERROR_OUTPUT).length > 1;
+  const layout = use(PortLayoutsContext).get(data.blockId);
+  const tone = use(InputTonesContext).get(data.blockId);
+  const portHover = use(PortHoverContext);
+  const peer = portHover.peers.has(data.blockId);
+  const key = layoutKey(layout);
+  const updateNodeInternals = useUpdateNodeInternals();
+  // xyflow measures handles once; moved ones must be measured again for connections to follow.
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, key, updateNodeInternals]);
   const classes = [
     'block',
     `block--${data.kind}`,
+    `family-${familyOf(data.kind)}`,
     selected ? 'is-selected' : '',
+    peer ? 'is-port-peer' : '',
+    data.disabled ? 'is-disabled' : '',
     data.state === undefined ? '' : `is-${data.state}`,
   ].join(' ');
+  const input = placeOf(layout, INPUT_PORT);
+  // Over one of its ports the canvas shows the port's tooltip, so the block's own stays away.
+  const title =
+    portHover.owner === data.blockId
+      ? undefined
+      : [data.name, data.kindLabel, data.disabled ? t('canvas.disabledBlock') : '', data.detail]
+          .filter(Boolean)
+          .join('\n');
   return (
     <div
       id={data.domId}
       role="group"
       aria-label={data.description}
       className={classes}
+      title={title}
       data-testid="canvas-block"
       data-kind={data.kind}
       data-state={data.state}
     >
       {data.kind === 'start' ? null : (
-        <Handle id="in" type="target" position={Position.Left} className="handle handle--in" />
+        <Handle
+          id={INPUT_PORT}
+          type="target"
+          position={POSITIONS[input.side]}
+          className="handle handle--in"
+          style={along(input)}
+          title=""
+          data-side={input.side}
+          data-tone={tone}
+        />
       )}
-      {data.state === undefined ? null : (
+      {data.state === undefined || data.state === 'disabled' ? null : (
         <span className="block-state">
           <RunStateIcon state={data.state} />
         </span>
       )}
-      {narrow ? (
-        <span className="block-glyph" aria-hidden="true">
-          {data.kindLabel}
-        </span>
-      ) : (
-        <span className="block-text">
-          <span className="block-name">
-            {data.tool === undefined ? null : (
-              <ProgramIcon tool={data.tool} className="block-logo" />
-            )}
-            <span className="truncate" title={data.name}>
-              {data.name}
-            </span>
-          </span>
-          <span className="block-kind truncate">{data.detail ?? data.kindLabel}</span>
-        </span>
+      <span className="block-tile" aria-hidden="true">
+        <BlockIcon kind={data.kind} tool={data.tool} className="block-logo" />
+      </span>
+      <span className="block-name truncate">{data.name}</span>
+      {data.detail === undefined ? null : (
+        <span className="block-detail truncate">{data.detail}</span>
       )}
       {data.usedBy > 0 ? <UsedBy id={data.blockId} count={data.usedBy} /> : null}
       {data.problems > 0 ? (
@@ -135,7 +213,7 @@ export const BlockNodeView = memo(function BlockNodeView({ data, selected }: Nod
           <TriangleAlert className="icon" aria-hidden="true" />
         </span>
       ) : null}
-      <Outputs outputs={data.outputs} labelled={labelled} />
+      <Outputs outputs={data.outputs} labelled={labelled} layout={layout} />
     </div>
   );
 });

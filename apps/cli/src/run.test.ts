@@ -227,6 +227,62 @@ describe.skipIf(process.platform !== 'win32')('bildora run', () => {
     expect(lines).toContain('[3/3] skipped-one: skipped');
   });
 
+  describe('with a disabled block', () => {
+    /** Start, a disabled block that would fail if it ran, and an If on it leading to yes or no. */
+    async function saveDisabled(rule: object): Promise<void> {
+      const folder = join(dataDir, 'workspaces', workspaceId, 'automations');
+      await mkdir(folder, { recursive: true });
+      await writeFile(
+        join(folder, 'flow.yaml'),
+        JSON.stringify({
+          schemaVersion: 2,
+          id: 'flow',
+          name: 'Flow',
+          blocks: [
+            { id: 'start', type: 'start' },
+            { id: 'one', type: 'run', tool: 'bad', disabled: true },
+            { id: 'check', type: 'if', condition: { match: 'all', rules: [rule] } },
+            { id: 'yes', type: 'run', tool: 'good' },
+            { id: 'no', type: 'run', tool: 'good' },
+          ],
+          connections: [
+            { from: 'start', to: 'one' },
+            { from: 'one', to: 'check' },
+            { from: 'check', output: 'true', to: 'yes' },
+            { from: 'check', output: 'false', to: 'no' },
+          ],
+        }),
+      );
+    }
+
+    it('passes through it without running its tool, and a result rule reads Skipped', async () => {
+      await saveDisabled({ block: 'one', field: 'result', operator: 'is', value: 'skipped' });
+      expect((await runCli(['run', 'flow'], '1', io())).exitCode).toBe(EXIT_CODES.completed);
+
+      expect(errors).toEqual([]);
+      expect(lines).toContain('[1/3] one: disabled');
+      expect(lines.some((line) => /^\[\d\/3\] yes: completed/.test(line))).toBe(true);
+      expect(lines.some((line) => /^\[\d\/3\] no: skipped$/.test(line))).toBe(true);
+      const history = await RunHistory.open(dataDir);
+      expect(history.listAutomationRuns(workspaceId, 'flow')).toMatchObject([
+        { status: 'completed', trigger: 'cli' },
+      ]);
+      history.close();
+    });
+
+    it('warns about a rule on its exit code but runs, and stops at that rule', async () => {
+      await saveDisabled({ block: 'one', field: 'exit-code', operator: 'equals', value: 7 });
+      expect((await runCli(['run', 'flow'], '1', io())).exitCode).toBe(EXIT_CODES.stopped);
+
+      expect(errors).toEqual([
+        'Warnings for "Flow":',
+        '  check: "Rule 1" checks the exit code of "one", which is disabled and will not run',
+        'Stopped at "check": Block "one" is disabled, so it left no exit code to read',
+      ]);
+      expect(lines).toContain('[1/3] one: disabled');
+    });
+  });
+
   it('takes inputs with --input, which blocks read through links', async () => {
     const folder = join(dataDir, 'workspaces', workspaceId, 'automations');
     await mkdir(folder, { recursive: true });

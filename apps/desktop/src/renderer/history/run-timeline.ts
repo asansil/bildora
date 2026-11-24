@@ -122,7 +122,7 @@ export function timelineOf(
     });
     const startedAt = step.startedAt ?? tries[0]?.startedAt;
     const first = tries[0] === undefined ? undefined : toolRunsById.get(tries[0].runId);
-    const reached = step.state !== 'idle' && step.state !== 'skipped';
+    const reached = step.state !== 'idle' && step.state !== 'skipped' && step.state !== 'disabled';
     const offset = (time: number): number => time - run.startedAt;
     const segments: TimelineSegment[] =
       !reached || startedAt === undefined

@@ -136,6 +136,24 @@ describe('Workspaces', () => {
       expect(cleared.layout).not.toHaveProperty('automationPanels');
     });
 
+    it('keeps the folded settings sections, once each, dropping keys it does not know', async () => {
+      await createWorkspace(dataDir, 'Work', 'light');
+      const updated = await updateWorkspace(dataDir, 'work', {
+        layout: {
+          automationPanels: {
+            foldedSections: ['run.failure', 'run.failure', 'Bad Key', 'switch.cases'],
+          },
+        },
+      });
+      expect(updated.layout.automationPanels).toEqual({
+        foldedSections: ['run.failure', 'switch.cases'],
+      });
+      const opened = await updateWorkspace(dataDir, 'work', {
+        layout: { automationPanels: { foldedSections: [] } },
+      });
+      expect(opened.layout).not.toHaveProperty('automationPanels');
+    });
+
     it('keeps only the canvas options that are on, and null clears them', async () => {
       await createWorkspace(dataDir, 'Work', 'light');
       const updated = await updateWorkspace(dataDir, 'work', {

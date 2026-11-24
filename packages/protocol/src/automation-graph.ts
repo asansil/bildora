@@ -10,6 +10,34 @@ export const DEFAULT_OUTPUT = 'next';
 export const ERROR_OUTPUT = 'error';
 export const DEFAULT_CASE = 'default';
 
+/** Block types a run can pass through without doing what they do. */
+const DISABLEABLE: ReadonlySet<string> = new Set([
+  'run',
+  'wait-for-time',
+  'wait-for-manual-action',
+  'if',
+  'switch',
+]);
+
+export function isDisableable(type: string): boolean {
+  return DISABLEABLE.has(type);
+}
+
+/**
+ * The output a disabled block leads on through: an If as if its condition did not hold, a Switch as
+ * if no case matched, and any other block as if it had ended well.
+ */
+export function disabledOutput(type: string): string {
+  switch (type) {
+    case 'if':
+      return 'false';
+    case 'switch':
+      return DEFAULT_CASE;
+    default:
+      return DEFAULT_OUTPUT;
+  }
+}
+
 /** What the graph rules need to know about a block, whatever its other fields. */
 export interface GraphBlock {
   readonly id: string;

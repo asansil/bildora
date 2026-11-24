@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
+import { canvasSettled } from './fixtures/canvas.js';
+import { closeApps } from './fixtures/close.js';
+import { startTrace, stopTraces } from './fixtures/trace.js';
 
 const FAKE_TOOL = resolve('examples/fixtures/fake-tool.mjs');
 /** Where screenshots go when a run asks for them, for a person to look at. */
@@ -28,6 +31,7 @@ async function launchShell(): Promise<Page> {
     env: electronEnvironment({ BILDORA_DATA_DIR: dataDir }),
   });
   open.push(app);
+  await startTrace(app);
   const window = await app.firstWindow();
   await window.setViewportSize({ width: 1400, height: 900 });
   return window;
@@ -85,6 +89,7 @@ async function openAutomation(window: Page, name: string): Promise<void> {
   if (!(await panel.isVisible())) await rail(window, 'Automations').click();
   await panel.getByRole('button', { name, exact: true }).dblclick();
   await expect(window.getByRole('tab', { name, selected: true })).toBeVisible();
+  await canvasSettled(window);
 }
 
 function block(window: Page, id: string): Locator {
@@ -114,7 +119,8 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
-  await Promise.all(open.map((app) => app.close().catch(() => undefined)));
+  await stopTraces(open);
+  await closeApps(open);
   open = [];
   await rm(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });

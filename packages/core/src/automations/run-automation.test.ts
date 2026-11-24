@@ -578,6 +578,111 @@ describe('startAutomationRun', () => {
       expect(running.view().paths).toHaveLength(3);
     });
 
+    it('passes through a disabled block by Next, without running it', async () => {
+      script = [COMPLETED];
+      const automation = flow(
+        [block('a', { disabled: true }), block('b')],
+        [
+          { from: 'start', to: 'a' },
+          { from: 'a', to: 'b' },
+        ],
+      );
+      const running = start(automation);
+      const result = await running.result;
+
+      expect(result).toMatchObject({ status: 'completed', failedSteps: [] });
+      expect(started).toHaveLength(1);
+      expect(stateOf(running, 'a')).toBe('disabled');
+      expect(stateOf(running, 'b')).toBe('completed');
+      const recorded = history.listAutomationRuns('work', 'flow')[0];
+      expect(stepOf(recorded?.steps, 'a')?.state).toBe('disabled');
+      expect(recorded?.paths).toContainEqual({ from: 'a', output: 'next', to: 'b' });
+    });
+
+    it('sends a disabled If down False and a disabled Switch down Default', async () => {
+      script = [COMPLETED, COMPLETED];
+      const always = {
+        match: 'all',
+        rules: [{ block: 'start', field: 'result', operator: 'is', value: 'completed' }],
+      };
+      const automation = flow(
+        [
+          { id: 'check', type: 'if', condition: always, disabled: true },
+          block('yes'),
+          { id: 'pick', type: 'switch', cases: [{ id: 'one', condition: always }], disabled: true },
+          block('one'),
+          block('other'),
+        ],
+        [
+          { from: 'start', to: 'check' },
+          { from: 'check', output: 'true', to: 'yes' },
+          { from: 'check', output: 'false', to: 'pick' },
+          { from: 'pick', output: 'one', to: 'one' },
+          { from: 'pick', output: 'default', to: 'other' },
+        ],
+      );
+      const running = start(automation);
+      await running.result;
+
+      expect(stateOf(running, 'check')).toBe('disabled');
+      expect(stateOf(running, 'pick')).toBe('disabled');
+      expect(stateOf(running, 'yes')).toBe('skipped');
+      expect(stateOf(running, 'one')).toBe('skipped');
+      expect(stateOf(running, 'other')).toBe('completed');
+    });
+
+    it('reads a disabled block as Skipped in a rule', async () => {
+      script = [COMPLETED];
+      const automation = flow(
+        [
+          block('a', { disabled: true }),
+          {
+            id: 'check',
+            type: 'if',
+            condition: {
+              match: 'all',
+              rules: [{ block: 'a', field: 'result', operator: 'is', value: 'skipped' }],
+            },
+          },
+          block('yes'),
+          block('no'),
+        ],
+        [
+          { from: 'start', to: 'a' },
+          { from: 'a', to: 'check' },
+          { from: 'check', output: 'true', to: 'yes' },
+          { from: 'check', output: 'false', to: 'no' },
+        ],
+      );
+      const running = start(automation);
+      await running.result;
+
+      expect(stateOf(running, 'yes')).toBe('completed');
+      expect(stateOf(running, 'no')).toBe('skipped');
+    });
+
+    it('fails a block that reads an output of a disabled one, saying why', async () => {
+      script = [COMPLETED];
+      const automation = flow(
+        [
+          block('extract', { values: { out: 'C:\\a.csv' }, disabled: true }),
+          block('report', { values: { in: '{{steps.extract.outputs.csv}}' } }),
+        ],
+        [
+          { from: 'start', to: 'extract' },
+          { from: 'extract', to: 'report' },
+        ],
+      );
+      const running = start(automation);
+      const result = await running.result;
+
+      expect(result).toMatchObject({ status: 'failed', failedSteps: ['report'] });
+      expect(started).toHaveLength(0);
+      const failure = stepOf(running.view().steps, 'report')?.failure;
+      expect(failure?.kind).toBe('reference');
+      expect(failure?.message).toContain('is disabled');
+    });
+
     it('reads the exit code of a failed block that an Error output handled', async () => {
       script = [failedResult(3), COMPLETED];
       const automation = flow(

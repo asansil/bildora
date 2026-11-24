@@ -5,6 +5,7 @@ import {
   DEFAULT_OUTPUT,
   ERROR_OUTPUT,
   connectionOutput,
+  isDisableable,
   findStepOutputReferences,
   isReservedBlockId,
   outputsOf,
@@ -43,23 +44,19 @@ export interface Size {
 /** Room between blocks placed one after another. */
 export const GAP_X = 64;
 export const GAP_Y = 28;
-const OUTPUT_ROW = 22;
+/** Every block is one compact row, told apart by its icon and family color. */
+export const BLOCK_WIDTH = 160;
+export const BLOCK_HEIGHT = 32;
+/** Room along a side for each output that can sit beside another, with its label. */
+const OUTPUT_ROW = 16;
 
-/** How big a block is drawn. Shapes differ so that kinds read apart without color. */
+/**
+ * How big a block is drawn. A block whose outputs share its right side grows tall enough to keep
+ * them apart; Error rests on the bottom, so it never counts.
+ */
 export function sizeOf(block: AutomationBlock): Size {
-  switch (block.type) {
-    case 'start':
-      return { width: 156, height: 44 };
-    case 'if':
-      return { width: 208, height: 64 };
-    case 'switch':
-      return { width: 184, height: Math.max(64, (block.cases.length + 1) * OUTPUT_ROW + 12) };
-    case 'parallel':
-    case 'join':
-      return { width: 36, height: 88 };
-    default:
-      return { width: 216, height: 56 };
-  }
+  const beside = outputsOf(block).filter((output) => output !== ERROR_OUTPUT).length;
+  return { width: BLOCK_WIDTH, height: Math.max(BLOCK_HEIGHT, beside * OUTPUT_ROW + 8) };
 }
 
 const START: AutomationBlock = { id: 'start', type: 'start' };
@@ -617,6 +614,47 @@ export function updateBlock(
     ...document,
     blocks: document.blocks.map((item) => (item.id === block.id ? block : item)),
     connections,
+  };
+}
+
+/** Whether the run passes through a block without doing what it does. */
+export function isDisabled(block: AutomationBlock): boolean {
+  return 'disabled' in block && block.disabled === true;
+}
+
+function withDisabled(block: AutomationBlock, disabled: boolean): AutomationBlock {
+  if (block.type === 'start' || block.type === 'parallel' || block.type === 'join') return block;
+  if (disabled) return { ...block, disabled: true };
+  const enabled = { ...block };
+  delete enabled.disabled;
+  return enabled;
+}
+
+/**
+ * What toggling the chosen blocks does: true when it disables them, false when it enables them, and
+ * undefined when none of them can be disabled.
+ */
+export function disablesChosen(
+  document: FlowDocument,
+  ids: ReadonlySet<string>,
+): boolean | undefined {
+  const chosen = document.blocks.filter(({ id, type }) => ids.has(id) && isDisableable(type));
+  if (chosen.length === 0) return undefined;
+  return chosen.some((block) => !isDisabled(block));
+}
+
+/**
+ * Disables the chosen blocks, or enables them when every one of them already is disabled. Blocks
+ * that cannot be disabled, such as Start, stay as they are.
+ */
+export function toggleDisabled(document: FlowDocument, ids: ReadonlySet<string>): FlowDocument {
+  const disable = disablesChosen(document, ids);
+  if (disable === undefined) return document;
+  return {
+    ...document,
+    blocks: document.blocks.map((block) =>
+      ids.has(block.id) ? withDisabled(block, disable) : block,
+    ),
   };
 }
 

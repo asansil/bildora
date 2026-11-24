@@ -23,7 +23,13 @@ import { getProfile, isSecretParameter } from '../profiles/profile-store.js';
 import type { Profile } from '../profiles/profile-store.js';
 import type { RegisteredTool, ToolRegistry } from '../registry/tool-registry.js';
 import { findVisibleTool } from '../workspaces/visible-tools.js';
-import { checkExpression, found, linkCycleProblems, parametersOf } from './automation-values.js';
+import {
+  checkExpression,
+  found,
+  isDisabledBlock,
+  linkCycleProblems,
+  parametersOf,
+} from './automation-values.js';
 import type { Found, ValueContext } from './automation-values.js';
 
 export type { AutomationProblem } from '@bildora/protocol';
@@ -50,6 +56,7 @@ function checkReferences(
   context: ValueContext,
   certain: Guarantee,
   text: string,
+  label: string,
 ): readonly Found[] {
   const { automation, tools } = context;
   const problems = findUnknownReferences(text).map((reference) =>
@@ -76,6 +83,9 @@ function checkReferences(
     }
     if (manifest?.level === 0) {
       problems.push(found('reference-level-0', { source: step }));
+    }
+    if (isDisabledBlock(automation, step)) {
+      problems.push(found('output-from-disabled', { label, source: step }));
     }
     if (!certain.completed.has(step)) {
       problems.push(found('reference-not-certain', { source: step }));
@@ -112,7 +122,7 @@ function checkValues(
       typeof value === 'string' &&
       (parameter.type === 'path' || parameter.type === 'string')
     ) {
-      problems.push(...checkReferences(context, certain, value));
+      problems.push(...checkReferences(context, certain, value, parameter.label));
     }
   }
   return problems;
@@ -205,6 +215,8 @@ function checkConditions(
     const source = automation.blocks.find(({ id }) => id === rule.block);
     if (source?.type !== 'run') {
       problems.push(found('exit-code-not-run', { source: rule.block }));
+    } else if (source.disabled === true) {
+      problems.push(found('exit-code-from-disabled', { label, source: rule.block }));
     } else if (!certain.ran.has(rule.block)) {
       problems.push(found('exit-code-not-certain', { source: rule.block, block: blockId }));
     }

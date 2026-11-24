@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
 import { History, Search, Workflow, X } from 'lucide-react';
+import { blockingProblems } from '@bildora/protocol';
 import { t } from '../shared/i18n/translate.js';
+import type { MessageKey } from '../shared/i18n/translate.js';
 import type {
   AutomationDraft,
   AutomationListView,
@@ -34,6 +36,7 @@ import {
   optionsEntries,
   scaleEntries,
   selectionEntries,
+  toggleDisabledItem,
 } from './automations/canvas/canvas-commands.js';
 import type { CanvasCommand, CanvasCommands } from './automations/canvas/canvas-commands.js';
 import { AutomationsPanel } from './automations/AutomationsPanel.js';
@@ -57,6 +60,8 @@ import type { RailDialog } from './shell/CategoryRail.js';
 import { Dialog } from './shell/Dialog.js';
 import { MenuBar } from './shell/MenuBar.js';
 import type { Menu } from './shell/MenuBar.js';
+import { LayoutToggles } from './shell/LayoutToggles.js';
+import type { LayoutPanel, PanelSide } from './shell/LayoutToggles.js';
 import { PanelResizer } from './shell/PanelResizer.js';
 import { ProgramIcon } from './shell/ProgramIcon.js';
 import { RunStateBadge, RunStateIcon, runStateLabel } from './shell/RunStateBadge.js';
@@ -122,6 +127,7 @@ function messageOf(error: unknown): string {
 }
 
 const NO_PANELS: AutomationPanelsView = {};
+
 const NO_CANVAS_OPTIONS: AutomationCanvasView = {};
 
 function layoutOf(list: WorkspaceListView): WorkspaceLayoutView | undefined {
@@ -181,6 +187,9 @@ export function App() {
   /** Tabs waiting to close, the first of which is asking the user. */
   const [closing, setClosing] = useState<readonly string[]>([]);
   const [openCategory, setOpenCategory] = useState<string | undefined>(undefined);
+  /** The panel last open beside the rail, which the side panel button opens again. */
+  const [lastCategory, setLastCategory] = useState<string | undefined>(undefined);
+  if (openCategory !== undefined && openCategory !== lastCategory) setLastCategory(openCategory);
   const [modal, setModal] = useState<Modal | undefined>(undefined);
   const [banner, setBanner] = useState<string | undefined>(undefined);
   const [dropping, setDropping] = useState(false);
@@ -485,6 +494,72 @@ export function App() {
     });
   }
 
+  function changeAutomationPanels(change: AutomationPanelsView): void {
+    const next = { ...automationPanels, ...change };
+    setAutomationPanels(next);
+    saveWorkspace({ layout: { automationPanels: next } });
+  }
+
+  /** Folds or opens a panel around the work area, as the top bar's buttons do. */
+  function togglePanel(side: PanelSide): void {
+    if (current?.kind === 'automation') {
+      const key = (
+        { left: 'libraryCollapsed', bottom: 'lowerCollapsed', right: 'settingsCollapsed' } as const
+      )[side];
+      changeAutomationPanels({ [key]: automationPanels[key] !== true });
+      return;
+    }
+    if (side !== 'left') return;
+    const first = catalog.groups[0];
+    pressCategory(
+      openCategory ?? lastCategory ?? (first === undefined ? AUTOMATIONS_PANEL : groupKey(first)),
+    );
+  }
+
+  const toggleLeft = (): void => {
+    togglePanel('left');
+  };
+  const toggleBottom = (): void => {
+    togglePanel('bottom');
+  };
+  const toggleRight = (): void => {
+    togglePanel('right');
+  };
+  // A toggle is named after its panel; whether it is open is its pressed state.
+  const toggleLabel = (panel: MessageKey): string => t(panel);
+  // In an automation the top bar folds its library, lower panel and block settings; elsewhere,
+  // only the panel beside the rail.
+  const layoutPanels: readonly LayoutPanel[] =
+    current?.kind === 'automation'
+      ? [
+          {
+            side: 'left',
+            open: automationPanels.libraryCollapsed !== true,
+            label: toggleLabel('menu.blockLibrary'),
+            shortcut: 'Ctrl+B',
+          },
+          {
+            side: 'bottom',
+            open: automationPanels.lowerCollapsed !== true,
+            label: toggleLabel('menu.lowerPanel'),
+            shortcut: 'Ctrl+J',
+          },
+          {
+            side: 'right',
+            open: automationPanels.settingsCollapsed !== true,
+            label: toggleLabel('menu.blockSettings'),
+            shortcut: 'Ctrl+Alt+B',
+          },
+        ]
+      : [
+          {
+            side: 'left',
+            open: openCategory !== undefined,
+            label: toggleLabel('menu.sidePanel'),
+            shortcut: 'Ctrl+B',
+          },
+        ];
+
   function pressCategory(key: string): void {
     const next = toggleCategory(openCategory, key);
     setOpenCategory(next);
@@ -724,10 +799,31 @@ export function App() {
   const onShortcut = useRef<(event: KeyboardEvent) => void>(() => undefined);
   useEffect(() => {
     onShortcut.current = (event: KeyboardEvent): void => {
-      if (!event.ctrlKey || event.altKey) {
+      if (!event.ctrlKey) {
         return;
       }
       const key = event.key.toLowerCase();
+      if (
+        modal === undefined &&
+        !event.shiftKey &&
+        (key === 'b' || (key === 'j' && !event.altKey))
+      ) {
+        const side = key === 'j' ? 'bottom' : event.altKey ? 'right' : 'left';
+        // Outside an automation only the panel beside the rail folds.
+        if (
+          side === 'left' ||
+          tabsNow.current.tabs.some(
+            (tab) => tab.key === tabsNow.current.activeKey && tab.kind === 'automation',
+          )
+        ) {
+          event.preventDefault();
+          togglePanel(side);
+        }
+        return;
+      }
+      if (event.altKey) {
+        return;
+      }
       if (key === 'k' && !event.shiftKey) {
         event.preventDefault();
         setModal((open_) => (open_?.kind === 'palette' ? undefined : { kind: 'palette' }));
@@ -852,6 +948,7 @@ export function App() {
         editItem(t('menu.paste'), 'Ctrl+V', 'paste', (commands) => commands.paste),
         commandItem(t('menu.duplicate'), canvasCommands?.duplicate, 'Ctrl+D'),
         commandItem(t('menu.delete'), canvasCommands?.delete, 'Del'),
+        toggleDisabledItem(canvasCommands),
         'separator',
         editItem(t('menu.selectAll'), 'Ctrl+A', 'selectAll', (commands) => commands.selectAll),
       ],
@@ -870,6 +967,37 @@ export function App() {
           items: optionsEntries(canvasCommands),
           ...(canvasCommands === undefined ? { disabled: true } : {}),
         },
+        'separator',
+        // Each panel the top bar can fold, checked while it is open.
+        ...(current?.kind === 'automation'
+          ? [
+              {
+                label: t('menu.blockLibrary'),
+                shortcut: 'Ctrl+B',
+                checked: automationPanels.libraryCollapsed !== true,
+                run: toggleLeft,
+              },
+              {
+                label: t('menu.lowerPanel'),
+                shortcut: 'Ctrl+J',
+                checked: automationPanels.lowerCollapsed !== true,
+                run: toggleBottom,
+              },
+              {
+                label: t('menu.blockSettings'),
+                shortcut: 'Ctrl+Alt+B',
+                checked: automationPanels.settingsCollapsed !== true,
+                run: toggleRight,
+              },
+            ]
+          : [
+              {
+                label: t('menu.sidePanel'),
+                shortcut: 'Ctrl+B',
+                checked: openCategory !== undefined,
+                run: toggleLeft,
+              },
+            ]),
         'separator',
         {
           label: t('menu.theme'),
@@ -930,7 +1058,7 @@ export function App() {
       icon: <Workflow className="icon" aria-hidden="true" />,
       run: () => {
         openTab({ kind: 'automation', id: item.id }, true);
-        if (item.problems.length === 0) {
+        if (blockingProblems(item.problems).length === 0) {
           runAutomation(item.id);
         }
       },
@@ -1270,6 +1398,7 @@ export function App() {
           <span>{t('search.placeholder')}</span>
           <kbd>{t('search.shortcut')}</kbd>
         </button>
+        <LayoutToggles panels={layoutPanels} onToggle={togglePanel} />
       </header>
 
       <div className="body">

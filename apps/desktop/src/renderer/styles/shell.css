@@ -626,7 +626,8 @@ input[type='radio'] {
 }
 
 .state-cancelled,
-.state-skipped {
+.state-skipped,
+.state-disabled {
   color: var(--bildora-status-cancelled);
 }
 
@@ -1740,4 +1741,22 @@ input[type='radio'] {
 
 .dialog.run-inputs {
   width: min(560px, calc(100vw - 48px));
+}
+
+/* Fold and open the panels around the work area, beside the window's caption buttons. */
+.layout-toggles {
+  display: flex;
+  gap: 2px;
+  margin-left: var(--bildora-space-2);
+}
+
+.layout-toggles .icon-button {
+  width: 30px;
+  height: 26px;
+  color: var(--bildora-text-muted);
+}
+
+.layout-toggles .icon-button[aria-pressed='true'],
+.layout-toggles .icon-button:hover {
+  color: var(--bildora-text);
 }

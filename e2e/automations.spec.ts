@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
+import { canvasSettled } from './fixtures/canvas.js';
+import { closeApps } from './fixtures/close.js';
+import { startTrace, stopTraces } from './fixtures/trace.js';
 
 const FAKE_TOOL = resolve('examples/fixtures/fake-tool.mjs');
 /** A folder for screenshots, to look at what a test went through. */
@@ -32,6 +35,7 @@ async function launchShell(): Promise<{ app: ElectronApplication; window: Page }
     env: electronEnvironment({ BILDORA_DATA_DIR: dataDir }),
   });
   open.push(app);
+  await startTrace(app);
   return { app, window: await app.firstWindow() };
 }
 
@@ -90,6 +94,7 @@ async function openAutomation(window: Page, name: string): Promise<void> {
   }
   await automationsPanel(window).getByRole('button', { name, exact: true }).dblclick();
   await expect(window.getByRole('tab', { name, selected: true })).toBeVisible();
+  await canvasSettled(window);
 }
 
 test.beforeEach(async () => {
@@ -101,7 +106,8 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
-  await Promise.all(open.map((app) => app.close().catch(() => undefined)));
+  await stopTraces(open);
+  await closeApps(open);
   open = [];
   await rm(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });

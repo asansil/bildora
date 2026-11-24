@@ -50,6 +50,11 @@ const KIND_ICONS: Readonly<Record<string, LucideIcon>> = {
 
 type AutomationEntry = Extract<HistoryEntryView, { kind: 'automation' }>;
 
+/** Whether the run did the block's work, rather than miss it or pass through it. */
+function ran(state: TimelineRow['state']): boolean {
+  return state !== 'idle' && state !== 'skipped' && state !== 'disabled';
+}
+
 /** A block that never ran reads as skipped, whichever reason kept it from running. */
 function shownState(row: TimelineRow): BlockState {
   return row.state === 'idle' ? 'skipped' : row.state;
@@ -92,6 +97,7 @@ function RowIcon({
 /** What a block that is not a tool did, in a sentence. */
 function whatHappened(row: TimelineRow, branches: number): string {
   if (row.state === 'skipped') return t('history.block.skipped');
+  if (row.state === 'disabled') return t('history.block.disabled');
   if (row.state === 'idle') return t('history.block.notReached');
   if (row.state === 'running') return t('history.block.running');
   switch (row.block?.type) {
@@ -130,7 +136,11 @@ function Bars({ row, timeline }: { readonly row: TimelineRow; readonly timeline:
         };
         const classes = [
           'timeline-bar',
-          `state-${historyState(segment.state === 'idle' || segment.state === 'skipped' ? 'cancelled' : segment.state)}`,
+          `state-${historyState(
+            segment.state === 'idle' || segment.state === 'skipped' || segment.state === 'disabled'
+              ? 'cancelled'
+              : segment.state,
+          )}`,
           segment.to === segment.from ? 'timeline-bar--tick' : '',
           waits ? 'timeline-bar--wait' : '',
         ];
@@ -200,7 +210,7 @@ function BlockDetail({ row, tools, branches, step, revision, onError }: BlockDet
           ))}
         </div>
       ) : null}
-      {isTool && row.state !== 'idle' && row.state !== 'skipped' ? (
+      {isTool && ran(row.state) ? (
         record !== undefined && record.runId === tryId ? (
           <RunFacts record={record} />
         ) : tryId === undefined ? (
@@ -234,7 +244,7 @@ function BlockDetail({ row, tools, branches, step, revision, onError }: BlockDet
           )}
         </dl>
       )}
-      {isTool && step !== undefined && row.state !== 'idle' && row.state !== 'skipped' ? (
+      {isTool && step !== undefined && ran(row.state) ? (
         <section className="history-data" aria-label={t('canvas.data')}>
           <h3>{t('canvas.data')}</h3>
           <DataView step={step} />
@@ -302,7 +312,7 @@ export function AutomationRunDetail({
           (row) => toolOf(row, tools)?.id === focusTool || row.toolId === focusTool,
         )?.id;
   const shown = timeline?.rows.find((row) => row.id === (chosen ?? focused));
-  const ran = timeline?.rows.filter(({ state }) => state !== 'idle' && state !== 'skipped').length;
+  const ranCount = timeline?.rows.filter(({ state }) => ran(state)).length;
   const ticks =
     timeline === undefined
       ? []
@@ -327,10 +337,12 @@ export function AutomationRunDetail({
         <dd>{formatDuration(entry.durationMs)}</dd>
         <dt>{t('history.startedFrom')}</dt>
         <dd>{t(entry.trigger === 'cli' ? 'history.fromCli' : 'history.fromApp')}</dd>
-        {timeline === undefined || ran === undefined ? null : (
+        {timeline === undefined || ranCount === undefined ? null : (
           <>
             <dt>{t('history.blocks')}</dt>
-            <dd>{t('history.blockCount', { ran, skipped: timeline.rows.length - ran })}</dd>
+            <dd>
+              {t('history.blockCount', { ran: ranCount, skipped: timeline.rows.length - ranCount })}
+            </dd>
           </>
         )}
         {entry.failure === undefined ? null : (
