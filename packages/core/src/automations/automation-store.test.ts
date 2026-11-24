@@ -27,6 +27,8 @@ import {
 } from './automation-store.js';
 import { convertAutomationV1 } from './convert-v1.js';
 import { checkAutomation } from './check-automation.js';
+import { readCallTree } from './call-tree.js';
+import type { CallTree } from './call-tree.js';
 
 /** An automation as blocks, from the list of steps it used to be written as. */
 function automationOf(steps: AutomationV1Input['steps'], id = 'flow', name = 'Flow'): Automation {
@@ -761,5 +763,202 @@ describe('checkAutomation', () => {
     const before = await getAutomation(dataDir, 'work', 'flow');
     await checkAutomation(automationOf([{ id: 'a', type: 'run', tool: 'gone' }]), registry, 'work');
     expect(await getAutomation(dataDir, 'work', 'flow')).toEqual(before);
+  });
+
+  describe('loops and calls', () => {
+    const graph = (blocks: object[], connections: object[], id = 'flow'): Automation =>
+      automationSchema.parse({
+        schemaVersion: 2,
+        id,
+        name: id,
+        blocks: [
+          { id: 'start', type: 'start', inputs: [{ name: 'files', type: 'string' }] },
+          ...blocks,
+        ],
+        connections,
+      });
+    const loop = { id: 'For1', type: 'for', items: { kind: 'count', count: 2 } };
+    const inBody = (id: string, values: object) => ({
+      id,
+      type: 'run',
+      tool: 'declared',
+      loop: 'For1',
+      values: { in: 'C:\\in', ...values },
+    });
+    const after = (values: object) => ({
+      id: 'after',
+      type: 'run',
+      tool: 'declared',
+      values: { in: 'C:\\in', ...values },
+    });
+    const wiring = [
+      { from: 'start', to: 'For1' },
+      { from: 'For1', output: 'body', to: 'a' },
+      { from: 'For1', to: 'after' },
+    ];
+    const messages = async (automation: Automation, calls?: CallTree) =>
+      (await checkAutomation(automation, registry, 'work', calls)).map(
+        ({ blockId, message }) => `${blockId ?? ''}: ${message}`,
+      );
+
+    it('reads the round inside the loop, and lists after it', async () => {
+      const sound = graph(
+        [
+          loop,
+          inBody('a', {
+            in: { expression: 'join(inputs.files, text(loop.item))' },
+            count: { expression: 'For1.index' },
+          }),
+          after({
+            note: { expression: 'text(length(compact(steps.a.outputs.csv)))' },
+            count: { expression: 'steps.For1.outputs.rounds' },
+          }),
+        ],
+        wiring,
+      );
+      expect(await messages(sound)).toEqual([]);
+    });
+
+    it('refuses a list where one value goes, and loop names outside their loop', async () => {
+      const wrong = graph(
+        [
+          loop,
+          inBody('a', {}),
+          after({
+            out: { expression: 'steps.a.outputs.csv' },
+            note: { expression: 'text(loop.index)' },
+            count: { expression: 'For1.index' },
+          }),
+        ],
+        wiring,
+      );
+      expect(await messages(wrong)).toEqual([
+        'after: The value of "Output" does not fit: it gives a list, and needs a path',
+        'after: "Note" reads loop, and this block is not inside a loop',
+        'after: "Count" reads loop "For1", which is not around this block',
+      ]);
+    });
+
+    it('checks the items of a For, and the condition of a While', async () => {
+      const items = graph(
+        [
+          { ...loop, items: { kind: 'list', list: { expression: 'inputs.files' } } },
+          inBody('a', {}),
+          after({}),
+        ],
+        wiring,
+      );
+      expect(await messages(items)).toEqual([
+        'For1: The items of "For1" do not fit: they need a list, and this is text',
+      ]);
+      const repeat = graph(
+        [
+          {
+            id: 'For1',
+            type: 'while',
+            maxRounds: 5,
+            condition: { expression: 'steps.a.outputs.result.count < 3 and loop.index < 4' },
+          },
+          inBody('a', {}),
+          after({}),
+        ],
+        wiring,
+      );
+      expect(await messages(repeat)).toEqual([]);
+      const notYesNo = graph(
+        [
+          { id: 'For1', type: 'while', maxRounds: 5, condition: { expression: 'loop.index' } },
+          inBody('a', {}),
+          after({}),
+        ],
+        wiring,
+      );
+      expect(await messages(notYesNo)).toEqual([
+        'For1: The condition of "For1" is not yes or no: it gives a whole number',
+      ]);
+    });
+
+    it('checks the inputs of a call and what the caller reads from it', async () => {
+      const child = graph(
+        [
+          {
+            id: 'c',
+            type: 'run',
+            tool: 'declared',
+            values: { in: { expression: 'inputs.files' } },
+          },
+        ],
+        [{ from: 'start', to: 'c' }],
+        'child',
+      );
+      const parent = graph(
+        [
+          {
+            id: 'Child1',
+            type: 'run-automation',
+            automation: 'child',
+            inputs: { files: 'a', nope: 1 },
+          },
+          after({
+            out: { expression: 'steps.Child1.c.outputs.csv' },
+            note: { expression: 'text(steps.Child1.gone.outputs.csv)' },
+          }),
+        ],
+        [
+          { from: 'start', to: 'Child1' },
+          { from: 'Child1', to: 'after' },
+        ],
+      );
+      const tree = await readCallTree(parent, (id) =>
+        Promise.resolve(id === 'child' ? child : undefined),
+      );
+      expect(await messages(parent, tree)).toEqual([
+        'Child1: Automation "child" has no input "nope"',
+        'after: "Note" reads block "gone" of the automation "Child1" calls, which has no such block',
+      ]);
+    });
+  });
+
+  describe('readCallTree', () => {
+    const calling = (id: string, ...targets: string[]): Automation =>
+      automationSchema.parse({
+        schemaVersion: 2,
+        id,
+        name: id,
+        blocks: [
+          { id: 'start', type: 'start' },
+          ...targets.map((target, index) => ({
+            id: `Call${String(index + 1)}`,
+            type: 'run-automation',
+            automation: target,
+          })),
+        ],
+        connections: targets
+          .map((_, index) => ({ from: 'start', to: `Call${String(index + 1)}` }))
+          .slice(0, 1),
+      });
+
+    it('refuses circles of calls, calls too deep, and missing automations', async () => {
+      const files = new Map<string, Automation>([
+        ['a', calling('a', 'b', 'gone')],
+        ['b', calling('b', 'a')],
+        ['c1', calling('c1', 'c2')],
+        ['c2', calling('c2', 'c3')],
+        ['c3', calling('c3', 'c4')],
+        ['c4', calling('c4', 'c5')],
+        ['c5', calling('c5', 'c6')],
+        ['c6', calling('c6')],
+      ]);
+      const load = (id: string) => Promise.resolve(files.get(id));
+      const tree = await readCallTree(files.get('a') as Automation, load);
+      expect(tree.problems.map(({ blockId, message }) => `${blockId ?? ''}: ${message}`)).toEqual([
+        'Call1: These automations end up calling themselves: a → b → a',
+        'Call2: Automation "gone" does not exist in this Workspace, or cannot be read',
+      ]);
+      const deep = await readCallTree(files.get('c1') as Automation, load);
+      expect(deep.problems.map(({ message }) => message)).toEqual([
+        'Calls go more than 5 automations deep: c1 → c2 → c3 → c4 → c5 → c6',
+      ]);
+    });
   });
 });

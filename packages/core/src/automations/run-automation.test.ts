@@ -1138,6 +1138,243 @@ describe('startAutomationRun', () => {
     });
   });
 
+  describe('loops and calls', () => {
+    const graph = (blocks: object[], connections: object[], id = 'flow'): Automation =>
+      automationSchema.parse({
+        schemaVersion: 2,
+        id,
+        name: id,
+        blocks: [{ id: 'start', type: 'start' }, ...blocks],
+        connections,
+      });
+    const forEach = (extra: object = {}) => ({
+      id: 'For1',
+      type: 'for',
+      items: { kind: 'count', count: 3 },
+      ...extra,
+    });
+    const body = {
+      id: 'a',
+      type: 'run',
+      tool: 'sample',
+      loop: 'For1',
+      values: { out: { expression: 'join("C:\\\\data", "f" + text(loop.item) + ".csv")' } },
+    };
+    const after = {
+      id: 'after',
+      type: 'run',
+      tool: 'sample',
+      values: {
+        note: {
+          expression:
+            'text(length(steps.a.outputs.csv)) + "/" + text(length(compact(steps.a.outputs.csv))) + "/" + text(steps.For1.outputs.rounds)',
+        },
+      },
+    };
+    const wiring = [
+      { from: 'start', to: 'For1' },
+      { from: 'For1', output: 'body', to: 'a' },
+      { from: 'For1', to: 'after' },
+    ];
+
+    it('runs the body once per item, and gathers its outputs into lists after the loop', async () => {
+      script = [COMPLETED, COMPLETED, COMPLETED, COMPLETED];
+      const running = start(graph([forEach(), body, after], wiring));
+      const result = await running.result;
+      expect(result.status).toBe('completed');
+      expect(started.map(({ values }) => values)).toEqual([
+        { out: 'C:\\data\\f1.csv' },
+        { out: 'C:\\data\\f2.csv' },
+        { out: 'C:\\data\\f3.csv' },
+        { note: '3/3/3' },
+      ]);
+      const rounds = running
+        .view()
+        .steps.filter(({ id }) => id === 'a')
+        .map(({ round, state }) => [round, state]);
+      expect(rounds).toEqual([
+        ['For1:1', 'completed'],
+        ['For1:2', 'completed'],
+        ['For1:3', 'completed'],
+      ]);
+      expect(stepOf(running.view().steps, 'For1')).toMatchObject({
+        state: 'completed',
+        rounds: 3,
+      });
+      const record = history.getAutomationRun('work', result.runId);
+      expect(record?.steps.filter(({ id }) => id === 'a')).toHaveLength(3);
+      expect(record?.paths).toContainEqual({
+        from: 'For1',
+        output: 'body',
+        to: 'a',
+      });
+    });
+
+    it('ends the loop at a failed round, or goes on and fails at the end', async () => {
+      script = [COMPLETED, failedResult(), COMPLETED];
+      const stopping = await start(graph([forEach(), body, after], wiring)).result;
+      expect(stopping.failure).toMatchObject({ stepId: 'For1', kind: 'round' });
+      expect(started).toHaveLength(2);
+
+      started = [];
+      script = [COMPLETED, failedResult(), COMPLETED, COMPLETED];
+      const goingOn = start(
+        graph(
+          [forEach({ onRoundFailure: 'continue' }), body, after],
+          [...wiring, { from: 'For1', output: 'error', to: 'after' }],
+        ),
+      );
+      const result = await goingOn.result;
+      expect(result.status).toBe('completed');
+      expect([...result.failedSteps].sort()).toEqual(['For1', 'a']);
+      expect(started.at(-1)?.values).toEqual({ note: '3/2/3' });
+    });
+
+    const whileLoop = (expression: string) => ({
+      id: 'For1',
+      type: 'while',
+      maxRounds: 3,
+      waitSeconds: 1,
+      condition: { expression },
+    });
+
+    it('checks its condition before each round, and fails at its maximum still holding', async () => {
+      script = [COMPLETED, COMPLETED, COMPLETED];
+      const done = await start(graph([whileLoop('loop.index < 2'), body, after], wiring)).result;
+      expect(done.status).toBe('completed');
+      expect(started.at(-1)?.values).toEqual({ note: '2/2/2' });
+
+      started = [];
+      script = [COMPLETED, COMPLETED, COMPLETED];
+      const tooMany = await start(graph([whileLoop('loop.index < 9'), body, after], wiring)).result;
+      expect(tooMany.failure).toMatchObject({ stepId: 'For1', kind: 'max-rounds' });
+      expect(started).toHaveLength(3);
+    });
+
+    it('can run no rounds, and then the body reads as empty lists after it', async () => {
+      script = [COMPLETED];
+      const result = await start(graph([whileLoop('loop.index > 5'), body, after], wiring)).result;
+      expect(result.status).toBe('completed');
+      expect(started.map(({ values }) => values)).toEqual([{ note: '0/0/0' }]);
+    });
+
+    it('reads what the last round left, empty on the first check', async () => {
+      // `a` writes its csv output, so it is empty only before the first round.
+      script = [COMPLETED, COMPLETED, COMPLETED];
+      const result = await start(
+        graph(
+          [whileLoop('steps.a.outputs.csv == "" and steps.a.result != "completed"'), body, after],
+          wiring,
+        ),
+      ).result;
+      expect(result.status).toBe('completed');
+      expect(started.map(({ values }) => values)).toEqual([
+        { out: 'C:\\data\\f1.csv' },
+        { note: '1/1/1' },
+      ]);
+    });
+
+    it('refuses more than 1000 items before the first round', async () => {
+      const many = forEach({ items: { kind: 'count', count: { expression: '1000 + 1' } } });
+      const result = await start(graph([many, body, after], wiring)).result;
+      expect(result.failure).toMatchObject({ stepId: 'For1', kind: 'too-many-items' });
+      expect(started).toHaveLength(0);
+    });
+
+    it('runs a called automation with its inputs, and reads any output of its blocks', async () => {
+      const child = automationSchema.parse({
+        schemaVersion: 2,
+        id: 'child',
+        name: 'Child',
+        blocks: [
+          { id: 'start', type: 'start', inputs: [{ name: 'file', type: 'path', required: true }] },
+          { id: 'c', type: 'run', tool: 'sample', values: { out: { expression: 'inputs.file' } } },
+        ],
+        connections: [{ from: 'start', to: 'c' }],
+      });
+      const parent = graph(
+        [
+          {
+            id: 'Child1',
+            type: 'run-automation',
+            automation: 'child',
+            inputs: { file: 'C:\\data\\x.csv' },
+          },
+          {
+            id: 'after',
+            type: 'run',
+            tool: 'sample',
+            values: { note: { expression: 'steps.Child1.c.outputs.csv' } },
+          },
+        ],
+        [
+          { from: 'start', to: 'Child1' },
+          { from: 'Child1', to: 'after' },
+        ],
+      );
+      script = [COMPLETED, COMPLETED];
+      const calls = {
+        automation: parent,
+        calls: new Map([['Child1', { automation: child, calls: new Map(), problems: [] }]]),
+        problems: [],
+      };
+      const running = start(parent, { calls });
+      const result = await running.result;
+      expect(result.status).toBe('completed');
+      expect(started.map(({ values }) => values)).toEqual([
+        { out: 'C:\\data\\x.csv' },
+        { note: 'C:\\data\\x.csv' },
+      ]);
+      const calledRunId = stepOf(running.view().steps, 'Child1')?.calledRunId ?? '';
+      expect(history.getAutomationRun('work', calledRunId)?.caller).toEqual({
+        runId: result.runId,
+        blockId: 'Child1',
+      });
+
+      started = [];
+      script = [failedResult()];
+      const failing = await start(parent, { calls }).result;
+      expect(failing.failure).toMatchObject({ stepId: 'Child1', kind: 'called-run' });
+
+      started = [];
+      const missing = await start(parent).result;
+      expect(missing.failure).toMatchObject({ stepId: 'Child1', kind: 'automation-missing' });
+    });
+
+    it('cancels the caller when its called run is cancelled', async () => {
+      const child = automationSchema.parse({
+        schemaVersion: 2,
+        id: 'child',
+        name: 'Child',
+        blocks: [
+          { id: 'start', type: 'start' },
+          { id: 'c', type: 'run', tool: 'sample' },
+        ],
+        connections: [{ from: 'start', to: 'c' }],
+      });
+      const parent = graph(
+        [{ id: 'Child1', type: 'run-automation', automation: 'child' }],
+        [{ from: 'start', to: 'Child1' }],
+      );
+      const children: { cancel(): void }[] = [];
+      const running = start(parent, {
+        calls: {
+          automation: parent,
+          calls: new Map([['Child1', { automation: child, calls: new Map(), problems: [] }]]),
+          problems: [],
+        },
+        startCalled: (options) => {
+          const called = startAutomationRun(options);
+          children.push(called);
+          return called;
+        },
+      });
+      await until(() => started.length === 1);
+      children[0]?.cancel();
+      expect((await running.result).status).toBe('cancelled');
+    });
+  });
+
   it('runs even if its record cannot be written', async () => {
     script = [COMPLETED];
     history.close();

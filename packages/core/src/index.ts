@@ -37,6 +37,7 @@ export type { RecordedParameter, ResolvedValues } from './runner/resolve-values.
 export type { RunProgress } from './runner/progress-lines.js';
 export { RunHistory } from './history/run-history.js';
 export type {
+  AutomationCaller,
   AutomationFailure,
   AutomationRunSummary,
   AutomationStepRecord,
@@ -53,6 +54,7 @@ export type {
   StepOutputRecord,
   StepState,
   StepValueRecord,
+  TakenPath,
 } from './history/run-history.js';
 export {
   findAutomations,
@@ -70,6 +72,8 @@ export type {
   FoundAutomation,
 } from './automations/automation-store.js';
 export { checkAutomation } from './automations/check-automation.js';
+export { automationsOf, leafTree, readCallTree } from './automations/call-tree.js';
+export type { AutomationLoader, CallTree } from './automations/call-tree.js';
 export {
   InputError,
   inputsOf,
@@ -87,6 +91,7 @@ export type {
   AutomationRunView,
   ManualAnswer,
   ManualRequest,
+  OutputTree,
   StepStarter,
   StepView,
 } from './automations/run-automation.js';

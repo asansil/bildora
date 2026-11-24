@@ -4,7 +4,7 @@ import type { RecordedParameter } from '../runner/resolve-values.js';
 import { DefinitionError } from '../storage/definition-error.js';
 
 const HISTORY_FILE = 'history.db';
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 /** Rows a listing returns at most. */
 const LIST_LIMIT = 500;
 
@@ -59,6 +59,17 @@ const UPGRADE_TO_AUTOMATIONS = `
 const UPGRADE_TO_BLOCKS = `
   ALTER TABLE automation_runs ADD COLUMN format TEXT NOT NULL DEFAULT 'steps';
   ALTER TABLE automation_runs ADD COLUMN paths TEXT NOT NULL DEFAULT '[]';
+`;
+
+/**
+ * What calls add: a run started by a Run automation block names the run, the block and the round
+ * that called it. A loop's rounds live in the steps JSON, so they need no column.
+ */
+const UPGRADE_TO_CALLS = `
+  ALTER TABLE automation_runs ADD COLUMN caller_run_id TEXT;
+  ALTER TABLE automation_runs ADD COLUMN caller_block TEXT;
+  ALTER TABLE automation_runs ADD COLUMN caller_round TEXT;
+  CREATE INDEX automation_runs_by_caller ON automation_runs (caller_run_id);
 `;
 
 /** Runs older than Workspaces belong to the one every upgraded installation starts with. */
@@ -141,6 +152,8 @@ export type StepState =
 
 export interface AutomationFailure {
   readonly stepId: string;
+  /** The round of a step inside a loop. */
+  readonly round?: string;
   readonly kind: string;
   readonly message: string;
 }
@@ -153,11 +166,28 @@ export interface TakenPath {
   readonly from: string;
   readonly output: string;
   readonly to: string;
+  /** The round it was followed in, for a connection inside a loop. */
+  readonly round?: string;
+}
+
+/**
+ * The run, block and round of a Run automation block that started a run. The round is set when the
+ * block is inside a loop.
+ */
+export interface AutomationCaller {
+  readonly runId: string;
+  readonly blockId: string;
+  readonly round?: string;
 }
 
 /** One block of an automation run, as it stands. */
 export interface AutomationStepRecord {
   readonly id: string;
+  /**
+   * The round of a block inside a loop, as `<loop>:<index>` with an index from 1, and with the
+   * loops around it first, such as `For1:3/While1:2`. Left out outside loops.
+   */
+  readonly round?: string;
   readonly state: StepState;
   /** When the run reached it, in milliseconds since the epoch. Runs from before it was kept lack it. */
   readonly startedAt?: number;
@@ -175,6 +205,10 @@ export interface AutomationStepRecord {
   readonly outputs?: readonly StepOutputRecord[];
   /** Some values were shortened to keep the record within its limit. */
   readonly truncated?: true;
+  /** For a loop, how many rounds it has run. */
+  readonly rounds?: number;
+  /** For a Run automation block, the run it started. */
+  readonly calledRunId?: string;
 }
 
 /** A value a block's tool received. A secret records only that it was set. */
@@ -208,6 +242,8 @@ export interface AutomationRunSummary {
   readonly format: AutomationRunFormat;
   readonly steps: readonly AutomationStepRecord[];
   readonly paths: readonly TakenPath[];
+  /** Set when another automation's Run automation block started this run. */
+  readonly caller?: AutomationCaller;
 }
 
 export interface AutomationRunStart {
@@ -218,6 +254,7 @@ export interface AutomationRunStart {
   readonly trigger: AutomationTrigger;
   readonly startedAt: number;
   readonly steps: readonly AutomationStepRecord[];
+  readonly caller?: AutomationCaller | undefined;
 }
 
 export interface AutomationRunFinish {
@@ -291,6 +328,9 @@ interface AutomationRow {
   steps: string;
   format: AutomationRunFormat;
   paths: string;
+  caller_run_id: string | null;
+  caller_block: string | null;
+  caller_round: string | null;
 }
 
 function stepsOf(text: string): readonly AutomationStepRecord[] {
@@ -333,6 +373,15 @@ function automationSummaryOf(row: AutomationRow): AutomationRunSummary {
     format: row.format,
     steps: stepsOf(row.steps),
     paths: pathsOf(row.paths),
+    ...(row.caller_run_id === null || row.caller_block === null
+      ? {}
+      : {
+          caller: {
+            runId: row.caller_run_id,
+            blockId: row.caller_block,
+            ...(row.caller_round === null ? {} : { round: row.caller_round }),
+          },
+        }),
   };
 }
 
@@ -413,7 +462,10 @@ export class RunHistory {
           if (version < 3) {
             database.exec(UPGRADE_TO_AUTOMATIONS);
           }
-          database.exec(UPGRADE_TO_BLOCKS);
+          if (version < 4) {
+            database.exec(UPGRADE_TO_BLOCKS);
+          }
+          database.exec(UPGRADE_TO_CALLS);
           database.pragma(`user_version = ${String(SCHEMA_VERSION)}`);
         })();
       }
@@ -500,8 +552,8 @@ export class RunHistory {
       .prepare(
         `INSERT INTO automation_runs
            (id, workspace_id, automation_id, automation_name, trigger, started_at, status, steps,
-            owner_pid, format, paths)
-         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, 'blocks', '[]')`,
+            owner_pid, format, paths, caller_run_id, caller_block, caller_round)
+         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, 'blocks', '[]', ?, ?, ?)`,
       )
       .run(
         run.runId,
@@ -512,6 +564,9 @@ export class RunHistory {
         run.startedAt,
         JSON.stringify(run.steps),
         process.pid,
+        run.caller?.runId ?? null,
+        run.caller?.blockId ?? null,
+        run.caller?.round ?? null,
       );
   }
 

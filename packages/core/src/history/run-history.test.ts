@@ -138,7 +138,7 @@ describe('RunHistory', () => {
 
     const untouched = new Connection(file);
     expect(untouched.pragma('user_version', { simple: true })).toBe(99);
-    untouched.pragma('user_version = 4');
+    untouched.pragma('user_version = 5');
     untouched.close();
     history = await RunHistory.open(dataDir);
   });
@@ -350,7 +350,12 @@ describe('RunHistory with several processes', () => {
     const { default: Connection } = await import('better-sqlite3');
     const old = new Connection(join(dataDir, 'history.db'));
     old.exec(
-      'ALTER TABLE automation_runs DROP COLUMN format; ALTER TABLE automation_runs DROP COLUMN paths;',
+      `DROP INDEX automation_runs_by_caller;
+       ALTER TABLE automation_runs DROP COLUMN caller_run_id;
+       ALTER TABLE automation_runs DROP COLUMN caller_block;
+       ALTER TABLE automation_runs DROP COLUMN caller_round;
+       ALTER TABLE automation_runs DROP COLUMN format;
+       ALTER TABLE automation_runs DROP COLUMN paths;`,
     );
     old.pragma('user_version = 3');
     old.close();
@@ -370,6 +375,22 @@ describe('RunHistory with several processes', () => {
         ['new', 'blocks'],
       ]),
     );
+  });
+
+  it('links a called run to the run, block and round that called it', () => {
+    history.startAutomationRun({ ...automationRun, runId: 'caller' });
+    history.startAutomationRun({
+      ...automationRun,
+      runId: 'called',
+      caller: { runId: 'caller', blockId: 'Report1', round: 'For1:2' },
+    });
+    const runs = history.listAutomationRuns('work', 'flow');
+    expect(runs.find(({ runId }) => runId === 'called')?.caller).toEqual({
+      runId: 'caller',
+      blockId: 'Report1',
+      round: 'For1:2',
+    });
+    expect(runs.find(({ runId }) => runId === 'caller')?.caller).toBeUndefined();
   });
 
   it('keeps a skipped block and treats damaged paths as none', async () => {
