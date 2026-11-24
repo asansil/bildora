@@ -1,7 +1,7 @@
 /**
  * What block expressions mean: the type of each value, the fixed set of functions, and how a tree
- * is worked out. Nothing here reads files, the network or the environment; names are resolved by
- * whoever asks, through `NameTypes` and `NameValues`.
+ * is worked out. Nothing here reads files, the network or the environment; names are resolved, and
+ * files looked for, by whoever asks, through `NameTypes` and `NameValues`.
  */
 import { ExpressionError } from './syntax.js';
 import type { BinaryOperator, ExpressionNode, Span } from './syntax.js';
@@ -32,6 +32,8 @@ export interface NameTypes {
 /** Says what a name holds when the expression is worked out, or throws an `ExpressionError`. */
 export interface NameValues {
   valueOf(name: NameNode): RuntimeValue;
+  /** Whether a file or folder is there, for `exists`. Where it is left out, `exists` cannot run. */
+  fileExists?(path: string): boolean;
 }
 
 const isTextual = (type: ValueType): boolean => type === 'text' || type === 'path';
@@ -298,8 +300,35 @@ export const EXPRESSION_FUNCTIONS: Readonly<Record<string, FunctionDefinition>> 
         : str(args, 0).includes(str(args, 1));
     },
   },
+  compact: {
+    arity: [1, 1],
+    takes: 'a list',
+    type: (types, spans) => {
+      need(types, spans, 0, (type) => type === 'list', 'a list');
+      return 'list';
+    },
+    // A loop gives an empty text for a round that left nothing, and this drops those.
+    run: (args) => {
+      const value = args[0];
+      return Array.isArray(value)
+        ? (value as readonly string[]).filter((entry) => entry !== '')
+        : [];
+    },
+  },
   starts: textTest((value, part) => value.startsWith(part)),
   ends: textTest((value, part) => value.endsWith(part)),
+  /** Whether a file or folder is there. The caller looks, through `NameValues.fileExists`. */
+  exists: {
+    arity: [1, 1],
+    takes: 'a path',
+    type: (types, spans) => {
+      textual(0)(types, spans);
+      return 'boolean';
+    },
+    run: () => {
+      throw new Error('exists is worked out by evaluateExpression');
+    },
+  },
   iif: {
     arity: [3, 3],
     takes: 'a condition, the value when it holds, and the value when it does not',
@@ -463,6 +492,13 @@ export function evaluateExpression(node: ExpressionNode, names: NameValues): Run
       const definition = functionOf(node);
       if (node.name === 'iif') {
         return run(item(node.args, 0)) === true ? run(item(node.args, 1)) : run(item(node.args, 2));
+      }
+      if (node.name === 'exists') {
+        const path = asText(run(item(node.args, 0)));
+        if (names.fileExists === undefined) {
+          throw valueError('Files cannot be looked for here', node.span);
+        }
+        return path !== '' && names.fileExists(path);
       }
       const result = definition.run(
         node.args.map(run),

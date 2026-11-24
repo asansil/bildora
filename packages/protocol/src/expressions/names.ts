@@ -15,46 +15,78 @@ function item<T>(list: readonly T[], index: number): T {
   return value;
 }
 
+/** What a loop gives the blocks inside it: `loop.item`, `loop.index` and `loop.folder`. */
+export const LOOP_VALUES = ['item', 'index', 'folder'] as const;
+export type LoopValue = (typeof LOOP_VALUES)[number];
+
+export function isLoopValue(name: string): name is LoopValue {
+  return (LOOP_VALUES as readonly string[]).includes(name);
+}
+
 /** What a dotted name reads. */
 export type NameTarget =
-  /** The value set in another block: `convert.file`. */
+  /**
+   * The value set in another block: `convert.file`. When that block is a loop around the reader,
+   * as in `For1.item`, it reads that loop's round instead, which only the caller can tell.
+   */
   | { readonly kind: 'link'; readonly block: string; readonly parameter: string }
   /** An input of the automation: `inputs.file`. */
   | { readonly kind: 'input'; readonly name: string }
-  /** What an earlier block produced: `steps.extract.outputs.csv`, or a field of a JSON output. */
+  /**
+   * What an earlier block produced: `steps.extract.outputs.csv`, or a field of a JSON output. When
+   * `block` runs another automation, `inner` names the block in it, and in the automations that one
+   * calls in turn: `steps.Report1.Extract1.outputs.csv`.
+   */
   | {
       readonly kind: 'output';
       readonly block: string;
       readonly output: string;
       readonly field?: string;
+      readonly inner?: readonly string[];
     }
+  /**
+   * How an earlier block ended: `steps.Check1.result`, which reads `completed`, `failed`, or
+   * `skipped` when it did not run.
+   */
+  | { readonly kind: 'result'; readonly block: string }
   /** The run's own folder: `run.folder`. */
   | { readonly kind: 'run-folder' }
   /** A path variable of this computer: `paths.data`. */
-  | { readonly kind: 'path-variable'; readonly name: string };
+  | { readonly kind: 'path-variable'; readonly name: string }
+  /** The round of the nearest loop around the block: `loop.item`. */
+  | { readonly kind: 'loop'; readonly value: LoopValue };
 
 /**
  * Says what a name points at, throwing an `ExpressionError` when it has the wrong shape. Whether the
  * block, input or output exists is for the caller to check.
  */
 export function targetOf(name: NameNode): NameTarget {
-  const [head = '', second, third, fourth, fifth, ...rest] = name.parts;
+  const [head = '', second, third] = name.parts;
   const wrong = (example: string): ExpressionError =>
     new ExpressionError('name', `${name.parts.join('.')} should read like ${example}`, name.span);
   switch (head) {
     case 'inputs':
       if (second === undefined || third !== undefined) throw wrong('inputs.file');
       return { kind: 'input', name: second };
-    case 'steps':
-      if (second === undefined || third !== 'outputs' || fourth === undefined || rest.length > 0) {
-        throw wrong('steps.extract.outputs.csv');
+    case 'steps': {
+      if (third === 'result' && name.parts.length === 3 && second !== undefined) {
+        return { kind: 'result', block: second };
+      }
+      // The blocks come first, then `outputs`, the output, and maybe a field of it.
+      const at = name.parts.indexOf('outputs', 2);
+      const [block, ...inner] = at < 0 ? [] : name.parts.slice(1, at);
+      const [output, field, ...rest] = at < 0 ? [] : name.parts.slice(at + 1);
+      if (block === undefined || output === undefined || rest.length > 0) {
+        throw wrong('steps.extract.outputs.csv or steps.extract.result');
       }
       return {
         kind: 'output',
-        block: second,
-        output: fourth,
-        ...(fifth === undefined ? {} : { field: fifth }),
+        block,
+        output,
+        ...(field === undefined ? {} : { field }),
+        ...(inner.length === 0 ? {} : { inner }),
       };
+    }
     case 'run':
       if (second !== 'folder' || third !== undefined) throw wrong('run.folder');
       return { kind: 'run-folder' };
@@ -62,7 +94,10 @@ export function targetOf(name: NameNode): NameTarget {
       if (second === undefined || third !== undefined) throw wrong('paths.data');
       return { kind: 'path-variable', name: second };
     case 'loop':
-      throw new ExpressionError('name', 'Loops come in a later version', name.span);
+      if (second === undefined || !isLoopValue(second) || third !== undefined) {
+        throw wrong('loop.item, loop.index or loop.folder');
+      }
+      return { kind: 'loop', value: second };
     default:
       if (second === undefined || third !== undefined) throw wrong('convert.file');
       return { kind: 'link', block: head, parameter: second };
@@ -107,6 +142,12 @@ export function targetsOf(text: string): { readonly target: NameTarget; readonly
 /** Where in a block an expression sits. */
 export type ExpressionPlace =
   | { readonly kind: 'value'; readonly parameter: string }
+  /** A value for an input of the automation a Run automation block calls. */
+  | { readonly kind: 'input'; readonly input: string }
+  /** What a For goes through: its list, its folder or its number of times. */
+  | { readonly kind: 'items' }
+  /** The yes/no expression a While checks before each round. */
+  | { readonly kind: 'condition' }
   | {
       readonly kind: 'rule';
       /** The Switch case, for a Switch. */
@@ -144,6 +185,19 @@ function conditionExpressions(
   });
 }
 
+/** The value a For reads its items from. */
+export function forSource(block: Extract<AutomationBlock, { type: 'for' }>): BlockValue | number {
+  const { items } = block;
+  switch (items.kind) {
+    case 'list':
+      return items.list;
+    case 'folder':
+      return items.folder;
+    case 'count':
+      return items.count;
+  }
+}
+
 /** Every expression a block holds, in its values and in the rules of its conditions. */
 export function expressionsOfBlock(block: AutomationBlock): PlacedExpression[] {
   switch (block.type) {
@@ -159,8 +213,34 @@ export function expressionsOfBlock(block: AutomationBlock): PlacedExpression[] {
             ]
           : [],
       );
+    case 'run-automation':
+      return Object.entries(block.inputs ?? {}).flatMap(([input, value]) =>
+        isExpressionValue(value)
+          ? [
+              {
+                block: block.id,
+                place: { kind: 'input' as const, input },
+                expression: value.expression,
+              },
+            ]
+          : [],
+      );
+    case 'for': {
+      const source = forSource(block);
+      return isExpressionValue(source)
+        ? [{ block: block.id, place: { kind: 'items' as const }, expression: source.expression }]
+        : [];
+    }
     case 'if':
       return conditionExpressions(block.id, block.condition, undefined);
+    case 'while':
+      return [
+        {
+          block: block.id,
+          place: { kind: 'condition' as const },
+          expression: block.condition.expression,
+        },
+      ];
     case 'switch':
       return block.cases.flatMap((branch) =>
         conditionExpressions(block.id, branch.condition, branch.id),
@@ -226,31 +306,9 @@ export function linkCycles(blocks: readonly AutomationBlock[]): string[][] {
   return cycles;
 }
 
-/**
- * Rewrites the block ids an expression names, keeping everything else as it was typed. `rename`
- * returns the new id, or undefined to keep it. Text that does not parse is returned as it is.
- */
-export function renameInExpression(
-  text: string,
-  rename: (id: string) => string | undefined,
-): string {
-  const tree = parseCached(text);
-  if (tree instanceof ExpressionError) return text;
-  const edits: { span: Span; id: string }[] = [];
-  for (const name of namesOf(tree)) {
-    let target: NameTarget;
-    try {
-      target = targetOf(name);
-    } catch {
-      continue;
-    }
-    const at = target.kind === 'link' ? 0 : target.kind === 'output' ? 1 : undefined;
-    if (at === undefined) continue;
-    const id = rename(item(name.parts, at));
-    if (id !== undefined && id !== name.parts[at])
-      edits.push({ span: item(name.partSpans, at), id });
-  }
-  return edits
+/** Applies edits to the parts of names, keeping everything else as it was typed. */
+function applyEdits(text: string, edits: readonly { span: Span; id: string }[]): string {
+  return [...edits]
     .sort((a, b) => b.span.start - a.span.start)
     .reduce(
       (result, { span, id }) => result.slice(0, span.start) + id + result.slice(span.end),
@@ -258,31 +316,120 @@ export function renameInExpression(
     );
 }
 
-function renamedValue(
-  value: BlockValue | undefined,
-  rename: (id: string) => string | undefined,
-): BlockValue | undefined {
-  return isExpressionValue(value)
-    ? { expression: renameInExpression(value.expression, rename) }
-    : value;
+/** The names of an expression with what they point at, leaving out those with the wrong shape. */
+function targetedNames(text: string): { name: NameNode; target: NameTarget }[] {
+  const tree = parseCached(text);
+  if (tree instanceof ExpressionError) return [];
+  return namesOf(tree).flatMap((name) => {
+    try {
+      return [{ name, target: targetOf(name) }];
+    } catch {
+      return [];
+    }
+  });
 }
 
-function renamedCondition(
-  condition: AutomationCondition,
+/**
+ * Rewrites the block ids an expression names, keeping everything else as it was typed. `rename`
+ * returns the new id, or undefined to keep it. Text that does not parse is returned as it is. A loop
+ * read by its name, as in `For1.item`, is renamed as a link is.
+ */
+export function renameInExpression(
+  text: string,
   rename: (id: string) => string | undefined,
-): AutomationCondition {
-  return {
-    ...condition,
-    rules: condition.rules.map((rule) => {
+): string {
+  const edits: { span: Span; id: string }[] = [];
+  for (const { name, target } of targetedNames(text)) {
+    const at =
+      target.kind === 'link'
+        ? 0
+        : target.kind === 'output' || target.kind === 'result'
+          ? 1
+          : undefined;
+    if (at === undefined) continue;
+    const id = rename(item(name.parts, at));
+    if (id !== undefined && id !== name.parts[at]) {
+      edits.push({ span: item(name.partSpans, at), id });
+    }
+  }
+  return applyEdits(text, edits);
+}
+
+/**
+ * Rewrites the names of blocks inside called automations, as `Extract1` in
+ * `steps.Report1.Extract1.outputs.csv`. `rename` gets the Run automation blocks that lead to the
+ * automation holding the block, outermost first, and the block's id. It returns the new id, or
+ * undefined to keep it.
+ */
+export function renameCalledInExpression(
+  text: string,
+  rename: (calls: readonly string[], id: string) => string | undefined,
+): string {
+  const edits: { span: Span; id: string }[] = [];
+  for (const { name, target } of targetedNames(text)) {
+    if (target.kind !== 'output' || target.inner === undefined) continue;
+    const calls = [target.block];
+    target.inner.forEach((id, index) => {
+      const renamed = rename([...calls], id);
+      if (renamed !== undefined && renamed !== id) {
+        edits.push({ span: item(name.partSpans, index + 2), id: renamed });
+      }
+      calls.push(id);
+    });
+  }
+  return applyEdits(text, edits);
+}
+
+/** Rewrites every expression a block holds with `edit`. Other fields are left as they are. */
+export function editBlockExpressions<Block extends AutomationBlock>(
+  block: Block,
+  edit: (expression: string) => string,
+): Block {
+  const value = (held: BlockValue | undefined): BlockValue | undefined =>
+    isExpressionValue(held) ? { expression: edit(held.expression) } : held;
+  const values = (held: Readonly<Record<string, BlockValue>>): Record<string, BlockValue> =>
+    Object.fromEntries(Object.entries(held).map(([key, one]) => [key, value(one) ?? one]));
+  const condition = (rules: AutomationCondition): AutomationCondition => ({
+    ...rules,
+    rules: rules.rules.map((rule) => {
       if (rule.field !== 'value') return rule;
-      const value = renamedValue(rule.value, rename);
+      const compared = value(rule.value);
       return {
         ...rule,
-        read: { expression: renameInExpression(rule.read.expression, rename) },
-        ...(value === undefined ? {} : { value }),
+        read: { expression: edit(rule.read.expression) },
+        ...(compared === undefined ? {} : { value: compared }),
       };
     }),
-  };
+  });
+  switch (block.type) {
+    case 'run':
+      return block.values === undefined ? block : { ...block, values: values(block.values) };
+    case 'run-automation':
+      return block.inputs === undefined ? block : { ...block, inputs: values(block.inputs) };
+    case 'if':
+      return { ...block, condition: condition(block.condition) };
+    case 'while':
+      return { ...block, condition: { expression: edit(block.condition.expression) } };
+    case 'switch':
+      return {
+        ...block,
+        cases: block.cases.map((branch) => ({ ...branch, condition: condition(branch.condition) })),
+      };
+    case 'for': {
+      const { items } = block;
+      if (items.kind === 'list') {
+        return { ...block, items: { ...items, list: { expression: edit(items.list.expression) } } };
+      }
+      if (items.kind === 'folder') {
+        return { ...block, items: { ...items, folder: value(items.folder) ?? items.folder } };
+      }
+      return isExpressionValue(items.count)
+        ? { ...block, items: { ...items, count: { expression: edit(items.count.expression) } } }
+        : block;
+    }
+    default:
+      return block;
+  }
 }
 
 /** A block with the ids named in its expressions rewritten. Other fields are left to the caller. */
@@ -290,31 +437,7 @@ export function renameInBlockExpressions<Block extends AutomationBlock>(
   block: Block,
   rename: (id: string) => string | undefined,
 ): Block {
-  switch (block.type) {
-    case 'run':
-      if (block.values === undefined) return block;
-      return {
-        ...block,
-        values: Object.fromEntries(
-          Object.entries(block.values).map(([key, value]) => [
-            key,
-            renamedValue(value, rename) ?? value,
-          ]),
-        ),
-      };
-    case 'if':
-      return { ...block, condition: renamedCondition(block.condition, rename) };
-    case 'switch':
-      return {
-        ...block,
-        cases: block.cases.map((branch) => ({
-          ...branch,
-          condition: renamedCondition(branch.condition, rename),
-        })),
-      };
-    default:
-      return block;
-  }
+  return editBlockExpressions(block, (expression) => renameInExpression(expression, rename));
 }
 
 /** Tells whether a block id would clash with the names expressions keep for other values. */

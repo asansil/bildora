@@ -10,6 +10,7 @@ import {
   linkCycles,
   linkUses,
   parseExpression,
+  renameCalledInExpression,
   renameInBlockExpressions,
   renameInExpression,
   targetOf,
@@ -211,8 +212,10 @@ describe('evaluateExpression', () => {
     expect(run('iif(inputs.size > 100, "large", "small")')).toBe('large');
     // Removing or changing a function breaks shared files; the guide lists each of these.
     expect(Object.keys(EXPRESSION_FUNCTIONS).sort()).toEqual([
+      'compact',
       'contains',
       'ends',
+      'exists',
       'ext',
       'folder',
       'iif',
@@ -282,6 +285,24 @@ describe('parameters', () => {
   });
 });
 
+describe('exists', () => {
+  it('asks whoever works the expression out whether a file is there', () => {
+    const tree = parseExpression('exists(inputs.file) and not exists("")');
+    expect(typeOfExpression(tree, nameTypes)).toBe('boolean');
+    const looked: string[] = [];
+    const values = {
+      ...nameValues,
+      fileExists: (path: string) => {
+        looked.push(path);
+        return true;
+      },
+    };
+    expect(evaluateExpression(tree, values)).toBe(true);
+    expect(looked).toEqual(['D:/in/report.csv']);
+    expect(failure(() => evaluateExpression(tree, nameValues)).code).toBe('value');
+  });
+});
+
 describe('names', () => {
   const nameOf = (text: string) => {
     const tree = parseExpression(text);
@@ -302,11 +323,41 @@ describe('names', () => {
       output: 'y',
       field: 'z',
     });
+    expect(targetOf(nameOf('steps.Check1.result'))).toEqual({ kind: 'result', block: 'Check1' });
+    expect(renameInExpression('steps.Check1.result == "failed"', () => 'Check2')).toBe(
+      'steps.Check2.result == "failed"',
+    );
     expect(targetOf(nameOf('run.folder'))).toEqual({ kind: 'run-folder' });
     expect(targetOf(nameOf('paths.data'))).toEqual({ kind: 'path-variable', name: 'data' });
     expect(() => targetOf(nameOf('steps.x.y'))).toThrow(/steps.extract.outputs.csv/);
     expect(() => targetOf(nameOf('convert.file.more'))).toThrow(/convert.file/);
-    expect(() => targetOf(nameOf('loop.item'))).toThrow(/later version/);
+    expect(targetOf(nameOf('loop.item'))).toEqual({ kind: 'loop', value: 'item' });
+    expect(() => targetOf(nameOf('loop.rounds'))).toThrow(/loop.index/);
+    expect(targetOf(nameOf('steps.Report1.Extract1.outputs.result.total'))).toEqual({
+      kind: 'output',
+      block: 'Report1',
+      inner: ['Extract1'],
+      output: 'result',
+      field: 'total',
+    });
+    expect(() => targetOf(nameOf('steps.Report1.Extract1.outputs'))).toThrow(/steps.extract/);
+  });
+
+  it('renames blocks inside called automations', () => {
+    const text = 'steps.Report1.Archive1.Copy1.outputs.file + steps.Copy1.outputs.file';
+    expect(
+      renameCalledInExpression(text, (calls, id) =>
+        calls.join('/') === 'Report1/Archive1' && id === 'Copy1' ? 'Copy2' : undefined,
+      ),
+    ).toBe('steps.Report1.Archive1.Copy2.outputs.file + steps.Copy1.outputs.file');
+  });
+
+  it('drops the empty texts a loop leaves with compact', () => {
+    const tree = parseExpression('compact(steps.Convert1.outputs.file)');
+    expect(evaluateExpression(tree, { valueOf: () => ['a.png', '', 'c.png'] })).toEqual([
+      'a.png',
+      'c.png',
+    ]);
   });
 
   it('lists the targets of an expression, skipping malformed names', () => {

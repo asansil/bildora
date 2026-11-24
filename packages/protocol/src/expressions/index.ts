@@ -32,17 +32,22 @@ export type {
   ValueType,
 } from './language.js';
 export {
+  LOOP_VALUES,
+  editBlockExpressions,
   expressionsOf,
   expressionsOfBlock,
+  forSource,
+  isLoopValue,
   isReservedBlockId,
   linkCycles,
   linkKey,
   linkUses,
   parseCached,
+  renameCalledInExpression,
   renameInBlockExpressions,
   renameInExpression,
   targetOf,
   targetsOf,
 } from './names.js';
-export type { ExpressionPlace, LinkUse, NameTarget, PlacedExpression } from './names.js';
+export type { ExpressionPlace, LinkUse, LoopValue, NameTarget, PlacedExpression } from './names.js';
 export { comparable, comparedType, operatorsFor, valueRuleHolds } from './rules.js';
