@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BrowserWindow, app, dialog, nativeTheme, session } from 'electron';
 import type { RegisteredTool, ToolRun } from '@bildora/core';
+import appIcon from '../../resources/icon.png?asset';
 import {
   RunHistory,
   ToolRegistry,
@@ -71,6 +72,7 @@ function createShellWindow(runs: RunService, automations: AutomationService): Br
     minWidth: 800,
     minHeight: 500,
     title: t('app.name'),
+    icon: appIcon,
     titleBarStyle: 'hidden',
     titleBarOverlay: titleBarOverlay(nativeTheme.shouldUseDarkColors),
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#16191b' : '#e9edef',
