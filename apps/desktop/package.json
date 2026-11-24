@@ -44,7 +44,8 @@
       "output": "release"
     },
     "files": [
-      "out/**"
+      "out/**",
+      "resources/**"
     ],
     "extraFiles": [
       {
@@ -56,9 +57,11 @@
       "**/*.node",
       "**/node-pty/prebuilds/**",
       "**/node-pty/lib/**",
-      "**/job-launcher.exe"
+      "**/job-launcher.exe",
+      "resources/**"
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "zip"
       ]
