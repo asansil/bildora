@@ -20,7 +20,8 @@ export async function canvasSettled(window: Page): Promise<void> {
           before === (await transform())
         );
       },
-      { message: 'the canvas should stop moving after it opens' },
+      // A large flow makes each look at the page slow, so a few take seconds.
+      { message: 'the canvas should stop moving after it opens', timeout: 15_000 },
     )
     .toBe(true);
 }
