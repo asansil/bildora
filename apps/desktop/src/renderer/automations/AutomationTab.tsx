@@ -555,10 +555,12 @@ function FlowEditor({
       current = false;
     };
   });
+  // The file can come again from disk as the positions arrive, and undo them in the same render,
+  // so new positions start the placing again even when blocks were missing before as well.
   useEffect(() => {
     if (!needsPlacing) return undefined;
     return placeBlocks();
-  }, [needsPlacing]);
+  }, [needsPlacing, document.positions]);
 
   // The shell passes new callbacks on every render, so the latest ones are read when needed.
   const reportDirty = useEffectEvent((value: boolean) => {

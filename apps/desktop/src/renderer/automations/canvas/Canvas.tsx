@@ -594,6 +594,19 @@ export function Canvas({
   const pointer = useRef<{ x: number; y: number } | undefined>(undefined);
   const opened = useRef(false);
   const container = useRef<HTMLDivElement>(null);
+  // A tab laid out before its panels have their size can open with no width yet.
+  const [hasWidth, setHasWidth] = useState(false);
+  useEffect(() => {
+    const element = container.current;
+    if (element === null) return undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      setHasWidth((entry?.contentRect.width ?? 0) > 0);
+    });
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
 
   const toolsById = useMemo(() => new Map(tools.map((tool) => [tool.id, tool])), [tools]);
   const usedBy = useMemo(() => usedByCounts(document.blocks), [document.blocks]);
@@ -1306,7 +1319,7 @@ export function Canvas({
 
   // Where a flow opens: its Start block at a readable size, once the tab can be measured.
   useEffect(() => {
-    if (!active || opened.current) return undefined;
+    if (!active || !hasWidth || opened.current) return undefined;
     const frame = requestAnimationFrame(() => {
       const start = document.blocks.find(({ type }) => type === 'start');
       const at = start === undefined ? undefined : document.positions[start.id];
@@ -1322,7 +1335,7 @@ export function Canvas({
     return () => {
       cancelAnimationFrame(frame);
     };
-  }, [active, document.blocks, document.positions, flow]);
+  }, [active, hasWidth, document.blocks, document.positions, flow]);
 
   /** Brings a block into sight, moving the view only when it is not already there. */
   const reveal_ = useCallback(
