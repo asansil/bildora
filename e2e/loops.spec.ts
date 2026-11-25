@@ -249,9 +249,10 @@ test('blocks go into a loop by the library or a drag, and a drag that would cros
   await expect(frame(window, 'While1')).toBeVisible();
   await library.getByRole('button', { name: 'Wait for time', exact: true }).click();
   await save(window);
-  const text = await readFile(automationFile('loose'), 'utf8');
-  expect(text).toContain('loop: While1');
-  expect(text).toMatch(/from: While1\s+output: body/);
+  // The file can land a moment after Save settles, so wait for it rather than read it once.
+  await expect
+    .poll(() => readFile(automationFile('loose'), 'utf8'))
+    .toMatch(/loop: While1[\s\S]*from: While1\s+output: body/);
   await shot(window, 'loop-built');
 });
 
@@ -403,8 +404,9 @@ test('an automation dragged from the sidebar becomes a call, and a double-click 
   await row('Report').dragTo(pane, { targetPosition: { x: 600, y: 300 } });
   await expect(node(window, 'Report2')).toBeVisible();
   await save(window);
-  const text = await readFile(automationFile('nightly'), 'utf8');
-  expect(text).toMatch(/id: Report2\s+type: run-automation\s+automation: report/);
+  await expect
+    .poll(() => readFile(automationFile('nightly'), 'utf8'))
+    .toMatch(/id: Report2\s+type: run-automation\s+automation: report/);
 
   // An automation cannot call itself.
   await row('Nightly').dragTo(pane, { targetPosition: { x: 600, y: 420 } });
