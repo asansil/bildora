@@ -4,7 +4,7 @@ import type { RecordedParameter } from '../runner/resolve-values.js';
 import { DefinitionError } from '../storage/definition-error.js';
 
 const HISTORY_FILE = 'history.db';
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 /** Rows a listing returns at most. */
 const LIST_LIMIT = 500;
 
@@ -70,6 +70,18 @@ const UPGRADE_TO_CALLS = `
   ALTER TABLE automation_runs ADD COLUMN caller_block TEXT;
   ALTER TABLE automation_runs ADD COLUMN caller_round TEXT;
   CREATE INDEX automation_runs_by_caller ON automation_runs (caller_run_id);
+`;
+
+/**
+ * What testing a block adds: a test names the block it tested and the run it reused, and writes to
+ * the folder of the run that folder came from.
+ */
+const UPGRADE_TO_TESTS = `
+  ALTER TABLE automation_runs ADD COLUMN test_kind TEXT;
+  ALTER TABLE automation_runs ADD COLUMN test_block TEXT;
+  ALTER TABLE automation_runs ADD COLUMN test_round TEXT;
+  ALTER TABLE automation_runs ADD COLUMN base_run_id TEXT;
+  ALTER TABLE automation_runs ADD COLUMN folder_run_id TEXT;
 `;
 
 /** Runs older than Workspaces belong to the one every upgraded installation starts with. */
@@ -210,6 +222,24 @@ export interface AutomationStepRecord {
   readonly rounds?: number;
   /** For a Run automation block, the run it started. */
   readonly calledRunId?: string;
+  /** For a For, the item of each round as text, while they fit, so a test can repeat a round. */
+  readonly items?: readonly string[];
+  /** In a test, the block kept what the run the test reused left, and did not run again. */
+  readonly reused?: true;
+  /** For an If or a Switch, the output it took. */
+  readonly took?: string;
+}
+
+/**
+ * What a test ran: one block, or a block and everything after it. Both reuse what the base run
+ * left; a test with no base used only typed values.
+ */
+export interface AutomationRunTest {
+  readonly kind: 'block' | 'from';
+  readonly blockId: string;
+  /** The round a block inside a loop was tested in. */
+  readonly round?: string;
+  readonly baseRunId?: string;
 }
 
 /** A value a block's tool received. A secret records only that it was set. */
@@ -245,6 +275,9 @@ export interface AutomationRunSummary {
   readonly paths: readonly TakenPath[];
   /** Set when another automation's Run automation block started this run. */
   readonly caller?: AutomationCaller;
+  readonly test?: AutomationRunTest;
+  /** The run whose folder this one wrote to, when it is not its own. */
+  readonly folderRunId?: string;
 }
 
 export interface AutomationRunStart {
@@ -256,6 +289,8 @@ export interface AutomationRunStart {
   readonly startedAt: number;
   readonly steps: readonly AutomationStepRecord[];
   readonly caller?: AutomationCaller | undefined;
+  readonly test?: AutomationRunTest | undefined;
+  readonly folderRunId?: string | undefined;
 }
 
 export interface AutomationRunFinish {
@@ -280,7 +315,10 @@ export interface HistoryFilter {
   readonly automationId?: string | undefined;
 }
 
-/** Names an automation run whose record went, so that its folder can go too. */
+/**
+ * Names the run of a folder no kept run uses anymore, once records went, so that the folder can go
+ * too.
+ */
 export interface RemovedAutomationRun {
   readonly workspaceId: string;
   readonly automationId: string;
@@ -332,6 +370,11 @@ interface AutomationRow {
   caller_run_id: string | null;
   caller_block: string | null;
   caller_round: string | null;
+  test_kind: AutomationRunTest['kind'] | null;
+  test_block: string | null;
+  test_round: string | null;
+  base_run_id: string | null;
+  folder_run_id: string | null;
 }
 
 function stepsOf(text: string): readonly AutomationStepRecord[] {
@@ -383,6 +426,17 @@ function automationSummaryOf(row: AutomationRow): AutomationRunSummary {
             ...(row.caller_round === null ? {} : { round: row.caller_round }),
           },
         }),
+    ...(row.test_kind === null || row.test_block === null
+      ? {}
+      : {
+          test: {
+            kind: row.test_kind,
+            blockId: row.test_block,
+            ...(row.test_round === null ? {} : { round: row.test_round }),
+            ...(row.base_run_id === null ? {} : { baseRunId: row.base_run_id }),
+          },
+        }),
+    ...(row.folder_run_id === null ? {} : { folderRunId: row.folder_run_id }),
   };
 }
 
@@ -466,7 +520,10 @@ export class RunHistory {
           if (version < 4) {
             database.exec(UPGRADE_TO_BLOCKS);
           }
-          database.exec(UPGRADE_TO_CALLS);
+          if (version < 5) {
+            database.exec(UPGRADE_TO_CALLS);
+          }
+          database.exec(UPGRADE_TO_TESTS);
           database.pragma(`user_version = ${String(SCHEMA_VERSION)}`);
         })();
       }
@@ -553,8 +610,9 @@ export class RunHistory {
       .prepare(
         `INSERT INTO automation_runs
            (id, workspace_id, automation_id, automation_name, trigger, started_at, status, steps,
-            owner_pid, format, paths, caller_run_id, caller_block, caller_round)
-         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, 'blocks', '[]', ?, ?, ?)`,
+            owner_pid, format, paths, caller_run_id, caller_block, caller_round, test_kind,
+            test_block, test_round, base_run_id, folder_run_id)
+         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, 'blocks', '[]', ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         run.runId,
@@ -568,6 +626,11 @@ export class RunHistory {
         run.caller?.runId ?? null,
         run.caller?.blockId ?? null,
         run.caller?.round ?? null,
+        run.test?.kind ?? null,
+        run.test?.blockId ?? null,
+        run.test?.round ?? null,
+        run.test?.baseRunId ?? null,
+        run.folderRunId ?? null,
       );
   }
 
@@ -611,18 +674,32 @@ export class RunHistory {
       .map(automationSummaryOf);
   }
 
+  /**
+   * Removes runs, and answers the run folders no run uses anymore: a test writes to the folder of
+   * the run it reused, so that folder stays while the test is kept.
+   */
   private removeAutomationRuns(where: string, ...values: unknown[]): RemovedAutomationRun[] {
     const rows = this.database
-      .prepare<unknown[], { id: string; workspace_id: string; automation_id: string }>(
-        `SELECT id, workspace_id, automation_id FROM automation_runs WHERE ${where}`,
-      )
+      .prepare<
+        unknown[],
+        { id: string; workspace_id: string; automation_id: string; folder_run_id: string | null }
+      >(`SELECT id, workspace_id, automation_id, folder_run_id FROM automation_runs WHERE ${where}`)
       .all(...values);
     this.database.prepare(`DELETE FROM automation_runs WHERE ${where}`).run(...values);
-    return rows.map((row) => ({
-      workspaceId: row.workspace_id,
-      automationId: row.automation_id,
-      runId: row.id,
-    }));
+    const used = this.database.prepare<[string, string], { found: number }>(
+      'SELECT 1 AS found FROM automation_runs WHERE id = ? OR folder_run_id = ? LIMIT 1',
+    );
+    const folders = new Map<string, RemovedAutomationRun>();
+    for (const row of rows) {
+      const folder = row.folder_run_id ?? row.id;
+      if (folders.has(folder) || used.get(folder, folder) !== undefined) continue;
+      folders.set(folder, {
+        workspaceId: row.workspace_id,
+        automationId: row.automation_id,
+        runId: folder,
+      });
+    }
+    return [...folders.values()];
   }
 
   /** Keeps an automation's newest finished runs. A run still going is never removed. */

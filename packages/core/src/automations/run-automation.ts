@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { access, mkdir } from 'node:fs/promises';
-import { join, normalize } from 'node:path';
+import { join } from 'node:path';
 import {
   BODY_OUTPUT,
   DEFAULT_CASE,
@@ -10,14 +10,11 @@ import {
   connectionOutput,
   disabledOutput,
   expressionsOf,
-  findStepOutputReferences,
   isExpressionValue,
   loopChain,
-  replaceRunReferences,
   runtimeText,
   targetOf,
   targetsOf,
-  toParameterValue,
   usesRunFolder,
   valueRuleHolds,
 } from '@bildora/protocol';
@@ -25,7 +22,6 @@ import type {
   AutomationBlock,
   AutomationCondition,
   Automation,
-  BlockValue,
   ForBlock,
   LiteralValue,
   LoopBlock,
@@ -37,6 +33,7 @@ import type {
 import type {
   AutomationCaller,
   AutomationFailure,
+  AutomationRunTest,
   AutomationStepRecord,
   StepValueRecord,
   TakenPath,
@@ -61,20 +58,25 @@ import {
   isDisabledBlock,
   parametersOf,
 } from './automation-values.js';
-import type { LoopRound, OutputValue, RunValueContext } from './automation-values.js';
+import type { OutputValue, RunValueContext } from './automation-values.js';
 import { leafTree } from './call-tree.js';
 import type { CallTree } from './call-tree.js';
 import { TooManyItemsError, folderItems } from './folder-items.js';
-import { limitStepData, stepOutputs, stepValues } from './step-data.js';
+import {
+  MissingOutputError,
+  ValueError,
+  frameValues,
+  gatherTrees,
+  newFrame,
+  roundKey,
+} from './run-frame.js';
+import type { Frame, OutputTree } from './run-frame.js';
+import { STEP_DATA_LIMIT, limitStepData, stepOutputs, stepValues } from './step-data.js';
+import { baseFrame, blocksFrom, testRound } from './test-run.js';
+import type { BaseRun, TestKind } from './test-run.js';
 import { OutputError, readToolOutputs, secretOutputFields } from './tool-outputs.js';
 
 const MS_PER_SECOND = 1000;
-
-/** A step refers to something an earlier step did not leave. */
-class MissingOutputError extends Error {}
-
-/** A value of a step could not be worked out. */
-class ValueError extends Error {}
 
 /** A condition reads something a block did not leave. */
 class ConditionError extends Error {}
@@ -137,6 +139,41 @@ export interface AutomationRunOptions {
   readonly runId?: string | undefined;
   /** Waits for a time. It must settle early when the signal aborts. */
   readonly delay?: ((milliseconds: number, signal: AbortSignal) => Promise<void>) | undefined;
+  /**
+   * Makes the run a test from the app: one block, or a block and everything after it, on what a
+   * base run left. Check it with `planTest` first; a test that cannot start throws.
+   */
+  readonly test?: AutomationTest | undefined;
+}
+
+export interface AutomationTest {
+  readonly kind: TestKind;
+  readonly blockId: string;
+  /** For Test block inside loops, the round it runs in. The last of each loop when left out. */
+  readonly round?: string | undefined;
+  /** The run whose values and folder it reuses. With none, only typed values are there. */
+  readonly base?: BaseRun | undefined;
+  /** For Test block, values typed over the block's own, by parameter or input name. */
+  readonly values?: Readonly<Record<string, LiteralValue>> | undefined;
+}
+
+/** An automation whose tested block takes typed values over its own. */
+function withTypedValues(
+  automation: Automation,
+  id: string,
+  typed: Readonly<Record<string, LiteralValue>>,
+): Automation {
+  return {
+    ...automation,
+    blocks: automation.blocks.map((block) => {
+      if (block.id !== id) return block;
+      if (block.type === 'run') return { ...block, values: { ...block.values, ...typed } };
+      if (block.type === 'run-automation') {
+        return { ...block, inputs: { ...block.inputs, ...typed } };
+      }
+      return block;
+    }),
+  };
 }
 
 export interface StepView extends AutomationStepRecord {
@@ -160,16 +197,10 @@ export interface AutomationRunView {
   /** The connections followed so far. */
   readonly paths: readonly TakenPath[];
   readonly caller?: AutomationCaller;
+  readonly test?: AutomationRunTest;
 }
 
-/**
- * What a run's blocks left, handed back to the run that called it. A called run's own calls are
- * under the Run automation blocks that made them. Secret fields are left out.
- */
-export interface OutputTree {
-  readonly outputs: ReadonlyMap<string, ReadonlyMap<string, OutputValue>>;
-  readonly calls: ReadonlyMap<string, OutputTree>;
-}
+export type { OutputTree } from './run-frame.js';
 
 export interface AutomationResult {
   readonly runId: string;
@@ -219,7 +250,7 @@ function waitFor(milliseconds: number, signal: AbortSignal): Promise<void> {
 /** A step without what only matters while it is going on. */
 function recordOf(step: StepView): AutomationStepRecord {
   const { id, round, state, startedAt, toolRunId, toolRunIds, attempt, durationMs, failure } = step;
-  const { values, outputs, truncated, rounds, calledRunId } = step;
+  const { values, outputs, truncated, rounds, calledRunId, items, reused, took } = step;
   return {
     id,
     ...(round === undefined ? {} : { round }),
@@ -235,6 +266,9 @@ function recordOf(step: StepView): AutomationStepRecord {
     ...(truncated === undefined ? {} : { truncated }),
     ...(rounds === undefined ? {} : { rounds }),
     ...(calledRunId === undefined ? {} : { calledRunId }),
+    ...(items === undefined ? {} : { items }),
+    ...(reused === undefined ? {} : { reused }),
+    ...(took === undefined ? {} : { took }),
   };
 }
 
@@ -268,45 +302,6 @@ interface Region {
   readonly onBranchFailure: 'stop-others' | 'let-finish';
   /** The first failure no Error output handled. */
   failure?: AutomationFailure;
-}
-
-interface BlockResult {
-  readonly result: 'completed' | 'failed';
-  readonly exitCode?: number | undefined;
-}
-
-/**
- * What one stretch of the run holds: the run outside loops, or one round of a loop. A round sees
- * what the frames around it hold, and only its own round of the blocks in its body.
- */
-interface Frame {
-  readonly parent?: Frame;
-  readonly round?: LoopRound & { readonly key: string };
-  readonly outputs: Map<string, ReadonlyMap<string, OutputValue>>;
-  readonly calls: Map<string, OutputTree>;
-  readonly results: Map<string, BlockResult>;
-  /** A block reached from several paths still runs once in a frame. */
-  readonly reached: Set<string>;
-}
-
-function newFrame(parent?: Frame, round?: LoopRound & { readonly key: string }): Frame {
-  return {
-    ...(parent === undefined ? {} : { parent }),
-    ...(round === undefined ? {} : { round }),
-    outputs: new Map(),
-    calls: new Map(),
-    results: new Map(),
-    reached: new Set(),
-  };
-}
-
-/** The rounds of the loops around a frame, nearest first. */
-function roundsOf(frame: Frame): LoopRound[] {
-  const rounds: LoopRound[] = [];
-  for (let at: Frame | undefined = frame; at !== undefined; at = at.parent) {
-    if (at.round !== undefined) rounds.push(at.round);
-  }
-  return rounds;
 }
 
 function newScope(parent?: Scope): Scope {
@@ -349,68 +344,9 @@ function cancelScope(scope: Scope): void {
   }
 }
 
-/**
- * One value per round of a loop for one output or field, as a list of text. A round that left
- * nothing gives an empty text, so positions match rounds; lists from loops inside are joined flat.
- */
-function gatherValues(values: readonly (RuntimeValue | undefined)[]): readonly string[] {
-  const flat = values.some((value) => Array.isArray(value));
-  return values.flatMap((value): string[] => {
-    if (Array.isArray(value)) return [...(value as readonly string[])];
-    if (value === undefined) return flat ? [] : [''];
-    return [runtimeText(value)];
-  });
-}
-
-/** What a block left in each round, as one list per output and per field. */
-function gatherOutputs(
-  rounds: readonly (ReadonlyMap<string, OutputValue> | undefined)[],
-): ReadonlyMap<string, OutputValue> {
-  const names = new Set(rounds.flatMap((outputs) => [...(outputs?.keys() ?? [])]));
-  const gathered = new Map<string, OutputValue>();
-  for (const name of names) {
-    const each = rounds.map((outputs) => outputs?.get(name));
-    const fields = new Set(each.flatMap((output) => [...(output?.fields?.keys() ?? [])]));
-    gathered.set(name, {
-      value: gatherValues(each.map((output) => output?.value)),
-      ...(fields.size === 0
-        ? {}
-        : {
-            fields: new Map(
-              [...fields].map((field) => [
-                field,
-                gatherValues(each.map((output) => output?.fields?.get(field))),
-              ]),
-            ),
-          }),
-    });
-  }
-  return gathered;
-}
-
-/** What blocks left in each round, gathered into lists, called runs included. */
-function gatherTrees(rounds: readonly (OutputTree | undefined)[]): OutputTree {
-  const ids = new Set(rounds.flatMap((tree) => [...(tree?.outputs.keys() ?? [])]));
-  const calls = new Set(rounds.flatMap((tree) => [...(tree?.calls.keys() ?? [])]));
-  return {
-    outputs: new Map(
-      [...ids].map((id) => [id, gatherOutputs(rounds.map((tree) => tree?.outputs.get(id)))]),
-    ),
-    calls: new Map(
-      [...calls].map((id) => [id, gatherTrees(rounds.map((tree) => tree?.calls.get(id)))]),
-    ),
-  };
-}
-
 /** A key for a step, which a block inside a loop has once per round. */
 function stepKey(id: string, round: string | undefined): string {
   return round === undefined ? id : `${id}\u0000${round}`;
-}
-
-/** The round path of a new round: `<loop>:<index>` after the rounds of the loops around it. */
-function roundKey(frame: Frame, loop: string, index: number): string {
-  const own = `${loop}:${String(index)}`;
-  return frame.round === undefined ? own : `${frame.round.key}/${own}`;
 }
 
 /**
@@ -419,35 +355,103 @@ function roundKey(frame: Frame, loop: string, index: number): string {
  * with the record never changes how a run ends.
  */
 export function startAutomationRun(options: AutomationRunOptions): AutomationRun {
-  const { workspaceId, trigger, dataDir, history, pathVariables } = options;
-  const { automation } = options;
+  const { workspaceId, trigger, dataDir, history, pathVariables, test } = options;
+  const automation =
+    test?.kind === 'block' && test.values !== undefined
+      ? withTypedValues(options.automation, test.blockId, test.values)
+      : options.automation;
   // Callers check first; a flow saved half built must never reach the scheduler.
   const [broken] = automationRuleIssues(automation);
   if (broken !== undefined) {
     throw new Error(`The automation cannot run: ${broken.message}`);
   }
-  const inputs = resolveInputs(automation, options.inputs);
+  const inputs = test?.base?.inputs ?? resolveInputs(automation, options.inputs);
   const callTree = options.calls ?? leafTree(automation);
   const variables: PathVariables = pathVariables ?? new Map<string, string>();
   const delay = options.delay ?? waitFor;
   const runId = options.runId ?? randomUUID();
   const startedAt = Date.now();
   const root = newScope();
-  const top = newFrame();
+  // A test writes to the folder of the run it reuses, where earlier blocks left their files.
+  const runFolder = automationRunFolder(
+    dataDir,
+    workspaceId,
+    automation.id,
+    test?.base?.folderRunId ?? runId,
+  );
+  const tested =
+    test === undefined
+      ? undefined
+      : {
+          ...test,
+          round:
+            test.kind === 'block'
+              ? testRound(automation, test.base, test.blockId, test.round)
+              : undefined,
+          again:
+            test.kind === 'from' ? blocksFrom(automation, test.blockId) : new Set([test.blockId]),
+        };
+  /** Where the run starts: the top, or for a test, the frame of the tested block. */
+  const first = ((): Frame => {
+    if (tested === undefined) return newFrame();
+    const found = baseFrame(automation, tested.base, {
+      kind: tested.kind,
+      blockId: tested.blockId,
+      round: tested.round,
+      runFolder,
+    });
+    if ('blocker' in found) throw new Error(`The test cannot start: ${found.blocker.code}`);
+    return found;
+  })();
+  const testRecord: AutomationRunTest | undefined =
+    tested === undefined
+      ? undefined
+      : {
+          kind: tested.kind,
+          blockId: tested.blockId,
+          ...(tested.round === undefined ? {} : { round: tested.round }),
+          ...(tested.base === undefined ? {} : { baseRunId: tested.base.runId }),
+        };
+  let top = first;
+  while (top.parent !== undefined) top = top.parent;
 
   const blocks = new Map(automation.blocks.map((block) => [block.id, block]));
-  // Blocks inside loops get a step per round, as their rounds come.
-  const steps = new Map<string, StepView>(
-    automation.blocks
-      .filter((block) => !('loop' in block) || block.loop === undefined)
-      .map(({ id, type }) => [id, { id, type, state: 'idle' }]),
-  );
+  /** Whether a step is one a test runs again, rather than one it reuses. */
+  const runsAgain = (id: string, round: string | undefined): boolean =>
+    tested === undefined ||
+    (tested.kind === 'from'
+      ? tested.again.has(id)
+      : id === tested.blockId && round === tested.round);
+  // Blocks inside loops get a step per round, as their rounds come. A test starts with the steps it
+  // reuses.
+  const steps = new Map<string, StepView>([
+    ...(tested?.base?.steps ?? [])
+      .filter((step) => !runsAgain(step.id, step.round))
+      .map((step): [string, StepView] => [
+        stepKey(step.id, step.round),
+        { ...step, type: blocks.get(step.id)?.type ?? '', reused: true },
+      ]),
+    ...automation.blocks
+      .filter((block) =>
+        tested === undefined
+          ? !('loop' in block) || block.loop === undefined
+          : tested.kind === 'from'
+            ? tested.again.has(block.id) && (!('loop' in block) || block.loop === undefined)
+            : block.id === tested.blockId,
+      )
+      .map(({ id, type }): [string, StepView] => {
+        const round = tested?.kind === 'block' ? tested.round : undefined;
+        return [
+          stepKey(id, round),
+          { id, type, state: 'idle', ...(round === undefined ? {} : { round }) },
+        ];
+      }),
+  ]);
   /** Tools and profiles of every run block, which links read; filled when the run begins. */
   const tools = new Map<string, RegisteredTool>();
   const profiles = new Map<string, Profile>();
   /** JSON fields marked secret, by block, which a called run does not hand back. */
   const secretFields = new Map<string, ReadonlySet<string>>();
-  const runFolder = automationRunFolder(dataDir, workspaceId, automation.id, runId);
   const usesFolder = automation.blocks.some(
     (block) =>
       (block.type === 'run' &&
@@ -464,7 +468,9 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
   let status: AutomationRunView['status'] = 'running';
   let cancelledByUser = false;
   /** The connections the run followed, in order. */
-  const taken: TakenPath[] = [];
+  const taken: TakenPath[] = (tested?.base?.paths ?? []).filter(
+    ({ from, round }) => !runsAgain(from, round),
+  );
   /** What stopped the run: the first failure that nothing handled. */
   let stopped: AutomationFailure | undefined;
 
@@ -478,6 +484,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       steps: [...steps.values()],
       paths: [...taken],
       ...(options.caller === undefined ? {} : { caller: options.caller }),
+      ...(testRecord === undefined ? {} : { test: testRecord }),
     };
   }
 
@@ -548,121 +555,14 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       .map(({ to }) => to);
   }
 
-  /** The nearest frame, from `frame` outwards, where a block left something. */
-  function frameOf(frame: Frame, id: string, has: (at: Frame) => boolean): Frame | undefined {
-    for (let at: Frame | undefined = frame; at !== undefined; at = at.parent) {
-      if (has(at)) return at;
-    }
-    return undefined;
-  }
-
-  /** What a block left, a field of a JSON output included, read through called runs for `inner`. */
-  function outputValue(
-    frame: Frame,
-    block: string,
-    output: string,
-    field: string | undefined,
-    inner: readonly string[] = [],
-  ): RuntimeValue | undefined {
-    let left: ReadonlyMap<string, OutputValue> | undefined;
-    if (inner.length === 0) {
-      left = frameOf(frame, block, (at) => at.outputs.has(block))?.outputs.get(block);
-    } else {
-      let tree = frameOf(frame, block, (at) => at.calls.has(block))?.calls.get(block);
-      for (const id of inner.slice(0, -1)) tree = tree?.calls.get(id);
-      left = tree?.outputs.get(inner.at(-1) ?? '');
-    }
-    const value = left?.get(output);
-    return field === undefined ? value?.value : value?.fields?.get(field);
-  }
-
-  function resultOf(frame: Frame, id: string): BlockResult | undefined {
-    return frameOf(frame, id, (at) => at.results.has(id))?.results.get(id);
-  }
-
-  /** Replaces `{{...}}` references in a text value. A path is tidied once something replaced. */
-  function expandText(frame: Frame, value: string, isPath: boolean): string {
-    for (const { step, output, field } of findStepOutputReferences(value)) {
-      if (outputValue(frame, step, output, field) === undefined) {
-        const what = field === undefined ? output : `${output}.${field}`;
-        throw new MissingOutputError(
-          isDisabledBlock(automation, step)
-            ? `Step "${step}" is disabled, so it did not produce output "${what}"`
-            : `Step "${step}" did not produce output "${what}"`,
-        );
-      }
-    }
-    const replaced = replaceRunReferences(value, {
-      runFolder: () => runFolder,
-      stepOutput: ({ step, output, field }) =>
-        runtimeText(outputValue(frame, step, output, field) ?? ''),
-    });
-    return replaced !== value && isPath ? normalize(replaced) : replaced;
-  }
-
-  function valueContext(frame: Frame): RunValueContext {
-    return {
-      automation,
-      tools,
-      profiles,
-      inputs,
-      output: (block, output, field, inner) => outputValue(frame, block, output, field, inner),
-      result: (block) => resultOf(frame, block)?.result ?? 'skipped',
-      emptyOutput: (name) => {
-        // After a loop that ran no rounds, or whose rounds all left nothing, its body reads as empty
-        // lists.
-        const target = targetOf(name);
-        if (target.kind !== 'output') return undefined;
-        const around = new Set(roundsOf(frame).map(({ loop }) => loop));
-        return loopChain(automation.blocks, target.block).some((loop) => !around.has(loop))
-          ? []
-          : undefined;
-      },
-      rounds: roundsOf(frame),
-      runFolder,
-      pathVariables: variables,
-      expandText: (text, isPath) => expandText(frame, text, isPath),
-    };
-  }
-
-  /** Works out an expression. A missing output reads as a missing reference, as in text. */
-  function worked(frame: Frame, text: string, what: string): RuntimeValue {
-    try {
-      return evaluateInRun(valueContext(frame), text);
-    } catch (error) {
-      if (!(error instanceof ExpressionError)) throw error;
-      const disabled = targetsOf(text).find(
-        ({ target }) => target.kind === 'output' && isDisabledBlock(automation, target.block),
-      );
-      const reason =
-        error.code === 'name' && disabled?.target.kind === 'output'
-          ? `"${disabled.target.block}" is disabled, so it left no outputs`
-          : error.message;
-      const message = `${what}: ${reason}`;
-      throw error.code === 'name' ? new MissingOutputError(message) : new ValueError(message);
-    }
-  }
-
-  /** A value of a block, worked out or expanded, as text, a number or yes or no. */
-  function blockValue(
-    frame: Frame,
-    value: BlockValue,
-    kind: Parameters<typeof toParameterValue>[1],
-    label: string,
-  ): ParameterValue {
-    if (isExpressionValue(value)) {
-      const result = worked(frame, value.expression, label);
-      try {
-        return toParameterValue(result, kind, { start: 0, end: 0 });
-      } catch (error) {
-        if (!(error instanceof ExpressionError)) throw error;
-        throw new ValueError(`${label}: ${error.message}`);
-      }
-    }
-    return typeof value === 'string' && (kind === 'path' || kind === 'string')
-      ? expandText(frame, value, kind === 'path')
-      : value;
-  }
+  const { expandText, valueContext, worked, blockValue, resultOf } = frameValues({
+    automation,
+    tools,
+    profiles,
+    inputs,
+    runFolder,
+    pathVariables: variables,
+  });
 
   async function valuesFor(
     frame: Frame,
@@ -1106,6 +1006,8 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
         ...(frame.round === undefined ? {} : { round: frame.round.key }),
       });
     }
+    // Test block shows where the block leads, and goes no further.
+    if (tested?.kind === 'block') return;
     await Promise.all(next.map((to) => follow(to, frame, scope, region)));
   }
 
@@ -1123,7 +1025,8 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     if (outcome.status === 'completed') {
       return leave(id, 'next', frame, scope, region);
     }
-    if (targets(id, 'error').length > 0) {
+    // A tested block that failed is what the test is about, whatever its Error output does.
+    if (targets(id, 'error').length > 0 && tested?.kind !== 'block') {
       return leave(id, 'error', frame, scope, region);
     }
     unhandled(
@@ -1239,6 +1142,12 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       const found = await itemsOf(block, frame);
       if (!Array.isArray(found)) return finish(found as StepOutcome, []);
       items = found as readonly RuntimeValue[];
+      if (block.items.kind !== 'count') {
+        // Each round's item, while they fit, so that a test can repeat a round.
+        const texts = items.map((item) => runtimeText(item));
+        if (JSON.stringify(texts).length <= STEP_DATA_LIMIT)
+          setStep(block.id, frame, { items: texts });
+      }
     }
     const [body] = targets(block.id, BODY_OUTPUT);
     const most = items?.length ?? (block.type === 'while' ? block.maxRounds : 0);
@@ -1343,6 +1252,17 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     }
     switch (block.type) {
       case 'start':
+        // The inputs are kept with the Start block, so that a test can reuse them.
+        recordData(block.id, frame, {
+          values:
+            block.inputs?.flatMap((input) => {
+              const value = inputs.get(input.name);
+              return value === undefined
+                ? []
+                : [{ name: input.name, label: input.label ?? input.name, value }];
+            }) ?? [],
+          outputs: [],
+        });
         passThrough(block.id, frame);
         return leave(block.id, 'next', frame, scope, region);
       case 'run':
@@ -1382,11 +1302,13 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       case 'if': {
         const taken = await holds(frame, block.condition);
         passThrough(block.id, frame);
+        setStep(block.id, frame, { took: taken ? 'true' : 'false' });
         return leave(block.id, taken ? 'true' : 'false', frame, scope, region);
       }
       case 'switch': {
         const taken = await firstCase(frame, block);
         passThrough(block.id, frame);
+        setStep(block.id, frame, { took: taken });
         return leave(block.id, taken, frame, scope, region);
       }
       case 'parallel':
@@ -1451,6 +1373,8 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
         startedAt,
         steps: records(),
         caller: options.caller,
+        ...(testRecord === undefined ? {} : { test: testRecord }),
+        ...(tested?.base === undefined ? {} : { folderRunId: tested.base.folderRunId }),
       });
     });
     change();
@@ -1467,7 +1391,9 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     }
 
     const start = automation.blocks.find(({ type }) => type === 'start');
-    if (start !== undefined) {
+    if (tested !== undefined) {
+      await follow(tested.blockId, first, root, undefined);
+    } else if (start !== undefined) {
       await follow(start.id, top, root, undefined);
     }
 
@@ -1475,7 +1401,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     if (status === 'completed') {
       // What the run did not reach is on a path it did not take.
       for (const [key, step] of steps) {
-        if (step.state === 'idle') {
+        if (step.state === 'idle' && step.reused !== true) {
           steps.set(key, { ...step, state: 'skipped' });
         }
       }

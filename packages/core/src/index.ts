@@ -40,6 +40,7 @@ export type {
   AutomationCaller,
   AutomationFailure,
   AutomationRunSummary,
+  AutomationRunTest,
   AutomationStepRecord,
   AutomationTrigger,
   HistoryEntry,
@@ -89,12 +90,22 @@ export type {
   AutomationRun,
   AutomationRunOptions,
   AutomationRunView,
+  AutomationTest,
   ManualAnswer,
   ManualRequest,
   OutputTree,
   StepStarter,
   StepView,
 } from './automations/run-automation.js';
+export { latestBaseRun, planTest, readBaseRun } from './automations/test-run.js';
+export type {
+  BaseRun,
+  TestBlocker,
+  TestEnvironment,
+  TestField,
+  TestKind,
+  TestPlan,
+} from './automations/test-run.js';
 export { startToolRun } from './automations/tool-starter.js';
 export type { ToolStartRequest, ToolStarterContext } from './automations/tool-starter.js';
 export {

@@ -138,7 +138,7 @@ describe('RunHistory', () => {
 
     const untouched = new Connection(file);
     expect(untouched.pragma('user_version', { simple: true })).toBe(99);
-    untouched.pragma('user_version = 5');
+    untouched.pragma('user_version = 6');
     untouched.close();
     history = await RunHistory.open(dataDir);
   });
@@ -351,6 +351,11 @@ describe('RunHistory with several processes', () => {
     const old = new Connection(join(dataDir, 'history.db'));
     old.exec(
       `DROP INDEX automation_runs_by_caller;
+       ALTER TABLE automation_runs DROP COLUMN test_kind;
+       ALTER TABLE automation_runs DROP COLUMN test_block;
+       ALTER TABLE automation_runs DROP COLUMN test_round;
+       ALTER TABLE automation_runs DROP COLUMN base_run_id;
+       ALTER TABLE automation_runs DROP COLUMN folder_run_id;
        ALTER TABLE automation_runs DROP COLUMN caller_run_id;
        ALTER TABLE automation_runs DROP COLUMN caller_block;
        ALTER TABLE automation_runs DROP COLUMN caller_round;
@@ -426,6 +431,36 @@ describe('RunHistory with several processes', () => {
     expect(history.listAutomationRuns('work', 'flow').map(({ runId }) => runId)).toEqual([
       'c',
       'a',
+    ]);
+  });
+
+  it('keeps a test with its base run, and its folder while either is kept', () => {
+    const finish = (runId: string): void => {
+      history.finishAutomationRun(runId, {
+        status: 'completed',
+        durationMs: 1,
+        steps: [],
+        paths: [],
+      });
+    };
+    history.startAutomationRun({ ...automationRun, runId: 'base' });
+    finish('base');
+    history.startAutomationRun({
+      ...automationRun,
+      runId: 'test',
+      test: { kind: 'from', blockId: 'second', baseRunId: 'base' },
+      folderRunId: 'base',
+    });
+    finish('test');
+
+    expect(history.getAutomationRun('work', 'test')).toMatchObject({
+      test: { kind: 'from', blockId: 'second', baseRunId: 'base' },
+      folderRunId: 'base',
+    });
+    // The base run goes, but the test still writes to its folder.
+    expect(history.pruneAutomationRuns('work', 'flow', 1)).toEqual([]);
+    expect(history.pruneAutomationRuns('work', 'flow', 0)).toEqual([
+      { workspaceId: 'work', automationId: 'flow', runId: 'base' },
     ]);
   });
 
