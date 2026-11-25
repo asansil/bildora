@@ -16,12 +16,25 @@ export const CONTROL_KINDS = [
   'if',
   'switch',
   'parallel',
+  'join',
+  'for',
+  'while',
 ] as const;
+
+/** Another automation a Run automation block can call. */
+export interface CallableAutomation {
+  readonly id: string;
+  readonly name: string;
+}
 
 const CONTROLS = CONTROL_KINDS.map((kind) => ({ choice: { kind } satisfies AddChoice }));
 
 export interface BlockLibraryProps {
   readonly tools: readonly ToolView[];
+  /** The other automations of the Workspace, which a Run automation block can call. */
+  readonly automations: readonly CallableAutomation[];
+  /** Whether some Parallel has no Join yet, so that a Join can be added. */
+  readonly canJoin: boolean;
   /** Adds a block after the selected one, or a note beside it. */
   readonly onAdd: (choice: AddChoice) => void;
   /** Folds the panel down to a strip. */
@@ -32,11 +45,14 @@ function Item({
   choice,
   label,
   icon,
+  disabled,
   onAdd,
 }: {
   readonly choice: AddChoice;
   readonly label: string;
   readonly icon: ReactNode;
+  /** Why it cannot be added now, when it cannot. */
+  readonly disabled?: string | undefined;
   readonly onAdd: (choice: AddChoice) => void;
 }) {
   return (
@@ -44,7 +60,9 @@ function Item({
       <button
         type="button"
         className="library-item"
-        draggable
+        disabled={disabled !== undefined}
+        title={disabled}
+        draggable={disabled === undefined}
         data-testid="library-item"
         onDragStart={(event) => {
           event.dataTransfer.setData(LIBRARY_DRAG_TYPE, JSON.stringify(choice));
@@ -62,13 +80,24 @@ function Item({
 }
 
 /** What can be added: the Workspace's tools, then the blocks that steer the flow, then notes. */
-export function BlockLibrary({ tools, onAdd, onCollapse }: BlockLibraryProps) {
+export function BlockLibrary({
+  tools,
+  automations,
+  canJoin,
+  onAdd,
+  onCollapse,
+}: BlockLibraryProps) {
   const searchId = useId();
   const [filter, setFilter] = useState('');
   const shownTools = tools.filter(({ name }) => matches(name, filter));
   const shownControls = CONTROLS.filter(({ choice }) => matches(kindLabel(choice.kind), filter));
+  const shownAutomations = automations.filter(({ name }) => matches(name, filter));
   const showNote = matches(t('canvas.kindNote'), filter);
-  const nothing = shownTools.length === 0 && shownControls.length === 0 && !showNote;
+  const nothing =
+    shownTools.length === 0 &&
+    shownControls.length === 0 &&
+    shownAutomations.length === 0 &&
+    !showNote;
   return (
     <nav
       className="flow-side flow-library"
@@ -130,6 +159,29 @@ export function BlockLibrary({ tools, onAdd, onCollapse }: BlockLibraryProps) {
                 choice={choice}
                 label={kindLabel(choice.kind)}
                 icon={<BlockSwatch kind={choice.kind} />}
+                disabled={
+                  choice.kind === 'join' && !canJoin ? t('canvas.joinNeedsParallel') : undefined
+                }
+                onAdd={onAdd}
+              />
+            ))}
+          </ul>
+        </>
+      )}
+      {shownAutomations.length === 0 ? null : (
+        <>
+          <h2>{t('canvas.libraryAutomations')}</h2>
+          <ul className="library-list">
+            {shownAutomations.map((automation) => (
+              <Item
+                key={automation.id}
+                choice={{
+                  kind: 'run-automation',
+                  automation: automation.id,
+                  automationName: automation.name,
+                }}
+                label={automation.name}
+                icon={<BlockSwatch kind="run-automation" />}
                 onAdd={onAdd}
               />
             ))}

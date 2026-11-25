@@ -1,17 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import { access, mkdir } from 'node:fs/promises';
-import { normalize } from 'node:path';
+import { join, normalize } from 'node:path';
 import {
+  BODY_OUTPUT,
   DEFAULT_CASE,
   ExpressionError,
+  LOOP_ROUNDS_MAX,
   automationRuleIssues,
   connectionOutput,
   disabledOutput,
   expressionsOf,
   findStepOutputReferences,
   isExpressionValue,
+  loopChain,
   replaceRunReferences,
   runtimeText,
+  targetOf,
   targetsOf,
   toParameterValue,
   usesRunFolder,
@@ -21,13 +25,20 @@ import type {
   AutomationBlock,
   AutomationCondition,
   Automation,
+  BlockValue,
+  ForBlock,
   LiteralValue,
+  LoopBlock,
+  RunAutomationBlock,
   RunBlock,
   RuntimeValue,
+  WhileBlock,
 } from '@bildora/protocol';
 import type {
+  AutomationCaller,
   AutomationFailure,
   AutomationStepRecord,
+  StepValueRecord,
   TakenPath,
   AutomationTrigger,
   RunHistory,
@@ -41,10 +52,19 @@ import type { RunProgress } from '../runner/progress-lines.js';
 import type { RecordedToolRun } from '../runner/recorded-run.js';
 import { automationRunFolder } from '../storage/data-directory.js';
 import { DEFAULT_PREFERENCES, readPreferences } from '../storage/preferences.js';
-import { resolveInputs } from './automation-inputs.js';
+import { InputError, resolveInputs } from './automation-inputs.js';
 import { removeRunFolders } from './automation-store.js';
-import { evaluateInRun, isDisabledBlock, parametersOf } from './automation-values.js';
-import type { OutputValue, RunValueContext } from './automation-values.js';
+import {
+  emptyValueOf,
+  evaluateInRun,
+  insideLoop,
+  isDisabledBlock,
+  parametersOf,
+} from './automation-values.js';
+import type { LoopRound, OutputValue, RunValueContext } from './automation-values.js';
+import { leafTree } from './call-tree.js';
+import type { CallTree } from './call-tree.js';
+import { TooManyItemsError, folderItems } from './folder-items.js';
 import { limitStepData, stepOutputs, stepValues } from './step-data.js';
 import { OutputError, readToolOutputs, secretOutputFields } from './tool-outputs.js';
 
@@ -77,6 +97,8 @@ export type ManualAnswer = 'confirmed' | 'no-user' | 'cancelled';
 
 export interface ManualRequest {
   readonly stepId: string;
+  /** The round of a step inside a loop. */
+  readonly round?: string;
   readonly message: string;
   /** Aborts when the run is cancelled, which must settle the answer. */
   readonly signal: AbortSignal;
@@ -91,6 +113,18 @@ export interface AutomationRunOptions {
    * not fit make `startAutomationRun` throw an `InputError` before anything runs.
    */
   readonly inputs?: Readonly<Record<string, LiteralValue>> | undefined;
+  /**
+   * The automations it can call, read with `readCallTree` when the run starts. A Run automation
+   * block whose call is not in it fails.
+   */
+  readonly calls?: CallTree | undefined;
+  /** Set when a Run automation block of another run started this one. */
+  readonly caller?: AutomationCaller | undefined;
+  /**
+   * Starts a called run. Clients pass their own to follow called runs as they follow any other;
+   * `startAutomationRun` is used when they do not.
+   */
+  readonly startCalled?: ((options: AutomationRunOptions) => AutomationRun) | undefined;
   readonly dataDir: string;
   readonly history: RunHistory;
   readonly startStep: StepStarter;
@@ -121,9 +155,20 @@ export interface AutomationRunView {
   readonly automationId: string;
   readonly automationName: string;
   readonly status: 'running' | 'completed' | 'failed' | 'cancelled';
+  /** One per block outside loops, and one per round for blocks inside them. */
   readonly steps: readonly StepView[];
   /** The connections followed so far. */
   readonly paths: readonly TakenPath[];
+  readonly caller?: AutomationCaller;
+}
+
+/**
+ * What a run's blocks left, handed back to the run that called it. A called run's own calls are
+ * under the Run automation blocks that made them. Secret fields are left out.
+ */
+export interface OutputTree {
+  readonly outputs: ReadonlyMap<string, ReadonlyMap<string, OutputValue>>;
+  readonly calls: ReadonlyMap<string, OutputTree>;
 }
 
 export interface AutomationResult {
@@ -132,15 +177,17 @@ export interface AutomationResult {
   readonly durationMs: number;
   /** What stopped the run. */
   readonly failure?: AutomationFailure;
-  /** Every block that failed, those an Error output handled included. */
+  /** Every block that failed, those an Error output handled included, each once. */
   readonly failedSteps: readonly string[];
+  /** What its blocks left, for a run that called this one. */
+  readonly outputs: OutputTree;
 }
 
 export interface AutomationRun {
   readonly runId: string;
   /** Settles when every step has ended. It never rejects. */
   readonly result: Promise<AutomationResult>;
-  /** Stops the run, with every tool it started. */
+  /** Stops the run, with every tool and called run it started. */
   cancel(): void;
   view(): AutomationRunView;
 }
@@ -171,10 +218,11 @@ function waitFor(milliseconds: number, signal: AbortSignal): Promise<void> {
 
 /** A step without what only matters while it is going on. */
 function recordOf(step: StepView): AutomationStepRecord {
-  const { id, state, startedAt, toolRunId, toolRunIds, attempt, durationMs, failure } = step;
-  const { values, outputs, truncated } = step;
+  const { id, round, state, startedAt, toolRunId, toolRunIds, attempt, durationMs, failure } = step;
+  const { values, outputs, truncated, rounds, calledRunId } = step;
   return {
     id,
+    ...(round === undefined ? {} : { round }),
     state,
     ...(startedAt === undefined ? {} : { startedAt }),
     ...(toolRunId === undefined ? {} : { toolRunId }),
@@ -185,6 +233,8 @@ function recordOf(step: StepView): AutomationStepRecord {
     ...(values === undefined ? {} : { values }),
     ...(outputs === undefined ? {} : { outputs }),
     ...(truncated === undefined ? {} : { truncated }),
+    ...(rounds === undefined ? {} : { rounds }),
+    ...(calledRunId === undefined ? {} : { calledRunId }),
   };
 }
 
@@ -198,16 +248,22 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+/** Something a scope can stop: a tool run or a called automation run. */
+interface Stoppable {
+  cancel(): void;
+}
+
 /** Where a path of blocks runs, so that a Parallel can end its branches without ending the rest. */
 interface Scope {
   readonly controller: AbortController;
-  readonly live: Set<RecordedToolRun>;
+  readonly live: Set<Stoppable>;
   readonly children: Set<Scope>;
 }
 
-/** The branches of one Parallel, up to its Join. */
+/** The branches of one Parallel up to its Join, or one round of a loop. */
 interface Region {
-  readonly join: string;
+  /** The Join that ends the branches. A round has none. */
+  readonly join?: string;
   readonly scope: Scope;
   readonly onBranchFailure: 'stop-others' | 'let-finish';
   /** The first failure no Error output handled. */
@@ -217,6 +273,40 @@ interface Region {
 interface BlockResult {
   readonly result: 'completed' | 'failed';
   readonly exitCode?: number | undefined;
+}
+
+/**
+ * What one stretch of the run holds: the run outside loops, or one round of a loop. A round sees
+ * what the frames around it hold, and only its own round of the blocks in its body.
+ */
+interface Frame {
+  readonly parent?: Frame;
+  readonly round?: LoopRound & { readonly key: string };
+  readonly outputs: Map<string, ReadonlyMap<string, OutputValue>>;
+  readonly calls: Map<string, OutputTree>;
+  readonly results: Map<string, BlockResult>;
+  /** A block reached from several paths still runs once in a frame. */
+  readonly reached: Set<string>;
+}
+
+function newFrame(parent?: Frame, round?: LoopRound & { readonly key: string }): Frame {
+  return {
+    ...(parent === undefined ? {} : { parent }),
+    ...(round === undefined ? {} : { round }),
+    outputs: new Map(),
+    calls: new Map(),
+    results: new Map(),
+    reached: new Set(),
+  };
+}
+
+/** The rounds of the loops around a frame, nearest first. */
+function roundsOf(frame: Frame): LoopRound[] {
+  const rounds: LoopRound[] = [];
+  for (let at: Frame | undefined = frame; at !== undefined; at = at.parent) {
+    if (at.round !== undefined) rounds.push(at.round);
+  }
+  return rounds;
 }
 
 function newScope(parent?: Scope): Scope {
@@ -238,7 +328,17 @@ function newScope(parent?: Scope): Scope {
   return scope;
 }
 
-/** Ends the tools of a scope and of the scopes inside it. */
+/** Whether a scope was stopped. A function, so that a check after a wait reads it afresh. */
+function isAborted(scope: Scope): boolean {
+  return scope.controller.signal.aborted;
+}
+
+/** The first failure a region met, read afresh after a wait. */
+function failureOf(region: Region): AutomationFailure | undefined {
+  return region.failure;
+}
+
+/** Ends the tools and called runs of a scope and of the scopes inside it. */
 function cancelScope(scope: Scope): void {
   scope.controller.abort();
   for (const run of scope.live) {
@@ -247,6 +347,70 @@ function cancelScope(scope: Scope): void {
   for (const child of scope.children) {
     cancelScope(child);
   }
+}
+
+/**
+ * One value per round of a loop for one output or field, as a list of text. A round that left
+ * nothing gives an empty text, so positions match rounds; lists from loops inside are joined flat.
+ */
+function gatherValues(values: readonly (RuntimeValue | undefined)[]): readonly string[] {
+  const flat = values.some((value) => Array.isArray(value));
+  return values.flatMap((value): string[] => {
+    if (Array.isArray(value)) return [...(value as readonly string[])];
+    if (value === undefined) return flat ? [] : [''];
+    return [runtimeText(value)];
+  });
+}
+
+/** What a block left in each round, as one list per output and per field. */
+function gatherOutputs(
+  rounds: readonly (ReadonlyMap<string, OutputValue> | undefined)[],
+): ReadonlyMap<string, OutputValue> {
+  const names = new Set(rounds.flatMap((outputs) => [...(outputs?.keys() ?? [])]));
+  const gathered = new Map<string, OutputValue>();
+  for (const name of names) {
+    const each = rounds.map((outputs) => outputs?.get(name));
+    const fields = new Set(each.flatMap((output) => [...(output?.fields?.keys() ?? [])]));
+    gathered.set(name, {
+      value: gatherValues(each.map((output) => output?.value)),
+      ...(fields.size === 0
+        ? {}
+        : {
+            fields: new Map(
+              [...fields].map((field) => [
+                field,
+                gatherValues(each.map((output) => output?.fields?.get(field))),
+              ]),
+            ),
+          }),
+    });
+  }
+  return gathered;
+}
+
+/** What blocks left in each round, gathered into lists, called runs included. */
+function gatherTrees(rounds: readonly (OutputTree | undefined)[]): OutputTree {
+  const ids = new Set(rounds.flatMap((tree) => [...(tree?.outputs.keys() ?? [])]));
+  const calls = new Set(rounds.flatMap((tree) => [...(tree?.calls.keys() ?? [])]));
+  return {
+    outputs: new Map(
+      [...ids].map((id) => [id, gatherOutputs(rounds.map((tree) => tree?.outputs.get(id)))]),
+    ),
+    calls: new Map(
+      [...calls].map((id) => [id, gatherTrees(rounds.map((tree) => tree?.calls.get(id)))]),
+    ),
+  };
+}
+
+/** A key for a step, which a block inside a loop has once per round. */
+function stepKey(id: string, round: string | undefined): string {
+  return round === undefined ? id : `${id}\u0000${round}`;
+}
+
+/** The round path of a new round: `<loop>:<index>` after the rounds of the loops around it. */
+function roundKey(frame: Frame, loop: string, index: number): string {
+  const own = `${loop}:${String(index)}`;
+  return frame.round === undefined ? own : `${frame.round.key}/${own}`;
 }
 
 /**
@@ -263,20 +427,26 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     throw new Error(`The automation cannot run: ${broken.message}`);
   }
   const inputs = resolveInputs(automation, options.inputs);
+  const callTree = options.calls ?? leafTree(automation);
   const variables: PathVariables = pathVariables ?? new Map<string, string>();
   const delay = options.delay ?? waitFor;
   const runId = options.runId ?? randomUUID();
   const startedAt = Date.now();
   const root = newScope();
+  const top = newFrame();
 
   const blocks = new Map(automation.blocks.map((block) => [block.id, block]));
+  // Blocks inside loops get a step per round, as their rounds come.
   const steps = new Map<string, StepView>(
-    automation.blocks.map(({ id, type }) => [id, { id, type, state: 'idle' }]),
+    automation.blocks
+      .filter((block) => !('loop' in block) || block.loop === undefined)
+      .map(({ id, type }) => [id, { id, type, state: 'idle' }]),
   );
-  const outputs = new Map<string, ReadonlyMap<string, OutputValue>>();
   /** Tools and profiles of every run block, which links read; filled when the run begins. */
   const tools = new Map<string, RegisteredTool>();
   const profiles = new Map<string, Profile>();
+  /** JSON fields marked secret, by block, which a called run does not hand back. */
+  const secretFields = new Map<string, ReadonlySet<string>>();
   const runFolder = automationRunFolder(dataDir, workspaceId, automation.id, runId);
   const usesFolder = automation.blocks.some(
     (block) =>
@@ -285,12 +455,12 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
           (value) => typeof value === 'string' && usesRunFolder(value),
         )) ||
       expressionsOf([block]).some(({ expression }) =>
-        targetsOf(expression).some(({ target }) => target.kind === 'run-folder'),
+        targetsOf(expression).some(
+          ({ target }) =>
+            target.kind === 'run-folder' || (target.kind === 'loop' && target.value === 'folder'),
+        ),
       ),
   );
-  const results = new Map<string, BlockResult>();
-  /** A block reached from several paths still runs once. */
-  const reached = new Set<string>();
   let status: AutomationRunView['status'] = 'running';
   let cancelledByUser = false;
   /** The connections the run followed, in order. */
@@ -307,6 +477,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       status,
       steps: [...steps.values()],
       paths: [...taken],
+      ...(options.caller === undefined ? {} : { caller: options.caller }),
     };
   }
 
@@ -326,20 +497,29 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     options.onChange?.(view());
   }
 
-  function stepView(id: string): StepView {
-    return steps.get(id) ?? { id, type: blocks.get(id)?.type ?? '', state: 'idle' };
+  function stepView(id: string, frame: Frame): StepView {
+    const round = frame.round?.key;
+    return (
+      steps.get(stepKey(id, round)) ?? {
+        id,
+        ...(round === undefined ? {} : { round }),
+        type: blocks.get(id)?.type ?? '',
+        state: 'idle',
+      }
+    );
   }
 
-  function setStep(id: string, changes: Partial<StepView>): void {
-    steps.set(id, { ...stepView(id), ...changes });
+  function setStep(id: string, frame: Frame, changes: Partial<StepView>): void {
+    steps.set(stepKey(id, frame.round?.key), { ...stepView(id, frame), ...changes });
     change();
   }
 
   /** Settles a block and stores it, so that another process can follow the run. */
-  function finishStep(id: string, outcome: StepOutcome, startedStep: number): void {
-    steps.set(id, {
-      ...recordOf(stepView(id)),
-      type: stepView(id).type,
+  function finishStep(id: string, frame: Frame, outcome: StepOutcome, startedStep: number): void {
+    const current = stepView(id, frame);
+    steps.set(stepKey(id, frame.round?.key), {
+      ...recordOf(current),
+      type: current.type,
       state: outcome.status,
       durationMs: performance.now() - startedStep,
       ...(outcome.status === 'failed' ? { failure: outcome.failure } : {}),
@@ -351,15 +531,15 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
   }
 
   /** Notes when the run reached a block. The change that follows reports it. */
-  function reach(id: string): void {
-    reached.add(id);
-    steps.set(id, { ...stepView(id), startedAt: Date.now() });
+  function reach(id: string, frame: Frame): void {
+    frame.reached.add(id);
+    steps.set(stepKey(id, frame.round?.key), { ...stepView(id, frame), startedAt: Date.now() });
   }
 
   /** A block that does nothing but direct the run, which is over as soon as it is reached. */
-  function passThrough(id: string): void {
-    results.set(id, { result: 'completed' });
-    setStep(id, { state: 'completed' });
+  function passThrough(id: string, frame: Frame): void {
+    frame.results.set(id, { result: 'completed' });
+    setStep(id, frame, { state: 'completed' });
   }
 
   function targets(id: string, output: string): string[] {
@@ -368,16 +548,42 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       .map(({ to }) => to);
   }
 
-  /** What an earlier block left, a field of a JSON output included. */
-  function outputValue(step: string, output: string, field?: string): RuntimeValue | undefined {
-    const left = outputs.get(step)?.get(output);
-    return field === undefined ? left?.value : left?.fields?.get(field);
+  /** The nearest frame, from `frame` outwards, where a block left something. */
+  function frameOf(frame: Frame, id: string, has: (at: Frame) => boolean): Frame | undefined {
+    for (let at: Frame | undefined = frame; at !== undefined; at = at.parent) {
+      if (has(at)) return at;
+    }
+    return undefined;
+  }
+
+  /** What a block left, a field of a JSON output included, read through called runs for `inner`. */
+  function outputValue(
+    frame: Frame,
+    block: string,
+    output: string,
+    field: string | undefined,
+    inner: readonly string[] = [],
+  ): RuntimeValue | undefined {
+    let left: ReadonlyMap<string, OutputValue> | undefined;
+    if (inner.length === 0) {
+      left = frameOf(frame, block, (at) => at.outputs.has(block))?.outputs.get(block);
+    } else {
+      let tree = frameOf(frame, block, (at) => at.calls.has(block))?.calls.get(block);
+      for (const id of inner.slice(0, -1)) tree = tree?.calls.get(id);
+      left = tree?.outputs.get(inner.at(-1) ?? '');
+    }
+    const value = left?.get(output);
+    return field === undefined ? value?.value : value?.fields?.get(field);
+  }
+
+  function resultOf(frame: Frame, id: string): BlockResult | undefined {
+    return frameOf(frame, id, (at) => at.results.has(id))?.results.get(id);
   }
 
   /** Replaces `{{...}}` references in a text value. A path is tidied once something replaced. */
-  function expandText(value: string, isPath: boolean): string {
+  function expandText(frame: Frame, value: string, isPath: boolean): string {
     for (const { step, output, field } of findStepOutputReferences(value)) {
-      if (outputValue(step, output, field) === undefined) {
+      if (outputValue(frame, step, output, field) === undefined) {
         const what = field === undefined ? output : `${output}.${field}`;
         throw new MissingOutputError(
           isDisabledBlock(automation, step)
@@ -388,28 +594,41 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     }
     const replaced = replaceRunReferences(value, {
       runFolder: () => runFolder,
-      stepOutput: ({ step, output, field }) => runtimeText(outputValue(step, output, field) ?? ''),
+      stepOutput: ({ step, output, field }) =>
+        runtimeText(outputValue(frame, step, output, field) ?? ''),
     });
     return replaced !== value && isPath ? normalize(replaced) : replaced;
   }
 
-  function valueContext(): RunValueContext {
+  function valueContext(frame: Frame): RunValueContext {
     return {
       automation,
       tools,
       profiles,
       inputs,
-      outputs,
+      output: (block, output, field, inner) => outputValue(frame, block, output, field, inner),
+      result: (block) => resultOf(frame, block)?.result ?? 'skipped',
+      emptyOutput: (name) => {
+        // After a loop that ran no rounds, or whose rounds all left nothing, its body reads as empty
+        // lists.
+        const target = targetOf(name);
+        if (target.kind !== 'output') return undefined;
+        const around = new Set(roundsOf(frame).map(({ loop }) => loop));
+        return loopChain(automation.blocks, target.block).some((loop) => !around.has(loop))
+          ? []
+          : undefined;
+      },
+      rounds: roundsOf(frame),
       runFolder,
       pathVariables: variables,
-      expandText,
+      expandText: (text, isPath) => expandText(frame, text, isPath),
     };
   }
 
   /** Works out an expression. A missing output reads as a missing reference, as in text. */
-  function worked(text: string, what: string): RuntimeValue {
+  function worked(frame: Frame, text: string, what: string): RuntimeValue {
     try {
-      return evaluateInRun(valueContext(), text);
+      return evaluateInRun(valueContext(frame), text);
     } catch (error) {
       if (!(error instanceof ExpressionError)) throw error;
       const disabled = targetsOf(text).find(
@@ -424,7 +643,32 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     }
   }
 
-  async function valuesFor(step: RunBlock, tool: RegisteredTool): Promise<ParameterValues> {
+  /** A value of a block, worked out or expanded, as text, a number or yes or no. */
+  function blockValue(
+    frame: Frame,
+    value: BlockValue,
+    kind: Parameters<typeof toParameterValue>[1],
+    label: string,
+  ): ParameterValue {
+    if (isExpressionValue(value)) {
+      const result = worked(frame, value.expression, label);
+      try {
+        return toParameterValue(result, kind, { start: 0, end: 0 });
+      } catch (error) {
+        if (!(error instanceof ExpressionError)) throw error;
+        throw new ValueError(`${label}: ${error.message}`);
+      }
+    }
+    return typeof value === 'string' && (kind === 'path' || kind === 'string')
+      ? expandText(frame, value, kind === 'path')
+      : value;
+  }
+
+  async function valuesFor(
+    frame: Frame,
+    step: RunBlock,
+    tool: RegisteredTool,
+  ): Promise<ParameterValues> {
     if (usesFolder) {
       await mkdir(runFolder, { recursive: true });
     }
@@ -435,37 +679,33 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       if (isExpressionValue(value)) {
         // The check before the run reports a parameter the tool does not have.
         if (parameter === undefined) continue;
-        const result = worked(value.expression, parameter.label);
-        try {
-          values[name] = toParameterValue(result, parameter.type, { start: 0, end: 0 });
-        } catch (error) {
-          if (!(error instanceof ExpressionError)) throw error;
-          throw new ValueError(`${parameter.label}: ${error.message}`);
-        }
+        values[name] = blockValue(frame, value, parameter.type, parameter.label);
         continue;
       }
       const isText = parameter?.type === 'path' || parameter?.type === 'string';
       values[name] =
-        isText && typeof value === 'string' ? expandText(value, parameter.type === 'path') : value;
+        isText && typeof value === 'string'
+          ? expandText(frame, value, parameter.type === 'path')
+          : value;
     }
     return values;
   }
 
   /** Keeps what a block received and produced on its step, within the limit history allows. */
-  function recordData(id: string, data: Pick<StepView, 'values' | 'outputs'>): void {
-    const current = stepView(id);
+  function recordData(id: string, frame: Frame, data: Pick<StepView, 'values' | 'outputs'>): void {
+    const current = stepView(id, frame);
     const limited = limitStepData(
       data.values ?? current.values ?? [],
       data.outputs ?? current.outputs ?? [],
     );
-    setStep(id, {
+    setStep(id, frame, {
       values: limited.values,
       outputs: limited.outputs,
       ...(limited.truncated === undefined ? {} : { truncated: limited.truncated }),
     });
   }
 
-  async function runOnce(step: RunBlock, scope: Scope): Promise<StepOutcome> {
+  async function runOnce(step: RunBlock, frame: Frame, scope: Scope): Promise<StepOutcome> {
     const isCancelled = (): boolean => scope.controller.signal.aborted;
     let tool: RegisteredTool | undefined;
     try {
@@ -478,7 +718,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     }
     let values: ParameterValues;
     try {
-      values = await valuesFor(step, tool);
+      values = await valuesFor(frame, step, tool);
     } catch (error) {
       if (error instanceof MissingOutputError) return failed('reference', error.message);
       if (error instanceof ValueError) return failed('value', error.message);
@@ -496,18 +736,18 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
         values,
         answerWithScript: true,
         onProgress: (progress) => {
-          setStep(step.id, { progress });
+          setStep(step.id, frame, { progress });
         },
       });
     } catch (error) {
       return failed('not-started', error instanceof Error ? error.message : String(error));
     }
     scope.live.add(run);
-    setStep(step.id, {
+    setStep(step.id, frame, {
       toolRunId: run.runId,
-      toolRunIds: [...(stepView(step.id).toolRunIds ?? []), run.runId],
+      toolRunIds: [...(stepView(step.id, frame).toolRunIds ?? []), run.runId],
     });
-    recordData(step.id, { values: stepValues(step, run.parameters), outputs: [] });
+    recordData(step.id, frame, { values: stepValues(step, run.parameters), outputs: [] });
     if (isCancelled()) {
       run.cancel();
     }
@@ -520,32 +760,38 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       } catch (error) {
         if (!(error instanceof OutputError)) throw error;
         // The tool ended well, but what it left cannot be used, so the block fails.
-        results.set(step.id, { result: 'failed', exitCode: 0 });
+        frame.results.set(step.id, { result: 'failed', exitCode: 0 });
         return failed('output', error.message);
       }
-      outputs.set(step.id, left);
-      recordData(step.id, { outputs: stepOutputs(left, secretOutputFields(tool)) });
-      results.set(step.id, { result: 'completed', exitCode: 0 });
+      frame.outputs.set(step.id, left);
+      secretFields.set(step.id, secretOutputFields(tool));
+      recordData(step.id, frame, { outputs: stepOutputs(left, secretOutputFields(tool)) });
+      frame.results.set(step.id, { result: 'completed', exitCode: 0 });
       return { status: 'completed' };
     }
     if (result.status === 'failed') {
-      results.set(step.id, { result: 'failed', exitCode: result.exitCode });
+      frame.results.set(step.id, { result: 'failed', exitCode: result.exitCode });
     }
     return result.status === 'cancelled'
       ? { status: 'cancelled' }
       : { status: 'failed', failure: result.failure };
   }
 
-  /** Runs a tool block to its end, retrying as it says. */
-  async function runTool(step: RunBlock, scope: Scope): Promise<StepOutcome> {
+  /** Runs a block that can retry to its end, retrying as it says. */
+  async function withRetries(
+    block: RunBlock | RunAutomationBlock,
+    frame: Frame,
+    scope: Scope,
+    once: () => Promise<StepOutcome>,
+  ): Promise<StepOutcome> {
     const isCancelled = (): boolean => scope.controller.signal.aborted;
     const startedStep = performance.now();
-    const retry = typeof step.onFailure === 'object' ? step.onFailure.retry : undefined;
+    const retry = typeof block.onFailure === 'object' ? block.onFailure.retry : undefined;
     const attempts = retry?.attempts ?? 1;
     let outcome: StepOutcome = { status: 'cancelled' };
     for (let attempt = 1; attempt <= attempts && !isCancelled(); attempt += 1) {
-      setStep(step.id, { state: 'running', ...(retry === undefined ? {} : { attempt }) });
-      outcome = await runOnce(step, scope);
+      setStep(block.id, frame, { state: 'running', ...(retry === undefined ? {} : { attempt }) });
+      outcome = await once();
       if (outcome.status !== 'failed') {
         break;
       }
@@ -555,18 +801,146 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       }
     }
     if (outcome.status === 'failed') {
-      results.set(step.id, { result: 'failed', exitCode: results.get(step.id)?.exitCode });
+      frame.results.set(block.id, {
+        result: 'failed',
+        exitCode: frame.results.get(block.id)?.exitCode,
+      });
     }
-    finishStep(step.id, outcome, startedStep);
+    finishStep(block.id, frame, outcome, startedStep);
     return outcome;
   }
 
-  async function waitForAction(id: string, message: string, scope: Scope): Promise<StepOutcome> {
-    setStep(id, { message });
+  /** What a called run hands back: its outputs without the fields marked secret. */
+  function handedBack(frame: Frame): OutputTree {
+    return {
+      outputs: new Map(
+        [...frame.outputs].map(([id, left]) => {
+          const secret = secretFields.get(id);
+          if (secret === undefined || secret.size === 0) return [id, left];
+          return [
+            id,
+            new Map(
+              [...left].map(([name, output]) => [
+                name,
+                {
+                  value: output.value,
+                  ...(output.fields === undefined
+                    ? {}
+                    : {
+                        fields: new Map(
+                          [...output.fields].filter(([field]) => !secret.has(`${name}.${field}`)),
+                        ),
+                      }),
+                },
+              ]),
+            ),
+          ];
+        }),
+      ),
+      calls: frame.calls,
+    };
+  }
+
+  /** Runs the automation a Run automation block calls, once, and keeps what it hands back. */
+  async function callOnce(
+    block: RunAutomationBlock,
+    frame: Frame,
+    scope: Scope,
+  ): Promise<StepOutcome> {
+    const called = callTree.calls.get(block.id);
+    if (called === undefined) {
+      return failed(
+        'automation-missing',
+        `Automation "${block.automation}" does not exist in this Workspace, or cannot be read`,
+      );
+    }
+    const start = called.automation.blocks.find(({ type }) => type === 'start');
+    const declared = start?.type === 'start' ? (start.inputs ?? []) : [];
+    const given: Record<string, LiteralValue> = {};
+    const recorded: StepValueRecord[] = [];
+    try {
+      for (const [name, value] of Object.entries(block.inputs ?? {})) {
+        const input = declared.find((candidate) => candidate.name === name);
+        if (input === undefined) continue;
+        const label = input.label ?? input.name;
+        given[name] = blockValue(frame, value, input.type, label);
+        recorded.push({
+          name,
+          label,
+          value: given[name],
+          ...(isExpressionValue(value) ? { from: value.expression } : {}),
+        });
+      }
+    } catch (error) {
+      if (error instanceof MissingOutputError) return failed('reference', error.message);
+      if (error instanceof ValueError) return failed('value', error.message);
+      throw error;
+    }
+    recordData(block.id, frame, { values: recorded, outputs: [] });
+    if (scope.controller.signal.aborted) return { status: 'cancelled' };
+    let child: AutomationRun;
+    try {
+      child = (options.startCalled ?? startAutomationRun)({
+        automation: called.automation,
+        workspaceId,
+        trigger,
+        inputs: given,
+        calls: called,
+        caller: {
+          runId,
+          blockId: block.id,
+          ...(frame.round === undefined ? {} : { round: frame.round.key }),
+        },
+        startCalled: options.startCalled,
+        dataDir,
+        history,
+        startStep: options.startStep,
+        findTool: options.findTool,
+        pathVariables: options.pathVariables,
+        askForAction: options.askForAction,
+        delay: options.delay,
+      });
+    } catch (error) {
+      if (error instanceof InputError) return failed('value', error.message);
+      return failed('not-started', error instanceof Error ? error.message : String(error));
+    }
+    scope.live.add(child);
+    setStep(block.id, frame, { calledRunId: child.runId });
+    const result = await child.result;
+    scope.live.delete(child);
+    if (result.status === 'cancelled') {
+      // Cancelling a called run cancels the run that called it, as the other way round.
+      if (!isAborted(scope)) {
+        cancelledByUser = true;
+        cancelScope(root);
+      }
+      return { status: 'cancelled' };
+    }
+    if (result.status === 'failed') {
+      const reason = result.failure?.message ?? 'it failed';
+      return failed('called-run', `"${called.automation.name}" failed: ${reason}`);
+    }
+    frame.calls.set(block.id, result.outputs);
+    frame.results.set(block.id, { result: 'completed' });
+    return { status: 'completed' };
+  }
+
+  async function waitForAction(
+    id: string,
+    frame: Frame,
+    message: string,
+    scope: Scope,
+  ): Promise<StepOutcome> {
+    setStep(id, frame, { message });
     const answer =
       options.askForAction === undefined
         ? 'no-user'
-        : await options.askForAction({ stepId: id, message, signal: scope.controller.signal });
+        : await options.askForAction({
+            stepId: id,
+            ...(frame.round === undefined ? {} : { round: frame.round.key }),
+            message,
+            signal: scope.controller.signal,
+          });
     switch (answer) {
       case 'confirmed':
         return { status: 'completed' };
@@ -577,27 +951,36 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     }
   }
 
-  async function waitForTime(id: string, seconds: number, scope: Scope): Promise<StepOutcome> {
+  async function waitForTime(
+    id: string,
+    frame: Frame,
+    seconds: number,
+    scope: Scope,
+  ): Promise<StepOutcome> {
     const milliseconds = seconds * MS_PER_SECOND;
-    setStep(id, { resumesAt: Date.now() + milliseconds });
+    setStep(id, frame, { resumesAt: Date.now() + milliseconds });
     await delay(milliseconds, scope.controller.signal);
     return scope.controller.signal.aborted ? { status: 'cancelled' } : { status: 'completed' };
   }
 
-  async function runWait(id: string, wait: () => Promise<StepOutcome>): Promise<StepOutcome> {
+  async function runWait(
+    id: string,
+    frame: Frame,
+    wait: () => Promise<StepOutcome>,
+  ): Promise<StepOutcome> {
     const startedStep = performance.now();
-    setStep(id, { state: 'running' });
+    setStep(id, frame, { state: 'running' });
     const outcome = await wait();
     if (outcome.status === 'completed') {
-      results.set(id, { result: 'completed' });
+      frame.results.set(id, { result: 'completed' });
     } else if (outcome.status === 'failed') {
-      results.set(id, { result: 'failed' });
+      frame.results.set(id, { result: 'failed' });
     }
-    finishStep(id, outcome, startedStep);
+    finishStep(id, frame, outcome, startedStep);
     return outcome;
   }
 
-  /** A failure nothing handled: it ends the branches of its Parallel, or the whole run. */
+  /** A failure nothing handled: it ends its round, the branches of its Parallel, or the run. */
   function unhandled(failure: AutomationFailure, region: Region | undefined): void {
     if (region === undefined) {
       stopped ??= failure;
@@ -611,9 +994,9 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
   }
 
   /** Works out a value a rule reads. One that cannot be worked out fails the block. */
-  function ruleValue(text: string): RuntimeValue {
+  function ruleValue(frame: Frame, text: string): RuntimeValue {
     try {
-      return worked(text, 'A rule');
+      return worked(frame, text, 'A rule');
     } catch (error) {
       if (error instanceof MissingOutputError || error instanceof ValueError) {
         throw new ConditionError(error.message);
@@ -622,16 +1005,21 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
     }
   }
 
-  async function ruleHolds(rule: AutomationCondition['rules'][number]): Promise<boolean> {
+  async function ruleHolds(
+    frame: Frame,
+    rule: AutomationCondition['rules'][number],
+  ): Promise<boolean> {
     if (rule.field === 'value') {
-      const read = ruleValue(rule.read.expression);
-      const value = isExpressionValue(rule.value) ? ruleValue(rule.value.expression) : rule.value;
+      const read = ruleValue(frame, rule.read.expression);
+      const value = isExpressionValue(rule.value)
+        ? ruleValue(frame, rule.value.expression)
+        : rule.value;
       const asksDisk = rule.operator === 'exists' || rule.operator === 'not-exists';
       const path = runtimeText(read);
       const exists = asksDisk && path !== '' && (await pathExists(path));
       return valueRuleHolds(rule.operator, read, value, exists);
     }
-    const known = results.get(rule.block);
+    const known = resultOf(frame, rule.block);
     if (rule.field === 'result') {
       const actual = known?.result ?? 'skipped';
       return rule.operator === 'is' ? actual === rule.value : actual !== rule.value;
@@ -657,40 +1045,75 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
   }
 
   /** Rules are read in order, and stop as soon as the answer is known. */
-  async function holds({ match, rules }: AutomationCondition): Promise<boolean> {
+  async function holds(frame: Frame, { match, rules }: AutomationCondition): Promise<boolean> {
     for (const rule of rules) {
-      const holding = await ruleHolds(rule);
+      const holding = await ruleHolds(frame, rule);
       if (match === 'all' && !holding) return false;
       if (match === 'any' && holding) return true;
     }
     return match === 'all';
   }
 
-  async function firstCase(block: Extract<AutomationBlock, { type: 'switch' }>): Promise<string> {
+  async function firstCase(
+    frame: Frame,
+    block: Extract<AutomationBlock, { type: 'switch' }>,
+  ): Promise<string> {
     for (const { id, condition } of block.cases) {
-      if (await holds(condition)) return id;
+      if (await holds(frame, condition)) return id;
     }
     return DEFAULT_CASE;
+  }
+
+  /**
+   * Whether a While goes on, read in `previous`, the round before. Before the first round it is an
+   * empty one, where the body's outputs read as empty values.
+   */
+  function whileHolds(previous: Frame, block: WhileBlock): boolean {
+    const base = valueContext(previous);
+    const inside = insideLoop(automation, block.id);
+    const context: RunValueContext = {
+      ...base,
+      emptyOutput: (name) => {
+        const target = targetOf(name);
+        if (target.kind !== 'output') return undefined;
+        return loopChain(automation.blocks, target.block).includes(block.id)
+          ? emptyValueOf(base, inside, name)
+          : base.emptyOutput?.(name);
+      },
+    };
+    try {
+      return evaluateInRun(context, block.condition.expression) === true;
+    } catch (error) {
+      if (!(error instanceof ExpressionError)) throw error;
+      throw new ConditionError(`The condition: ${error.message}`);
+    }
   }
 
   /** Follows the connections of an output. Only a Parallel leaves one with several. */
   async function leave(
     id: string,
     output: string,
+    frame: Frame,
     scope: Scope,
     region: Region | undefined,
   ): Promise<void> {
     const next = targets(id, output);
     for (const to of next) {
-      taken.push({ from: id, output, to });
+      taken.push({
+        from: id,
+        output,
+        to,
+        ...(frame.round === undefined ? {} : { round: frame.round.key }),
+      });
     }
-    await Promise.all(next.map((to) => follow(to, scope, region)));
+    await Promise.all(next.map((to) => follow(to, frame, scope, region)));
   }
 
   /** What follows a block that did work: on to the next, or to wherever its failure leads. */
   async function after(
     id: string,
     outcome: StepOutcome,
+    frame: Frame,
     scope: Scope,
     region: Region | undefined,
   ): Promise<void> {
@@ -698,20 +1121,28 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       return;
     }
     if (outcome.status === 'completed') {
-      return leave(id, 'next', scope, region);
+      return leave(id, 'next', frame, scope, region);
     }
     if (targets(id, 'error').length > 0) {
-      return leave(id, 'error', scope, region);
+      return leave(id, 'error', frame, scope, region);
     }
-    unhandled({ stepId: id, ...outcome.failure }, region);
+    unhandled(
+      {
+        stepId: id,
+        ...(frame.round === undefined ? {} : { round: frame.round.key }),
+        ...outcome.failure,
+      },
+      region,
+    );
   }
 
   async function runParallel(
     block: Extract<AutomationBlock, { type: 'parallel' }>,
+    frame: Frame,
     scope: Scope,
     region: Region | undefined,
   ): Promise<void> {
-    passThrough(block.id);
+    passThrough(block.id, frame);
     const join = automation.blocks.find(
       (candidate) => candidate.type === 'join' && candidate.parallel === block.id,
     );
@@ -723,73 +1154,260 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       scope: newScope(scope),
       onBranchFailure: join.onBranchFailure ?? 'stop-others',
     };
-    await leave(block.id, 'next', inner.scope, inner);
+    await leave(block.id, 'next', frame, inner.scope, inner);
     if (scope.controller.signal.aborted) {
       return;
     }
-    reach(join.id);
+    reach(join.id, frame);
     if (inner.failure !== undefined) {
       const { kind, message } = inner.failure;
-      results.set(join.id, { result: 'failed' });
-      setStep(join.id, { state: 'failed', failure: { kind, message } });
+      frame.results.set(join.id, { result: 'failed' });
+      setStep(join.id, frame, { state: 'failed', failure: { kind, message } });
       unhandled(inner.failure, region);
       return;
     }
-    passThrough(join.id);
-    await leave(join.id, 'next', scope, region);
+    passThrough(join.id, frame);
+    await leave(join.id, 'next', frame, scope, region);
+  }
+
+  /** The items a For goes through, or the failure that stops it before its first round. */
+  async function itemsOf(
+    block: ForBlock,
+    frame: Frame,
+  ): Promise<readonly RuntimeValue[] | StepOutcome> {
+    const { items } = block;
+    const tooMany = failed(
+      'too-many-items',
+      `There are more than ${String(LOOP_ROUNDS_MAX)} items to go through`,
+    );
+    try {
+      switch (items.kind) {
+        case 'list': {
+          const list = worked(frame, items.list.expression, 'The items');
+          if (!Array.isArray(list)) return failed('items', 'The items are not a list');
+          return list.length > LOOP_ROUNDS_MAX ? tooMany : (list as readonly string[]);
+        }
+        case 'count': {
+          const count = isExpressionValue(items.count)
+            ? worked(frame, items.count.expression, 'The number of times')
+            : items.count;
+          if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
+            return failed('items', 'The number of times is not a whole number from 0');
+          }
+          if (count > LOOP_ROUNDS_MAX) return tooMany;
+          return Array.from({ length: count }, (_, index) => index + 1);
+        }
+        case 'folder': {
+          const folder = runtimeText(blockValue(frame, items.folder, 'path', 'The folder'));
+          try {
+            return await folderItems(folder, items, LOOP_ROUNDS_MAX);
+          } catch (error) {
+            if (error instanceof TooManyItemsError) return tooMany;
+            return failed('items', `The folder "${folder}" cannot be read`);
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof MissingOutputError) return failed('reference', error.message);
+      if (error instanceof ValueError) return failed('value', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Runs a loop's body once per round, one round at a time, then gathers what its blocks left
+   * into lists, one value per round, for the blocks after it.
+   */
+  async function runLoop(block: LoopBlock, frame: Frame, scope: Scope): Promise<StepOutcome> {
+    const startedStep = performance.now();
+    setStep(block.id, frame, { state: 'running', rounds: 0 });
+    const finish = (outcome: StepOutcome, rounds: readonly Frame[]): StepOutcome => {
+      const gathered = gatherTrees(rounds.map((round) => round));
+      gathered.outputs.forEach((left, id) => frame.outputs.set(id, left));
+      gathered.calls.forEach((tree, id) => frame.calls.set(id, tree));
+      frame.outputs.set(block.id, new Map([['rounds', { value: rounds.length }]]));
+      if (outcome.status !== 'cancelled') {
+        frame.results.set(block.id, {
+          result: outcome.status === 'completed' ? 'completed' : 'failed',
+        });
+      }
+      finishStep(block.id, frame, outcome, startedStep);
+      return outcome;
+    };
+    let items: readonly RuntimeValue[] | undefined;
+    if (block.type === 'for') {
+      const found = await itemsOf(block, frame);
+      if (!Array.isArray(found)) return finish(found as StepOutcome, []);
+      items = found as readonly RuntimeValue[];
+    }
+    const [body] = targets(block.id, BODY_OUTPUT);
+    const most = items?.length ?? (block.type === 'while' ? block.maxRounds : 0);
+    const goOn = block.onRoundFailure === 'continue';
+    const rounds: Frame[] = [];
+    let firstFailure: AutomationFailure | undefined;
+    const ended = (): StepOutcome =>
+      finish(
+        firstFailure === undefined
+          ? { status: 'completed' }
+          : failed('rounds-failed', `A round failed: ${firstFailure.message}`),
+        rounds,
+      );
+    /** For a While, whether it goes on after `previous`, or the failure of its condition. */
+    const goesOn = (previous: Frame): boolean | StepOutcome => {
+      if (block.type !== 'while') return true;
+      try {
+        return whileHolds(previous, block);
+      } catch (error) {
+        if (!(error instanceof ConditionError)) throw error;
+        return failed('condition', error.message);
+      }
+    };
+    // Before the first round, the condition reads a round that left nothing.
+    let previous = newFrame(frame, {
+      loop: block.id,
+      item: 0,
+      index: 0,
+      folder: '',
+      key: roundKey(frame, block.id, 0),
+    });
+    for (let index = 1; index <= most; index += 1) {
+      if (scope.controller.signal.aborted) return finish({ status: 'cancelled' }, rounds);
+      const going = goesOn(previous);
+      if (typeof going !== 'boolean') return finish(going, rounds);
+      if (!going) return ended();
+      if (index > 1 && block.type === 'while' && block.waitSeconds !== undefined) {
+        await delay(block.waitSeconds * MS_PER_SECOND, scope.controller.signal);
+        if (isAborted(scope)) return finish({ status: 'cancelled' }, rounds);
+      }
+      const key = roundKey(frame, block.id, index);
+      const parentFolder = frame.round?.folder ?? runFolder;
+      const folder = join(parentFolder, block.id, String(index));
+      const round = newFrame(frame, {
+        loop: block.id,
+        item: items?.[index - 1] ?? index,
+        index,
+        folder,
+        key,
+      });
+      rounds.push(round);
+      previous = round;
+      setStep(block.id, frame, { rounds: index });
+      if (usesFolder) {
+        await mkdir(folder, { recursive: true }).catch(() => undefined);
+      }
+      const region: Region = { scope: newScope(scope), onBranchFailure: 'stop-others' };
+      if (body !== undefined) {
+        taken.push({
+          from: block.id,
+          output: BODY_OUTPUT,
+          to: body,
+          ...(frame.round === undefined ? {} : { round: frame.round.key }),
+        });
+        await follow(body, round, region.scope, region);
+      }
+      if (isAborted(scope)) return finish({ status: 'cancelled' }, rounds);
+      const roundFailure = failureOf(region);
+      if (roundFailure !== undefined) {
+        firstFailure ??= roundFailure;
+        if (!goOn) {
+          return finish(
+            failed('round', `Round ${String(index)} failed: ${roundFailure.message}`),
+            rounds,
+          );
+        }
+      }
+    }
+    if (block.type === 'while') {
+      const going = goesOn(previous);
+      if (typeof going !== 'boolean') return finish(going, rounds);
+      if (going) {
+        return finish(
+          failed('max-rounds', `The condition still held after ${String(block.maxRounds)} rounds`),
+          rounds,
+        );
+      }
+    }
+    return ended();
   }
 
   async function walk(
     block: AutomationBlock,
+    frame: Frame,
     scope: Scope,
     region: Region | undefined,
   ): Promise<void> {
     if ('disabled' in block && block.disabled === true) {
       // Passed through: it leaves no result, so rules on it read Skipped, and no outputs.
-      setStep(block.id, { state: 'disabled' });
-      return leave(block.id, disabledOutput(block.type), scope, region);
+      setStep(block.id, frame, { state: 'disabled' });
+      return leave(block.id, disabledOutput(block.type), frame, scope, region);
     }
     switch (block.type) {
       case 'start':
-        passThrough(block.id);
-        return leave(block.id, 'next', scope, region);
+        passThrough(block.id, frame);
+        return leave(block.id, 'next', frame, scope, region);
       case 'run':
-        return after(block.id, await runTool(block, scope), scope, region);
+        return after(
+          block.id,
+          await withRetries(block, frame, scope, () => runOnce(block, frame, scope)),
+          frame,
+          scope,
+          region,
+        );
+      case 'run-automation':
+        return after(
+          block.id,
+          await withRetries(block, frame, scope, () => callOnce(block, frame, scope)),
+          frame,
+          scope,
+          region,
+        );
       case 'wait-for-time':
         return after(
           block.id,
-          await runWait(block.id, () => waitForTime(block.id, block.seconds, scope)),
+          await runWait(block.id, frame, () => waitForTime(block.id, frame, block.seconds, scope)),
+          frame,
           scope,
           region,
         );
       case 'wait-for-manual-action':
         return after(
           block.id,
-          await runWait(block.id, () => waitForAction(block.id, block.message, scope)),
+          await runWait(block.id, frame, () =>
+            waitForAction(block.id, frame, block.message, scope),
+          ),
+          frame,
           scope,
           region,
         );
       case 'if': {
-        const taken = await holds(block.condition);
-        passThrough(block.id);
-        return leave(block.id, taken ? 'true' : 'false', scope, region);
+        const taken = await holds(frame, block.condition);
+        passThrough(block.id, frame);
+        return leave(block.id, taken ? 'true' : 'false', frame, scope, region);
       }
       case 'switch': {
-        const taken = await firstCase(block);
-        passThrough(block.id);
-        return leave(block.id, taken, scope, region);
+        const taken = await firstCase(frame, block);
+        passThrough(block.id, frame);
+        return leave(block.id, taken, frame, scope, region);
       }
       case 'parallel':
-        return runParallel(block, scope, region);
+        return runParallel(block, frame, scope, region);
       case 'join':
         // Reached on a path outside its Parallel, which a valid automation does not have.
-        passThrough(block.id);
-        return leave(block.id, 'next', scope, region);
+        passThrough(block.id, frame);
+        return leave(block.id, 'next', frame, scope, region);
+      case 'for':
+      case 'while':
+        return after(block.id, await runLoop(block, frame, scope), frame, scope, region);
     }
   }
 
   /** Runs the block, then whatever follows it, and settles when this path has ended. */
-  async function follow(id: string, scope: Scope, region: Region | undefined): Promise<void> {
+  async function follow(
+    id: string,
+    frame: Frame,
+    scope: Scope,
+    region: Region | undefined,
+  ): Promise<void> {
     const block = blocks.get(id);
     if (block === undefined || scope.controller.signal.aborted) {
       return;
@@ -798,17 +1416,25 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       // A branch that reaches its Join ends there, and the Parallel carries on once all have.
       return;
     }
-    if (reached.has(id)) {
+    if (frame.reached.has(id)) {
       return;
     }
-    reach(id);
+    reach(id, frame);
     try {
-      await walk(block, scope, region);
+      await walk(block, frame, scope, region);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const kind = error instanceof ConditionError ? 'condition' : 'not-started';
-      finishStep(id, failed(kind, message), performance.now());
-      unhandled({ stepId: id, kind, message }, region);
+      finishStep(id, frame, failed(kind, message), performance.now());
+      unhandled(
+        {
+          stepId: id,
+          ...(frame.round === undefined ? {} : { round: frame.round.key }),
+          kind,
+          message,
+        },
+        region,
+      );
     }
   }
 
@@ -824,6 +1450,7 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
         trigger,
         startedAt,
         steps: records(),
+        caller: options.caller,
       });
     });
     change();
@@ -841,15 +1468,15 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
 
     const start = automation.blocks.find(({ type }) => type === 'start');
     if (start !== undefined) {
-      await follow(start.id, root, undefined);
+      await follow(start.id, top, root, undefined);
     }
 
     status = stopped !== undefined ? 'failed' : cancelledByUser ? 'cancelled' : 'completed';
     if (status === 'completed') {
       // What the run did not reach is on a path it did not take.
-      for (const [id, step] of steps) {
+      for (const [key, step] of steps) {
         if (step.state === 'idle') {
-          steps.set(id, { ...step, state: 'skipped' });
+          steps.set(key, { ...step, state: 'skipped' });
         }
       }
     }
@@ -877,9 +1504,12 @@ export function startAutomationRun(options: AutomationRunOptions): AutomationRun
       status: finalStatus,
       durationMs,
       ...(failure === undefined ? {} : { failure }),
-      failedSteps: [...steps.values()]
-        .filter(({ state }) => state === 'failed')
-        .map(({ id }) => id),
+      failedSteps: [
+        ...new Set(
+          [...steps.values()].filter(({ state }) => state === 'failed').map(({ id }) => id),
+        ),
+      ],
+      outputs: handedBack(top),
     };
   }
 

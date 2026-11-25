@@ -32,3 +32,9 @@ export interface PortHover {
 export const NO_PORT_HOVER: PortHover = { owner: undefined, peers: new Set() };
 
 export const PortHoverContext = createContext<PortHover>(NO_PORT_HOVER);
+
+/** Chooses the round a loop's frame shows in the run view; undefined follows the latest one. */
+export type ChooseRound = (loop: string, index: number | undefined) => void;
+
+/** Set in the run view, where a loop's frame chooses the round its blocks show. */
+export const LoopRoundsContext = createContext<ChooseRound | undefined>(undefined);

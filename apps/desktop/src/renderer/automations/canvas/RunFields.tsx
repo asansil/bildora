@@ -1,17 +1,23 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
-import { Crosshair } from 'lucide-react';
+import { Crosshair, SquareArrowOutUpRight } from 'lucide-react';
 import { fitsParameter, isExpressionValue, parseCached, targetOf } from '@bildora/protocol';
-import type { LiteralValue, RunBlock } from '@bildora/protocol';
+import type { LiteralValue, RunAutomationBlock, RunBlock } from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
 import type { MessageKey } from '../../../shared/i18n/translate.js';
-import type { ParameterView, ProfileView, ToolView } from '../../../shared/ipc-contract.js';
+import type {
+  AutomationView,
+  ParameterView,
+  ProfileView,
+  ToolView,
+} from '../../../shared/ipc-contract.js';
 import { ContextMenu } from '../../shell/ContextMenu.js';
 import type { MenuEntry } from '../../shell/menu-model.js';
 import { ParameterForm } from '../../tools/ParameterForm.js';
 import { parameterProblem, submittedValues } from '../../tools/parameter-form.js';
 import type { FormValue, FormValues } from '../../tools/parameter-form.js';
 import { without } from '../automation-draft.js';
+import { inputParameter } from '../RunInputsDialog.js';
 import { ExpressionField } from './ExpressionField.js';
 import { PanelSection } from './PanelSection.js';
 import { NumberField, Select } from './fields.js';
@@ -21,8 +27,39 @@ import type { ValueChoice, ValueContext } from './values.js';
 
 const api = window.bildora;
 
+/** A block whose fields are values for something it runs: a tool, or another automation. */
+type ValuesBlock = RunBlock | RunAutomationBlock;
+type HeldValues = RunBlock['values'];
+
+/** The values a block holds: a tool's parameters, or a called automation's inputs. */
+function heldValues(block: ValuesBlock): HeldValues {
+  return block.type === 'run' ? block.values : block.inputs;
+}
+
+/** A block holding other values, with the field left out when there are none. */
+function withValues<Block extends ValuesBlock>(
+  block: Block,
+  values: Record<string, LiteralValue | { expression: string }>,
+): Block {
+  const empty = Object.keys(values).length === 0;
+  const held: ValuesBlock = block;
+  if (held.type === 'run') {
+    const rest: RunBlock = without(held, 'values');
+    return (empty ? rest : { ...rest, values }) as Block;
+  }
+  const rest: RunAutomationBlock = without(held, 'inputs');
+  return (empty ? rest : { ...rest, inputs: values }) as Block;
+}
+
+/** A Run tool block with another profile, or with none for an empty one. */
+function withProfile(block: ValuesBlock, profile: string): ValuesBlock {
+  if (block.type !== 'run') return block;
+  const rest: RunBlock = without(block, 'profile');
+  return profile === '' ? rest : { ...rest, profile };
+}
+
 /** The plain values of a block, as a form holds them. Linked ones are left to their own field. */
-function formFrom(parameters: readonly ParameterView[], values: RunBlock['values']): FormValues {
+function formFrom(parameters: readonly ParameterView[], values: HeldValues): FormValues {
   return Object.fromEntries(
     parameters.map(({ name, type }) => {
       const value = values?.[name];
@@ -33,7 +70,7 @@ function formFrom(parameters: readonly ParameterView[], values: RunBlock['values
 }
 
 /** The expressions of a block, by parameter, without their `=`. */
-function expressionsFrom(values: RunBlock['values']): Readonly<Record<string, string>> {
+function expressionsFrom(values: HeldValues): Readonly<Record<string, string>> {
   return Object.fromEntries(
     Object.entries(values ?? {}).flatMap(([name, value]) =>
       isExpressionValue(value) ? [[name, value.expression]] : [],
@@ -90,7 +127,14 @@ function nodeAt(x: number, y: number): { readonly id: string; readonly node: Ele
   for (const element of document.elementsFromPoint(x, y)) {
     const node = element.closest('.react-flow__node');
     const id = node?.getAttribute('data-id');
-    if (id !== null && id !== undefined && node?.classList.contains('react-flow__node-block')) {
+    const kind = node?.classList;
+    if (
+      id !== null &&
+      id !== undefined &&
+      node !== null &&
+      (kind?.contains('react-flow__node-block') === true ||
+        kind?.contains('react-flow__node-loop') === true)
+    ) {
       return { id, node };
     }
   }
@@ -111,46 +155,62 @@ interface Menu {
   readonly items: readonly MenuEntry[];
 }
 
-export interface RunFieldsProps {
-  readonly block: RunBlock;
+export interface RunFieldsProps<Block extends ValuesBlock = ValuesBlock> {
+  readonly block: Block;
   readonly tools: readonly ToolView[];
+  /** The automations of the Workspace, for a Run automation block's inputs. */
+  readonly automations?: readonly AutomationView[];
+  /** Opens the automation a Run automation block calls. */
+  readonly onOpenAutomation?: (id: string) => void;
   readonly context: ValueContext;
   /** Problems of the flow about this block's values, worded, by parameter label. */
   readonly problems: ReadonlyMap<string, string>;
   readonly nameOf: (id: string) => string;
-  readonly onChange: (block: RunBlock) => void;
+  readonly onChange: (block: Block) => void;
   /** Selects another block on the canvas. */
   readonly onGoTo: (blockId: string) => void;
   readonly onError: (error: unknown) => void;
 }
 
 /**
- * A Run tool block. Each value is the block's own, or worked out from others after `=`: typing `=`,
- * the field's menu, or dragging its pick-whip onto a block links it. Secrets have no field here:
- * they only ever come from a profile.
+ * A Run tool block, or a Run automation block, whose fields are the called automation's inputs.
+ * Each value is the block's own, or worked out from others after `=`: typing `=`, the field's
+ * menu, or dragging its pick-whip onto a block links it. Secrets have no field here: they only ever
+ * come from a profile.
  */
-export function RunFields({
+export function RunFields<Block extends ValuesBlock>({
   block,
   tools,
+  automations = [],
+  onOpenAutomation,
   context,
   problems: flowProblems,
   nameOf,
   onChange,
   onGoTo,
   onError,
-}: RunFieldsProps) {
+}: RunFieldsProps<Block>) {
   const profileId = useId();
-  const tool = tools.find(({ id }) => id === block.tool);
+  const toolId = block.type === 'run' ? block.tool : undefined;
+  const tool = tools.find(({ id }) => id === toolId);
+  const called =
+    block.type === 'run-automation'
+      ? automations.find(({ id }) => id === block.automation)
+      : undefined;
   const parameters = useMemo(
-    // All optional here: a value can also come from a profile or from the tool's default.
+    // All optional here: a value can also come from a profile, from the tool's default, or from
+    // the called automation's default. A required input left empty is a problem of the flow.
     () =>
-      (tool?.parameters ?? [])
+      (called === undefined
+        ? (tool?.parameters ?? [])
+        : (called.blocks.find((item) => item.type === 'start')?.inputs ?? []).map(inputParameter)
+      )
         .filter(({ secret }) => secret !== true)
         .map((parameter) => ({ ...parameter, required: false })),
-    [tool],
+    [tool, called],
   );
-  const [form, setForm] = useState<FormValues>(() => formFrom(parameters, block.values));
-  const [linked, setLinked] = useState(() => expressionsFrom(block.values));
+  const [form, setForm] = useState<FormValues>(() => formFrom(parameters, heldValues(block)));
+  const [linked, setLinked] = useState(() => expressionsFrom(heldValues(block)));
   /** The field just linked, which takes the caret. */
   const [justLinked, setJustLinked] = useState<string | undefined>();
   const [profiles, setProfiles] = useState<readonly ProfileView[]>([]);
@@ -161,9 +221,9 @@ export function RunFields({
 
   useEffect(() => {
     let current = true;
-    if (toolLevel === 1) {
+    if (toolLevel === 1 && toolId !== undefined) {
       void api
-        .listProfiles(block.tool)
+        .listProfiles(toolId)
         .then((list) => {
           if (current) setProfiles(list);
         })
@@ -172,7 +232,7 @@ export function RunFields({
     return () => {
       current = false;
     };
-  }, [block.tool, toolLevel, onError]);
+  }, [toolId, toolLevel, onError]);
 
   function commit(nextForm: FormValues, nextLinked: Readonly<Record<string, string>>): void {
     setForm(nextForm);
@@ -186,9 +246,7 @@ export function RunFields({
         .filter(([, text]) => text.trim() !== '')
         .map(([name, text]) => [name, { expression: text.trim() }]),
     );
-    const values = { ...plain, ...worked };
-    const rest: RunBlock = without(block, 'values');
-    onChange(Object.keys(values).length === 0 ? rest : { ...rest, values });
+    onChange(withValues(block, { ...plain, ...worked }));
   }
 
   function link(name: string, expression: string): void {
@@ -285,7 +343,8 @@ export function RunFields({
         under !== undefined &&
         fitting.some(
           (choice) =>
-            choice.block === under.id && (choice.group === 'setting' || choice.group === 'result'),
+            choice.block === under.id &&
+            (choice.group === 'setting' || choice.group === 'result' || choice.group === 'loop'),
         );
       mark(fits ? under.node : undefined);
     };
@@ -390,10 +449,35 @@ export function RunFields({
 
   return (
     <>
-      {tool === undefined ? (
+      {block.type === 'run' && tool === undefined ? (
         <p className="field-problem">{t('automation.toolMissing', { id: block.tool })}</p>
       ) : null}
-      {toolLevel === 1 ? (
+      {block.type === 'run-automation' ? (
+        <PanelSection id="call.automation" title={t('canvas.sectionCalled')}>
+          {called === undefined ? (
+            <p className="field-problem">{t('canvas.callMissing', { id: block.automation })}</p>
+          ) : (
+            <div className="call-target">
+              <span className="truncate" data-testid="called-automation">
+                {called.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  onOpenAutomation?.(called.id);
+                }}
+              >
+                <SquareArrowOutUpRight className="icon" aria-hidden="true" />
+                {t('canvas.goToAutomation')}
+              </button>
+            </div>
+          )}
+          {called !== undefined && parameters.length === 0 ? (
+            <p className="muted">{t('canvas.callNoInputs')}</p>
+          ) : null}
+        </PanelSection>
+      ) : null}
+      {block.type === 'run' && toolLevel === 1 ? (
         <PanelSection id="run.profile" title={t('canvas.sectionProfile')}>
           <div className="field">
             <label className="field-label" htmlFor={profileId}>
@@ -403,10 +487,7 @@ export function RunFields({
               id={profileId}
               value={block.profile ?? ''}
               onChange={(event) => {
-                const rest: RunBlock = without(block, 'profile');
-                onChange(
-                  event.target.value === '' ? rest : { ...rest, profile: event.target.value },
-                );
+                onChange(withProfile(block, event.target.value) as Block);
               }}
             >
               <option value="">{t('automation.noProfile')}</option>
@@ -420,7 +501,11 @@ export function RunFields({
         </PanelSection>
       ) : null}
       {parameters.length === 0 ? null : (
-        <PanelSection id="run.values" title={t('canvas.sectionValues')} count={parameters.length}>
+        <PanelSection
+          id={block.type === 'run' ? 'run.values' : 'call.inputs'}
+          title={t(block.type === 'run' ? 'canvas.sectionValues' : 'canvas.sectionCallInputs')}
+          count={parameters.length}
+        >
           <ParameterForm
             parameters={parameters}
             values={form}
@@ -451,7 +536,7 @@ export function RunFields({
             { value: 'retry', label: t('automation.failureRetry') },
           ]}
           onChange={(choice) => {
-            const rest: RunBlock = without(block, 'onFailure');
+            const rest = without(block, 'onFailure') as Block;
             onChange(
               choice === 'stop'
                 ? rest

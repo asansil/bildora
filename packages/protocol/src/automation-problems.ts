@@ -2,6 +2,7 @@ import type { z } from 'zod';
 
 /** Names a problem's parameters can have. A message reads a missing one as empty. */
 const PARAMETER_NAMES = [
+  'automation',
   'block',
   'case',
   'count',
@@ -13,6 +14,7 @@ const PARAMETER_NAMES = [
   'index',
   'input',
   'label',
+  'loop',
   'output',
   'parallel',
   'parameter',
@@ -58,6 +60,40 @@ const MESSAGES = {
     `Join "${block}" is never reached from Parallel "${parallel}"`,
   'branches-leak': ({ block, parallel }) =>
     `The branches of Parallel "${parallel}" must meet only at Join "${block}", and nothing may lead into them from outside`,
+  // Loops.
+  'loop-missing': ({ block, loop }) =>
+    `Block "${block}" is inside "${loop}", which is not a loop block`,
+  'start-in-loop': () => 'The Start block cannot be inside a loop',
+  'loop-inside-itself': ({ block }) => `Loop "${block}" ends up inside itself`,
+  'connection-crosses-loop': ({ from, to }) =>
+    `The connection from "${from}" to "${to}" crosses the frame of a loop`,
+  'loop-body-empty': ({ block }) => `Loop "${block}" has nothing to repeat`,
+  'loop-not-around': ({ label, source }) =>
+    `"${label}" reads loop "${source}", which is not around this block`,
+  'loop-value-unknown': ({ label, source, field }) =>
+    `"${label}" reads "${field}" of loop "${source}", which has only item, index and folder`,
+  'loop-outside': ({ label }) => `"${label}" reads loop, and this block is not inside a loop`,
+  'loop-items-type': ({ label, detail }) => `The items of "${label}" do not fit: ${detail}`,
+  'loop-condition-type': ({ label, detail }) =>
+    `The condition of "${label}" is not yes or no: ${detail}`,
+  'rule-block-in-loop': ({ source }) =>
+    `A rule reads "${source}", which runs once per round inside a loop that is not around this block`,
+  // Calls of other automations.
+  'automation-missing': ({ automation }) =>
+    `Automation "${automation}" does not exist in this Workspace, or cannot be read`,
+  'call-cycle': ({ reference }) => `These automations end up calling themselves: ${reference}`,
+  'call-depth': ({ reference }) => `Calls go more than 5 automations deep: ${reference}`,
+  'call-input-unknown': ({ automation, input }) =>
+    `Automation "${automation}" has no input "${input}"`,
+  'call-input-required': ({ automation, input, label }) =>
+    `Automation "${automation}" needs a value for its input "${label || input}"`,
+  'call-input-type': ({ input, type }) => `Input "${input}" needs ${type}`,
+  'called-block-missing': ({ label, source, block }) =>
+    `"${label}" reads block "${block}" of the automation "${source}" calls, which has no such block`,
+  'called-automation-problems': ({ automation, count }) =>
+    `Automation "${automation}" has ${count} problem(s) to fix before it can be called`,
+  'called-not-certain': ({ label, source, block }) =>
+    `"${label}" reads "${block}" of the automation "${source}" calls, which does not finish on every path of it`,
   // Conditions and cases.
   'rule-block-missing': ({ block }) => `A rule reads block "${block}", which does not exist`,
   'case-reserved': ({ case: name }) =>

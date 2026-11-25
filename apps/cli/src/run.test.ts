@@ -137,6 +137,69 @@ describe.skipIf(process.platform !== 'win32')('bildora run', () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
+  it('shows the rounds of a loop and the steps of a called automation', async () => {
+    const folder = join(dataDir, 'workspaces', workspaceId, 'automations');
+    await mkdir(folder, { recursive: true });
+    const save = (automation: object) =>
+      writeFile(
+        join(folder, `${(automation as { id: string }).id}.yaml`),
+        JSON.stringify({ schemaVersion: 2, ...automation }),
+      );
+    await save({
+      id: 'child',
+      name: 'Child',
+      blocks: [
+        { id: 'start', type: 'start' },
+        { id: 'inner', type: 'run', tool: 'good' },
+      ],
+      connections: [{ from: 'start', to: 'inner' }],
+    });
+    await save({
+      id: 'flow',
+      name: 'Flow',
+      blocks: [
+        { id: 'start', type: 'start' },
+        { id: 'For1', type: 'for', items: { kind: 'count', count: 2 } },
+        { id: 'one', type: 'run', tool: 'good', loop: 'For1' },
+        { id: 'Child1', type: 'run-automation', automation: 'child' },
+      ],
+      connections: [
+        { from: 'start', to: 'For1' },
+        { from: 'For1', output: 'body', to: 'one' },
+        { from: 'For1', to: 'Child1' },
+      ],
+    });
+    expect((await runCli(['run', 'flow'], '1', io())).exitCode).toBe(EXIT_CODES.completed);
+    expect(lines).toContain('  one (round For1:2): running');
+    expect(lines.some((line) => /^\[1\/2\] For1: completed \(.*, 2 rounds\)$/.test(line))).toBe(
+      true,
+    );
+    expect(lines).toContain('Calling "Child" from Child1.');
+    expect(lines).toContain('Child › [1/1] inner: running');
+  });
+
+  it('refuses a call of an automation that is not there', async () => {
+    const folder = join(dataDir, 'workspaces', workspaceId, 'automations');
+    await mkdir(folder, { recursive: true });
+    await writeFile(
+      join(folder, 'flow.yaml'),
+      JSON.stringify({
+        schemaVersion: 2,
+        id: 'flow',
+        name: 'Flow',
+        blocks: [
+          { id: 'start', type: 'start' },
+          { id: 'Gone1', type: 'run-automation', automation: 'gone' },
+        ],
+        connections: [{ from: 'start', to: 'Gone1' }],
+      }),
+    );
+    expect((await runCli(['run', 'flow'], '1', io())).exitCode).toBe(EXIT_CODES.cannotStart);
+    expect(errors).toContain(
+      '  Gone1: Automation "gone" does not exist in this Workspace, or cannot be read',
+    );
+  });
+
   it('exits 0 when every step succeeds, and leaves the run in history', async () => {
     await saveFlow([run('one', 'good'), run('two', 'good')]);
     expect((await runCli(['run', 'flow'], '1', io())).exitCode).toBe(EXIT_CODES.completed);

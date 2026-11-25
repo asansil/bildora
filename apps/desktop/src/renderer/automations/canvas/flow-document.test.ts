@@ -33,6 +33,8 @@ import {
   spliceEnds,
   spliceInto,
   updateBlock,
+  openParallels,
+  parallelFor,
 } from './flow-document.js';
 import type { FlowDocument } from './flow-document.js';
 import { valueChoices } from './values.js';
@@ -81,19 +83,29 @@ describe('flow document', () => {
     expect(doc.positions['Extract2']?.y).toBeGreaterThan(doc.positions['Extract1']?.y ?? 0);
   });
 
-  it('adds a Parallel with its Join, which takes over where the anchor led', () => {
+  it('adds a Parallel alone, and a Join that ends the Parallel with none', () => {
     let doc = emptyDocument();
-    doc = addAfter(doc, 'start', run(doc, 'acme.extract')).document;
+    expect(createBlocks(doc, { kind: 'join' }, '')).toEqual([]);
     doc = addAfter(doc, 'start', createBlocks(doc, { kind: 'parallel' }, '')).document;
-    expect(doc.connections).toEqual([
-      { from: 'start', to: 'Parallel1' },
-      { from: 'Join1', to: 'Extract1' },
-    ]);
+    expect(doc.blocks.map(({ id }) => id)).toEqual(['start', 'Parallel1']);
+    expect(openParallels(doc)).toEqual(['Parallel1']);
+    doc = addBlocks(doc, createBlocks(doc, { kind: 'join' }, ''), { x: 600, y: 0 });
     expect(doc.blocks.find(({ id }) => id === 'Join1')).toEqual({
       id: 'Join1',
       type: 'join',
       parallel: 'Parallel1',
     });
+    expect(openParallels(doc)).toEqual([]);
+    expect(createBlocks(doc, { kind: 'join' }, '')).toEqual([]);
+  });
+
+  it('ends the chosen Parallel, or the nearest one, when several have no Join', () => {
+    let doc = emptyDocument();
+    doc = addBlocks(doc, createBlocks(doc, { kind: 'parallel' }, ''), { x: 0, y: 0 });
+    doc = addBlocks(doc, createBlocks(doc, { kind: 'parallel' }, ''), { x: 0, y: 900 });
+    doc = addBlocks(doc, run(doc, 'acme.extract'), { x: 300, y: 880 });
+    expect(parallelFor(doc, 'Parallel1')).toBe('Parallel1');
+    expect(parallelFor(doc, 'Extract1')).toBe('Parallel2');
   });
 
   it('replaces where an output leads, except on a Parallel', () => {
@@ -121,6 +133,7 @@ describe('flow document', () => {
     ]);
 
     doc = addBlocks(doc, createBlocks(doc, { kind: 'parallel' }, ''), { x: 0, y: 600 });
+    doc = addBlocks(doc, createBlocks(doc, { kind: 'join' }, ''), { x: 400, y: 600 });
     expect(spliceInto(doc, into, 'Parallel1', 'Join1')?.connections).toEqual([
       { from: 'start', to: 'Parallel1' },
       { from: 'Join1', to: 'Extract1' },
@@ -183,24 +196,29 @@ describe('flow document', () => {
     expect(extractBlock(doc, 'If1').connections).toEqual([]);
 
     doc = emptyDocument();
-    doc = addAfter(doc, 'start', run(doc, 'acme.report')).document;
     doc = addAfter(doc, 'start', createBlocks(doc, { kind: 'parallel' }, '')).document;
+    doc = addBlocks(doc, createBlocks(doc, { kind: 'join' }, ''), { x: 600, y: 0 });
+    doc = addAfter(doc, 'Join1', run(doc, 'acme.report')).document;
     doc = addBlocks(doc, run(doc, 'acme.extract'), { x: 0, y: 300 });
     doc = connect(doc, 'Parallel1', 'next', 'Extract1');
     doc = connect(doc, 'Extract1', 'next', 'Join1');
     expect(extractBlock(doc, 'Join1')).toBe(doc);
     const out = extractBlock(doc, 'Parallel1');
-    expect(out.connections).toEqual([
-      { from: 'Parallel1', to: 'Extract1' },
-      { from: 'Extract1', to: 'Join1' },
-      { from: 'start', to: 'Report1' },
-    ]);
+    expect(out.connections).toHaveLength(3);
+    expect(out.connections).toEqual(
+      expect.arrayContaining([
+        { from: 'Parallel1', to: 'Extract1' },
+        { from: 'Extract1', to: 'Join1' },
+        { from: 'start', to: 'Report1' },
+      ]),
+    );
     expect(spliceEnds(out, 'Parallel1')).toEqual({ first: 'Parallel1', tail: 'Join1' });
   });
 
   it('removes a block with its connections, its Join, its place and its group', () => {
     let doc = emptyDocument();
     doc = addAfter(doc, 'start', createBlocks(doc, { kind: 'parallel' }, '')).document;
+    doc = addBlocks(doc, createBlocks(doc, { kind: 'join' }, ''), { x: 600, y: 0 });
     doc = { ...doc, groups: [{ id: 'g', name: 'G', blocks: ['Parallel1'] }] };
     doc = removeItems(doc, new Set(['Parallel1', 'start']));
     expect(doc.blocks.map(({ id }) => id)).toEqual(['start']);
@@ -434,7 +452,13 @@ describe('block names numbered from 1', () => {
   it('gives control blocks their own bases, and a tool name over its id', () => {
     let doc = emptyDocument();
     doc = addAfter(doc, 'start', createBlocks(doc, { kind: 'if' }, '')).document;
-    for (const kind of ['switch', 'parallel', 'wait-for-time', 'wait-for-manual-action'] as const) {
+    for (const kind of [
+      'switch',
+      'parallel',
+      'join',
+      'wait-for-time',
+      'wait-for-manual-action',
+    ] as const) {
       doc = addBlocks(doc, createBlocks(doc, { kind }, 'Check'), { x: 0, y: 300 });
     }
     const named = namedChoice({ kind: 'run', tool: 'acme.check' }, [

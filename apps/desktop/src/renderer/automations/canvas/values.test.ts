@@ -262,3 +262,80 @@ describe('canvas find', () => {
     expect(matchingBlocks(blocks, '  ', names, tools)).toEqual([]);
   });
 });
+
+describe('values around loops and calls', () => {
+  const loopBlocks: AutomationBlock[] = [
+    { id: 'start', type: 'start' },
+    { id: 'Files', type: 'for', items: { kind: 'folder', folder: 'C:/in' } },
+    { id: 'Convert1', type: 'run', tool: 'acme.convert', loop: 'Files' },
+    { id: 'After', type: 'run', tool: 'acme.convert' },
+  ];
+  const loopContext: ValueContext = {
+    blocks: loopBlocks,
+    connections: [
+      { from: 'start', to: 'Files' },
+      { from: 'Files', output: 'body', to: 'Convert1' },
+      { from: 'Files', to: 'After' },
+    ],
+    tools: [tool],
+    profiles: new Map(),
+  };
+
+  it('offers the loop item, number and folder inside the loop', () => {
+    const inside = valueChoices(loopContext, 'Convert1');
+    expect(
+      inside.filter(({ group }) => group === 'loop').map(({ expression }) => expression),
+    ).toEqual(['loop.item', 'loop.index', 'loop.folder']);
+    expect(inside.find(({ expression }) => expression === 'loop.item')?.type).toBe('path');
+    expect(valueChoices(loopContext, 'After').some(({ group }) => group === 'loop')).toBe(false);
+  });
+
+  it('offers what the body produced as lists after the loop, with its rounds', () => {
+    const after = valueChoices(loopContext, 'After');
+    const result = after.find(({ expression }) => expression === 'steps.Convert1.outputs.result');
+    expect(result?.type).toBe('list');
+    expect(after.find(({ expression }) => expression === 'steps.Files.outputs.rounds')?.type).toBe(
+      'integer',
+    );
+    expect(expressionType(loopContext, 'steps.Convert1.outputs.result', 'After')).toBe('list');
+  });
+
+  it('never offers the rounds of a loop from inside it', () => {
+    const inside = valueChoices(loopContext, 'Convert1');
+    expect(inside.some(({ expression }) => expression === 'steps.Files.outputs.rounds')).toBe(
+      false,
+    );
+  });
+
+  it('offers the outputs of the blocks a called automation always runs', () => {
+    const context: ValueContext = {
+      blocks: [
+        { id: 'start', type: 'start' },
+        { id: 'Report1', type: 'run-automation', automation: 'report' },
+        { id: 'Next1', type: 'wait-for-time', seconds: 1 },
+      ],
+      connections: [
+        { from: 'start', to: 'Report1' },
+        { from: 'Report1', to: 'Next1' },
+      ],
+      tools: [tool],
+      profiles: new Map(),
+      automations: [
+        {
+          id: 'report',
+          name: 'Report',
+          blocks: [
+            { id: 'start', type: 'start' },
+            { id: 'Extract1', type: 'run', tool: 'acme.convert' },
+          ],
+          connections: [{ from: 'start', to: 'Extract1' }],
+        },
+      ],
+    };
+    const choices = valueChoices(context, 'Next1').map(({ expression }) => expression);
+    expect(choices).toContain('steps.Report1.Extract1.outputs.result');
+    expect(choices).toContain('steps.Report1.Extract1.outputs.result.count');
+    expect(choices).not.toContain('steps.Report1.Extract1.outputs.result.key');
+    expect(expressionType(context, 'steps.Report1.Extract1.outputs.result.count')).toBe('integer');
+  });
+});

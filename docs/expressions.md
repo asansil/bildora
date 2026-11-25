@@ -15,7 +15,7 @@ The field shows what the value resolves to as the flow stands, or says that it i
 
 ## Making a link without typing
 
-- Right-click a field and choose **Link to**. It lists the automation's inputs, the results of earlier blocks and the settings of other blocks. Values that do not fit the field are shown, but cannot be chosen.
+- Right-click a field and choose **Link to**. It lists the automation's inputs, the values of the loops around the block, the results of earlier blocks, those of automations that Run automation blocks call, and the settings of other blocks. Values that do not fit the field are shown, but cannot be chosen.
 - Drag the target beside a field onto a block, and choose one of that block's values.
 - **Unlink**, in the same menu, keeps the value the link resolved to as the field's own value.
 - **Go to**, in the same menu, selects the block a link follows.
@@ -32,6 +32,11 @@ Each block's name is its label on the canvas, such as `FileCheck1`, and links us
 | `inputs.<name>`                          | An input of the automation, declared on its Start block                            |
 | `steps.<block>.outputs.<output>`         | An output of a block that ran before                                               |
 | `steps.<block>.outputs.<output>.<field>` | A field of a JSON output                                                           |
+| `steps.<call>.<block>.outputs.<output>`  | An output of a block of the automation a Run automation block called               |
+| `steps.<loop>.outputs.rounds`            | How many rounds a loop ran                                                         |
+| `steps.<block>.result`                   | How a block ended: `completed`, `failed`, or `skipped` when it did not run         |
+| `loop.item`, `loop.index`, `loop.folder` | The item, the round's number from 1, and the round's folder of the nearest loop    |
+| `<loop>.item`                            | The same for any loop around the block, by its name                                |
 | `run.folder`                             | The folder this run keeps to itself                                                |
 | `paths.<name>`                           | A path variable of this computer                                                   |
 
@@ -40,6 +45,8 @@ Each block's name is its label on the canvas, such as `FileCheck1`, and links us
 A link to a setting reads what that block is set to, wherever it sits in the flow: before or after, on another branch, or on a path the run never takes. It follows chains of links. A link cannot lead back to itself, and a secret setting cannot be linked, because it would carry a secret into a shared file.
 
 An output only exists once its block has run. A value that reads one needs that block to finish on every path that reaches the block using it, as earlier references do.
+
+Inside a loop, a block reads the round going on. After the loop, an output of a block inside it is a list with one value per round, and an empty text for a round where the block left nothing. [Loops and calls](loops-and-calls.md) explains both, and how values come back from a called automation.
 
 Block names may contain `-`, so `convert-2.file` is one name. Put spaces around a minus that subtracts: `convert.width - 1`.
 
@@ -81,10 +88,12 @@ Block names may contain `-`, so `convert-2.file` is one name. Put spaces around 
 | `round(number, decimals)`     | Rounded to that many decimals, 0 to 15                                             | `round(2.567, 2)` is `2.57`                   |
 | `min(a, b, …)` `max(a, b, …)` | The smallest or largest number                                                     |                                               |
 | `length(value)`               | Characters in a text, or items in a list                                           | `length(steps.check.outputs.summary.tooLong)` |
+| `compact(list)`               | The list without its empty items, such as the rounds where a block left nothing    | `compact(steps.Convert1.outputs.file)`        |
 | `contains(value, part)`       | Whether a text holds `part`, or a list holds it as an item                         |                                               |
 | `starts(text, part)`          | Whether the text starts with `part`                                                |                                               |
 | `ends(text, part)`            | Whether the text ends with `part`                                                  | `ends(inputs.file, ".csv")`                   |
 | `iif(condition, yes, no)`     | `yes` when the condition holds, `no` otherwise. Only the chosen side is worked out | `iif(a.fast, 1, 4)`                           |
+| `exists(path)`                | Whether a file or folder is there, looked at when the value is worked out          | `not exists(join(run.folder, "done"))`        |
 
 Path functions treat `\` and `/` alike, as Windows does.
 
@@ -102,7 +111,7 @@ Some things can only go wrong when the automation runs: dividing by zero, `numbe
 
 ## Conditions
 
-An If or a Switch decides with rules. A rule can read a block's result or exit code, or **a value**: an input, a result of an earlier block, a setting of another block, or an expression. Its operators fit what it reads:
+A While goes on while one yes/no expression holds; see [Loops and calls](loops-and-calls.md#the-while-condition). An If or a Switch decides with rules. A rule can read a block's result or exit code, or **a value**: an input, a result of an earlier block, a setting of another block, or an expression. Its operators fit what it reads:
 
 | What it reads | Operators                                                            |
 | ------------- | -------------------------------------------------------------------- |
@@ -129,4 +138,4 @@ Plain text values keep `{{...}}` references, such as `'{{run.folder}}/report.csv
 
 ## Safety
 
-Expressions only work out values. They cannot read files, reach the network, see the environment or run anything, and they have no loops, so sharing an automation adds no way to run anything beyond its tools. An expression is at most 2000 characters, nests at most 32 levels deep, and a text it works out is at most 100,000 characters.
+Expressions only work out values. They cannot read files, reach the network, see the environment or run anything, and they have no loops of their own, so sharing an automation adds no way to run anything beyond its tools. An expression is at most 2000 characters, nests at most 32 levels deep, and a text it works out is at most 100,000 characters.

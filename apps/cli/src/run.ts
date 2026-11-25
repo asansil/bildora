@@ -7,10 +7,12 @@ import {
   createCredentialStore,
   findAutomations,
   findVisibleTool,
+  getAutomation,
   getCoreInfo,
   inputsOf,
   openDataDirectory,
   parseInputText,
+  readCallTree,
   readPathVariables,
   resolveDataDir,
   resolveInputs,
@@ -21,6 +23,7 @@ import { blockingProblems, isWarning } from '@bildora/protocol';
 import type { LiteralValue } from '@bildora/protocol';
 import type {
   AutomationResult,
+  AutomationRunOptions,
   AutomationRunView,
   FoundAutomation,
   ManualAnswer,
@@ -79,10 +82,11 @@ function seconds(durationMs: number | undefined): string {
   return `${((durationMs ?? 0) / MS_PER_SECOND).toFixed(1)} s`;
 }
 
-function describeStep({ state, durationMs, failure, attempt }: StepView): string {
+function describeStep({ state, durationMs, failure, attempt, rounds }: StepView): string {
+  const counted = rounds === undefined ? '' : `, ${String(rounds)} round${rounds === 1 ? '' : 's'}`;
   switch (state) {
     case 'completed':
-      return `completed (${seconds(durationMs)})`;
+      return `completed (${seconds(durationMs)}${counted})`;
     case 'failed':
       return `failed: ${failure?.message ?? 'unknown reason'}`;
     case 'running':
@@ -92,21 +96,37 @@ function describeStep({ state, durationMs, failure, attempt }: StepView): string
   }
 }
 
-const WORK_BLOCKS = ['run', 'wait-for-time', 'wait-for-manual-action'];
+const WORK_BLOCKS = [
+  'run',
+  'wait-for-time',
+  'wait-for-manual-action',
+  'for',
+  'while',
+  'run-automation',
+];
 
-/** Prints a line each time a step changes state, and nothing for progress within one. */
-function stepPrinter(io: CliIo): (view: AutomationRunView) => void {
+/**
+ * Prints a line each time a step changes state, and nothing for progress within one. Steps outside
+ * loops are numbered; a step inside a loop names its round instead, and a called run's lines start
+ * with the automation that called it.
+ */
+function stepPrinter(io: CliIo, prefix = ''): (view: AutomationRunView) => void {
   const shown = new Map<string, string>();
   return ({ steps }) => {
     // Blocks that only direct the run, such as Start and If, are over as soon as they begin.
     const work = steps.filter(({ type }) => WORK_BLOCKS.includes(type));
-    work.forEach((step, index) => {
+    const numbered = work.filter(({ round }) => round === undefined);
+    for (const step of work) {
       const text = describeStep(step);
-      if (step.state !== 'idle' && shown.get(step.id) !== text) {
-        shown.set(step.id, text);
-        io.out(`[${String(index + 1)}/${String(work.length)}] ${step.id}: ${text}`);
-      }
-    });
+      const key = `${step.id}\u0000${step.round ?? ''}`;
+      if (step.state === 'idle' || shown.get(key) === text) continue;
+      shown.set(key, text);
+      const label =
+        step.round === undefined
+          ? `[${String(numbered.indexOf(step) + 1)}/${String(numbered.length)}] ${step.id}`
+          : `  ${step.id} (round ${step.round})`;
+      io.out(`${prefix}${label}: ${text}`);
+    }
   };
 }
 
@@ -176,7 +196,9 @@ async function runAutomation(
 ): Promise<number> {
   const { automation, workspaceId, workspaceName } = found;
   const registry = await ToolRegistry.open({ dataDir });
-  const problems = await checkAutomation(automation, registry, workspaceId);
+  // Every automation it can call is read once, so that checking and running see the same files.
+  const calls = await readCallTree(automation, (id) => getAutomation(dataDir, workspaceId, id));
+  const problems = await checkAutomation(automation, registry, workspaceId, calls);
   const line = ({ blockId, message }: (typeof problems)[number]): string =>
     blockId === undefined ? `  ${message}` : `  ${blockId}: ${message}`;
   const blocking = blockingProblems(problems);
@@ -197,11 +219,19 @@ async function runAutomation(
     history.recoverInterrupted();
     const store = io.secrets ?? createCredentialStore(dataDir);
     io.out(`Running "${automation.name}" in Workspace "${workspaceName}".`);
+    // A called run prints its steps after the automation that called it.
+    const startCalled = (options: AutomationRunOptions) => {
+      const name = options.automation.name;
+      io.out(`Calling "${name}" from ${options.caller?.blockId ?? 'a block'}.`);
+      return startAutomationRun({ ...options, onChange: stepPrinter(io, `${name} › `) });
+    };
     const run = startAutomationRun({
       automation,
       workspaceId,
       trigger: 'cli',
       inputs,
+      calls,
+      startCalled,
       dataDir,
       history,
       pathVariables: await readPathVariables(dataDir).catch(() => undefined),
@@ -221,7 +251,8 @@ async function runAutomation(
     const result = await run.result;
     stopListening();
     if (result.failure !== undefined) {
-      io.error(`Stopped at "${result.failure.stepId}": ${result.failure.message}`);
+      const round = result.failure.round === undefined ? '' : ` in round ${result.failure.round}`;
+      io.error(`Stopped at "${result.failure.stepId}"${round}: ${result.failure.message}`);
     }
     io.out(summaryOf(result));
     return exitCodeOf(result);

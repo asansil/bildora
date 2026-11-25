@@ -24,15 +24,25 @@ export const NOTE_TEXT_MAX = 2000;
 export const AUTOMATION_INPUTS_MAX = 50;
 /** Characters in one expression, the leading `=` left out. */
 export const EXPRESSION_MAX_LENGTH = 2000;
+/** Rounds a loop runs at most: items of a For, or rounds of a While. */
+export const LOOP_ROUNDS_MAX = 1000;
+/** Characters in the file pattern of a For over a folder. */
+export const LOOP_PATTERN_MAX_LENGTH = 200;
+/** Automations deep a run can call, the first one included. */
+export const CALL_DEPTH_MAX = 5;
 
 /** Names an output cannot be given by a Switch case, because they mean something else. */
-const RESERVED_CASES = ['next', 'error', 'true', 'false', 'default'];
+const RESERVED_CASES = ['next', 'error', 'true', 'false', 'default', 'body'];
 
 /** Names that start other kinds of values in an expression, so no block can have them as its id. */
 export const RESERVED_BLOCK_IDS: readonly string[] = ['inputs', 'steps', 'run', 'paths', 'loop'];
 
 const nonEmpty = z.string().min(1);
 const blockId = z.string().max(64).regex(NAME_PATTERN);
+const automationId = z.string().max(IDENTIFIER_MAX_LENGTH).regex(IDENTIFIER_PATTERN);
+
+/** The loop a block repeats inside, when it is in one. A block outside every loop leaves it out. */
+const inLoop = { loop: blockId.optional() };
 
 /**
  * A value worked out when it is needed: a link such as `convert.file`, an input such as
@@ -157,6 +167,7 @@ const startBlockSchema = z.strictObject({
 
 const runBlockSchema = z.strictObject({
   id: blockId,
+  ...inLoop,
   type: z.literal('run'),
   tool: z.string().max(IDENTIFIER_MAX_LENGTH).regex(IDENTIFIER_PATTERN),
   profile: z.string().max(IDENTIFIER_MAX_LENGTH).regex(IDENTIFIER_PATTERN).optional(),
@@ -169,6 +180,7 @@ const runBlockSchema = z.strictObject({
 
 const waitForTimeBlockSchema = z.strictObject({
   id: blockId,
+  ...inLoop,
   type: z.literal('wait-for-time'),
   seconds: z.int().min(1).max(WAIT_SECONDS_MAX),
   /** Set when the run passes through this block without doing what it does. */
@@ -177,6 +189,7 @@ const waitForTimeBlockSchema = z.strictObject({
 
 const waitForManualActionBlockSchema = z.strictObject({
   id: blockId,
+  ...inLoop,
   type: z.literal('wait-for-manual-action'),
   message: nonEmpty,
   /** Set when the run passes through this block without doing what it does. */
@@ -185,6 +198,7 @@ const waitForManualActionBlockSchema = z.strictObject({
 
 const ifBlockSchema = z.strictObject({
   id: blockId,
+  ...inLoop,
   type: z.literal('if'),
   condition: conditionSchema,
   /** Set when the run passes through this block without doing what it does. */
@@ -193,6 +207,7 @@ const ifBlockSchema = z.strictObject({
 
 const switchBlockSchema = z.strictObject({
   id: blockId,
+  ...inLoop,
   type: z.literal('switch'),
   /** Checked in order. The first that holds is taken, or Default when none does. */
   cases: z
@@ -205,16 +220,82 @@ const switchBlockSchema = z.strictObject({
 
 const parallelBlockSchema = z.strictObject({
   id: blockId,
+  ...inLoop,
   type: z.literal('parallel'),
 });
 
 const joinBlockSchema = z.strictObject({
   id: blockId,
+  ...inLoop,
   type: z.literal('join'),
   /** The Parallel block this one ends. */
   parallel: blockId,
   /** What a failed branch with no Error output does to the others. Stopping them is the default. */
   onBranchFailure: z.enum(['stop-others', 'let-finish']).optional(),
+});
+
+/** What a failed round does to its loop: end it, which is the default, or go on with the next. */
+const onRoundFailureSchema = z.enum(['stop', 'continue']).optional();
+
+/** The items a For goes through, one round each. */
+const forItemsSchema = z.discriminatedUnion('kind', [
+  /** A list, such as an output value or an expression. */
+  z.strictObject({ kind: z.literal('list'), list: expressionSchema }),
+  /** The files of a folder that match a pattern, sorted by name. */
+  z.strictObject({
+    kind: z.literal('folder'),
+    folder: blockValueSchema,
+    /** Such as `*.pdf`. Every file when left out. */
+    pattern: nonEmpty.max(LOOP_PATTERN_MAX_LENGTH).optional(),
+    subfolders: z.boolean().optional(),
+  }),
+  /** A number of times. Each round's item is its number, from 1. */
+  z.strictObject({
+    kind: z.literal('count'),
+    count: z.union([z.int().min(0).max(LOOP_ROUNDS_MAX), expressionSchema]),
+  }),
+]);
+
+/** Runs the blocks inside it once per item. Its body starts at its `body` output. */
+const forBlockSchema = z.strictObject({
+  id: blockId,
+  ...inLoop,
+  type: z.literal('for'),
+  items: forItemsSchema,
+  onRoundFailure: onRoundFailureSchema,
+});
+
+/**
+ * Runs the blocks inside it while its condition holds, up to a maximum. The condition is checked
+ * before each round, so the body may not run at all.
+ */
+const whileBlockSchema = z.strictObject({
+  id: blockId,
+  ...inLoop,
+  type: z.literal('while'),
+  /**
+   * A yes/no expression. It reads what ran before the loop and what the previous round left; on the
+   * first check, the body's values are empty.
+   */
+  condition: expressionSchema,
+  /** Reaching it with the condition still holding fails the block. */
+  maxRounds: z.int().min(1).max(LOOP_ROUNDS_MAX),
+  /** A wait between rounds, so that something can get ready. */
+  waitSeconds: z.int().min(1).max(WAIT_SECONDS_MAX).optional(),
+  onRoundFailure: onRoundFailureSchema,
+});
+
+/** Runs another automation of the same Workspace, with values for its inputs. */
+const runAutomationBlockSchema = z.strictObject({
+  id: blockId,
+  ...inLoop,
+  type: z.literal('run-automation'),
+  automation: automationId,
+  /** Values for the inputs of the called automation's Start block, by name. */
+  inputs: z.record(z.string().regex(NAME_PATTERN), blockValueSchema).optional(),
+  onFailure: z.union([z.literal('stop'), retrySchema]).optional(),
+  /** Set when the run passes through this block without doing what it does. */
+  disabled: z.literal(true).optional(),
 });
 
 const blockSchema = z.discriminatedUnion('type', [
@@ -226,17 +307,32 @@ const blockSchema = z.discriminatedUnion('type', [
   switchBlockSchema,
   parallelBlockSchema,
   joinBlockSchema,
+  forBlockSchema,
+  whileBlockSchema,
+  runAutomationBlockSchema,
 ]);
 
 const connectionSchema = z.strictObject({
   from: blockId,
-  /** Leaves `next` when left out. Otherwise `error`, `true`, `false`, `default` or a Switch case. */
+  /**
+   * Leaves `next` when left out. Otherwise `error`, `true`, `false`, `default`, a Switch case, or
+   * `body`, which starts the blocks inside a loop.
+   */
   output: blockId.optional(),
   to: blockId,
 });
 
-/** Where a block sits on the canvas. Kept apart so that moving a block does not touch the logic. */
-const positionSchema = z.strictObject({ x: z.number(), y: z.number() });
+/**
+ * Where a block sits on the canvas. Kept apart so that moving a block does not touch the logic. A
+ * loop's frame can also keep a size, which it never gets smaller than; it still grows around its
+ * blocks.
+ */
+const positionSchema = z.strictObject({
+  x: z.number(),
+  y: z.number(),
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+});
 
 /** Text on the canvas. It changes nothing that runs. */
 const noteSchema = z.strictObject({
@@ -257,7 +353,7 @@ const groupSchema = z.strictObject({
 
 const automationShape = z.strictObject({
   schemaVersion: z.literal(AUTOMATION_SCHEMA_VERSION),
-  id: z.string().max(IDENTIFIER_MAX_LENGTH).regex(IDENTIFIER_PATTERN),
+  id: automationId,
   name: nonEmpty,
   description: nonEmpty.optional(),
   blocks: z.array(blockSchema).min(1).max(AUTOMATION_BLOCK_LIMIT),
@@ -328,7 +424,9 @@ export function automationRuleIssues(automation: z.output<typeof automationShape
       report([...path, 'id'], 'block-reserved', { block: block.id }, block.id);
     }
     if (block.type === 'start') checkInputs(block.inputs ?? [], [...path, 'inputs'], block.id);
-    if (block.type === 'if') checkCondition(block.condition, [...path, 'condition'], block.id);
+    if (block.type === 'if') {
+      checkCondition(block.condition, [...path, 'condition'], block.id);
+    }
     if (block.type !== 'switch') return;
     block.cases.forEach((branch, position) => {
       const casePath = [...path, 'cases', position];
@@ -389,6 +487,11 @@ export type AutomationBlock = z.output<typeof blockSchema>;
 export type AutomationConnection = z.output<typeof connectionSchema>;
 export type AutomationCondition = z.output<typeof conditionSchema>;
 export type RunBlock = z.output<typeof runBlockSchema>;
+export type ForBlock = z.output<typeof forBlockSchema>;
+export type ForItems = z.output<typeof forItemsSchema>;
+export type WhileBlock = z.output<typeof whileBlockSchema>;
+export type LoopBlock = ForBlock | WhileBlock;
+export type RunAutomationBlock = z.output<typeof runAutomationBlockSchema>;
 export type AutomationNote = z.output<typeof noteSchema>;
 export type AutomationGroup = z.output<typeof groupSchema>;
 export type AutomationPosition = z.output<typeof positionSchema>;
@@ -399,6 +502,11 @@ export type AutomationInputDeclaration = z.output<typeof inputSchema>;
 export type ExpressionValue = z.output<typeof expressionSchema>;
 export type LiteralValue = z.output<typeof literalSchema>;
 export type BlockValue = z.output<typeof blockValueSchema>;
+
+/** Tells a loop block from the others. */
+export function isLoopBlock(block: { readonly type: string }): block is LoopBlock {
+  return block.type === 'for' || block.type === 'while';
+}
 
 /** Tells a value worked out from others from one held as it is. */
 export function isExpressionValue(value: unknown): value is ExpressionValue {

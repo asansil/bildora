@@ -9,6 +9,15 @@ import type {
 export const DEFAULT_OUTPUT = 'next';
 export const ERROR_OUTPUT = 'error';
 export const DEFAULT_CASE = 'default';
+/** The output inside a loop's frame, where the blocks it repeats begin. */
+export const BODY_OUTPUT = 'body';
+
+/** Block types that repeat the blocks inside them. */
+const LOOPS: ReadonlySet<string> = new Set(['for', 'while']);
+
+export function isLoopType(type: string): boolean {
+  return LOOPS.has(type);
+}
 
 /** Block types a run can pass through without doing what they do. */
 const DISABLEABLE: ReadonlySet<string> = new Set([
@@ -17,6 +26,7 @@ const DISABLEABLE: ReadonlySet<string> = new Set([
   'wait-for-manual-action',
   'if',
   'switch',
+  'run-automation',
 ]);
 
 export function isDisableable(type: string): boolean {
@@ -46,6 +56,8 @@ export interface GraphBlock {
   readonly cases?: readonly { readonly id: string }[];
   /** The Parallel a Join ends. */
   readonly parallel?: string;
+  /** The loop the block repeats inside, if any. */
+  readonly loop?: string | undefined;
 }
 
 export interface GraphConnection {
@@ -74,7 +86,11 @@ export function outputsOf(block: GraphBlock): readonly string[] {
   switch (block.type) {
     case 'run':
     case 'wait-for-manual-action':
+    case 'run-automation':
       return [DEFAULT_OUTPUT, ERROR_OUTPUT];
+    case 'for':
+    case 'while':
+      return [DEFAULT_OUTPUT, ERROR_OUTPUT, BODY_OUTPUT];
     case 'if':
       return ['true', 'false'];
     case 'switch':
@@ -86,6 +102,33 @@ export function outputsOf(block: GraphBlock): readonly string[] {
 
 export function connectionOutput(connection: GraphConnection): string {
   return connection.output ?? DEFAULT_OUTPUT;
+}
+
+/**
+ * The loops around a block, nearest first. A loop that names a missing loop, or loops that hold each
+ * other, end the chain there, which `graphIssues` reports.
+ */
+export function loopChain(blocks: readonly GraphBlock[], id: string): string[] {
+  const byId = new Map(blocks.map((block) => [block.id, block]));
+  const chain: string[] = [];
+  for (let at = byId.get(id)?.loop; at !== undefined; at = byId.get(at)?.loop) {
+    const loop = byId.get(at);
+    if (loop === undefined || !isLoopType(loop.type) || chain.includes(at) || at === id) break;
+    chain.push(at);
+  }
+  return chain;
+}
+
+/** The blocks inside a loop, those of the loops it holds included. */
+export function loopBody(blocks: readonly GraphBlock[], loop: string): string[] {
+  return blocks.filter(({ id }) => loopChain(blocks, id).includes(loop)).map(({ id }) => id);
+}
+
+/** Whether a connection stays within one frame: between blocks of one loop, or into its body. */
+export function staysInFrame(source: GraphBlock, output: string, target: GraphBlock): boolean {
+  return output === BODY_OUTPUT
+    ? isLoopType(source.type) && target.loop === source.id
+    : (source.loop ?? '') === (target.loop ?? '');
 }
 
 export function buildGraph({ blocks, connections }: GraphShape): Graph {
@@ -157,6 +200,19 @@ export function graphIssues(shape: GraphShape): GraphIssue[] {
     add(['blocks'], 'start-count', { count: String(starts.length) });
   }
 
+  blocks.forEach((block, index) => {
+    if (block.loop === undefined) return;
+    const path = ['blocks', index, 'loop'];
+    const loop = byId.get(block.loop);
+    if (loop === undefined || !isLoopType(loop.type)) {
+      add(path, 'loop-missing', { block: block.id, loop: block.loop }, block.id);
+    } else if (block.type === 'start') {
+      add(path, 'start-in-loop', {}, block.id);
+    } else if (block.loop === block.id || loopChain(blocks, loop.id).includes(block.id)) {
+      add(path, 'loop-inside-itself', { block: block.id }, block.id);
+    }
+  });
+
   const used = new Set<string>();
   connections.forEach((connection, index) => {
     const path = ['connections', index];
@@ -184,6 +240,9 @@ export function graphIssues(shape: GraphShape): GraphIssue[] {
       add([...path, 'output'], 'unknown-output', { block: source.id, output }, source.id);
       return;
     }
+    if (target !== undefined && !staysInFrame(source, output, target)) {
+      add(path, 'connection-crosses-loop', { from: source.id, to: target.id }, source.id);
+    }
     const key = `${source.id}\u0000${output}`;
     if (source.type !== 'parallel' && used.has(key)) {
       add([...path, 'output'], 'output-to-many', { block: source.id, output }, source.id);
@@ -198,6 +257,9 @@ export function graphIssues(shape: GraphShape): GraphIssue[] {
 
   const graph = buildGraph(shape);
   blocks.forEach((block, index) => {
+    if (isLoopType(block.type) && !used.has(`${block.id}\u0000${BODY_OUTPUT}`)) {
+      add(['blocks', index], 'loop-body-empty', { block: block.id }, block.id);
+    }
     if (block.type === 'parallel') {
       const branches = connections.filter(({ from }) => from === block.id).length;
       if (branches < 2) {
@@ -281,8 +343,11 @@ export function guarantees(shape: GraphShape): ReadonlyMap<string, Guarantee> {
   /** What a path carries when it leaves a block through a connection. */
   const along = (connection: GraphConnection): Guarantee => {
     const before = known.get(connection.from) ?? none;
+    const output = connectionOutput(connection);
+    // Inside its frame, a loop has not ended yet: its body only knows what came before it.
+    if (output === BODY_OUTPUT) return before;
     const completed = new Set(before.completed);
-    if (connectionOutput(connection) !== ERROR_OUTPUT) completed.add(connection.from);
+    if (output !== ERROR_OUTPUT) completed.add(connection.from);
     return { completed, ran: new Set([...before.ran, connection.from]) };
   };
   const meet = (paths: readonly Guarantee[]): Guarantee => ({
@@ -314,6 +379,38 @@ export function guarantees(shape: GraphShape): ReadonlyMap<string, Guarantee> {
 }
 
 /**
+ * What is certain once a frame has ended well: inside a loop, at the end of a round, or with no
+ * loop, at the end of the run. A path ends at an output that leads nowhere, other than Error, which
+ * fails the round or the run when it is left unconnected.
+ */
+export function endGuarantee(
+  shape: GraphShape,
+  loop: string | undefined,
+  known: ReadonlyMap<string, Guarantee> = guarantees(shape),
+): Guarantee {
+  const ends: Guarantee[] = [];
+  for (const block of shape.blocks) {
+    if ((block.loop ?? undefined) !== loop || block.type === 'parallel') continue;
+    const before = known.get(block.id);
+    if (before === undefined) continue;
+    for (const output of outputsOf(block)) {
+      if (output === ERROR_OUTPUT || output === BODY_OUTPUT) continue;
+      if (shape.connections.some((c) => c.from === block.id && connectionOutput(c) === output)) {
+        continue;
+      }
+      ends.push({
+        completed: new Set([...before.completed, block.id]),
+        ran: new Set([...before.ran, block.id]),
+      });
+    }
+  }
+  return {
+    completed: intersection(ends.map(({ completed }) => completed)),
+    ran: intersection(ends.map(({ ran }) => ran)),
+  };
+}
+
+/**
  * The blocks an output may lead to without breaking a rule, for the canvas to offer. The output's
  * current connection is left out of the trial, since connecting replaces it except on Parallel.
  * Rules that only a later block can satisfy, such as a Parallel's second branch, are not held
@@ -333,6 +430,7 @@ export function validTargets(shape: GraphShape, from: string, output: string): s
   return shape.blocks
     .filter((target) => {
       if (target.id === from || target.type === 'start') return false;
+      if (!staysInFrame(source, output, target)) return false;
       if (reachableFrom(graph, target.id).has(from)) return false;
       if (
         kept.some((c) => c.from === from && c.to === target.id && connectionOutput(c) === output)

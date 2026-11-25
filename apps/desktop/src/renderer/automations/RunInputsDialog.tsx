@@ -11,7 +11,7 @@ import type { FormValues } from '../tools/parameter-form.js';
 const api = window.bildora;
 
 /** An input as the form a tool's parameters use shows it. */
-function parameterOf(input: AutomationInputDeclaration): ParameterView {
+export function inputParameter(input: AutomationInputDeclaration): ParameterView {
   return {
     name: input.name,
     label: input.label ?? input.name,
@@ -34,7 +34,7 @@ export interface RunInputsDialogProps {
 
 /** Asks for an automation's inputs when it starts, in the same form tools use. */
 export function RunInputsDialog({ name, inputs, onRun, onClose, onError }: RunInputsDialogProps) {
-  const parameters = useMemo(() => inputs.map(parameterOf), [inputs]);
+  const parameters = useMemo(() => inputs.map(inputParameter), [inputs]);
   const [values, setValues] = useState<FormValues>(() => initialValues(parameters));
   const [tried, setTried] = useState(false);
   const problems = formProblems(parameters, values, []);

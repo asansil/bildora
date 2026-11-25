@@ -4,9 +4,12 @@ import {
   automationSchema,
   buildAutomationJsonSchema,
   disabledOutput,
+  endGuarantee,
   guarantees,
   isDisableable,
+  loopChain,
   topologicalOrder,
+  validTargets,
 } from './index.js';
 
 const base = { schemaVersion: 2, id: 'nightly-report', name: 'Nightly report' };
@@ -500,5 +503,137 @@ describe('guarantees', () => {
       'start',
       'x',
     ]);
+  });
+});
+
+describe('loops', () => {
+  const forEach = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    type: 'for',
+    items: { kind: 'count', count: 3 },
+    ...extra,
+  });
+  const inside = (id: string, loop: string) => ({ ...run(id), loop });
+  const looped = {
+    ...base,
+    blocks: [
+      start,
+      forEach('For1', { onRoundFailure: 'continue' }),
+      inside('convert', 'For1'),
+      {
+        ...forEach('For2'),
+        loop: 'For1',
+        items: { kind: 'list', list: { expression: 'inputs.files' } },
+      },
+      inside('deep', 'For2'),
+      {
+        id: 'While1',
+        type: 'while',
+        condition: { expression: 'not steps.poll.outputs.ready' },
+        maxRounds: 10,
+        waitSeconds: 30,
+      },
+      inside('poll', 'While1'),
+      {
+        id: 'Report1',
+        type: 'run-automation',
+        automation: 'acme.report',
+        inputs: { file: { expression: 'inputs.file' } },
+      },
+      run('after'),
+    ],
+    connections: [
+      { from: 'start', to: 'For1' },
+      { from: 'For1', output: 'body', to: 'convert' },
+      { from: 'convert', to: 'For2' },
+      { from: 'For2', output: 'body', to: 'deep' },
+      { from: 'For1', to: 'While1' },
+      { from: 'While1', output: 'body', to: 'poll' },
+      { from: 'While1', to: 'Report1' },
+      { from: 'Report1', to: 'after' },
+    ],
+  };
+
+  it('accepts loops that nest, and a call of another automation', () => {
+    expect(issues(looped)).toEqual([]);
+    const validate = new Ajv2020({ strict: false }).compile(buildAutomationJsonSchema());
+    expect(validate(looped)).toBe(true);
+  });
+
+  it('refuses more than 1000 rounds, a While with no maximum, and a While with rules', () => {
+    expect(issues(chain(forEach('f', { items: { kind: 'count', count: 1001 } })))).not.toEqual([]);
+    expect(
+      issues(
+        chain({
+          id: 'r',
+          type: 'while',
+          condition: looped.blocks[5]?.['condition' as never],
+        }),
+      ),
+    ).not.toEqual([]);
+    expect(
+      issues(
+        chain({
+          id: 'r',
+          type: 'while',
+          maxRounds: 3,
+          condition: {
+            match: 'all',
+            rules: [{ field: 'result', block: 'start', operator: 'is', value: 'completed' }],
+          },
+        }),
+      ),
+    ).not.toEqual([]);
+  });
+
+  it('refuses a loop that is not one, the Start inside a loop, and loops inside themselves', () => {
+    expect(issues(chain(inside('a', 'b'), run('b')))).toContain(
+      'Block "a" is inside "b", which is not a loop block',
+    );
+    expect(
+      issues({ ...base, blocks: [{ ...start, loop: 'f' }, forEach('f')], connections: [] }),
+    ).not.toEqual([]);
+    const circle = chain(forEach('f', { loop: 'g' }), forEach('g', { loop: 'f' }));
+    expect(issues(circle)).toContain('Loop "f" ends up inside itself');
+  });
+
+  it('refuses connections across a frame, and a loop with nothing to repeat', () => {
+    const crossing = {
+      ...base,
+      blocks: [start, forEach('f'), inside('a', 'f'), run('b')],
+      connections: [
+        { from: 'start', to: 'f' },
+        { from: 'f', output: 'body', to: 'a' },
+        { from: 'a', to: 'b' },
+      ],
+    };
+    expect(issues(crossing)).toEqual([
+      'The connection from "a" to "b" crosses the frame of a loop',
+    ]);
+    expect(issues(chain(forEach('f')))).toEqual(['Loop "f" has nothing to repeat']);
+    expect(
+      issues({
+        ...crossing,
+        connections: [
+          { from: 'start', to: 'a' },
+          { from: 'f', output: 'body', to: 'a' },
+        ],
+      }),
+    ).toContain('The connection from "start" to "a" crosses the frame of a loop');
+  });
+
+  it('lets the body know only what came before its loop, and what ran in its round', () => {
+    const known = guarantees(looped);
+    expect([...(known.get('convert')?.completed ?? [])].sort()).toEqual(['start']);
+    expect([...(known.get('deep')?.completed ?? [])].sort()).toEqual(['convert', 'start']);
+    expect([...(known.get('While1')?.ran ?? [])].sort()).toEqual(['For1', 'start']);
+    expect(endGuarantee(looped, 'While1').completed.has('poll')).toBe(true);
+    expect(endGuarantee(looped, undefined).completed.has('Report1')).toBe(true);
+    expect(loopChain(looped.blocks, 'deep')).toEqual(['For2', 'For1']);
+  });
+
+  it('offers only targets inside the same frame', () => {
+    expect(validTargets(looped, 'For1', 'body').sort()).toEqual(['For2', 'convert']);
+    expect(validTargets(looped, 'convert', 'error')).toEqual(['For2']);
   });
 });

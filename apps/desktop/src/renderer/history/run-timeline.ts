@@ -22,11 +22,19 @@ export interface TimelineSegment {
 }
 
 export interface TimelineRow {
+  /** The row's own key: the block's id, with its round for a block inside a loop. */
+  readonly key: string;
   readonly id: string;
+  /** The round of a block inside a loop, such as `For1:3`. */
+  readonly round?: string;
+  /** For a loop, how many rounds it ran. */
+  readonly rounds?: number;
+  /** For a Run automation block, the run it started. */
+  readonly calledRunId?: string;
   /** The block as the automation holds it now. Absent when it has since been removed. */
   readonly block?: AutomationBlock;
   readonly state: StepStateView;
-  /** How many Parallel blocks it sits inside. */
+  /** How many Parallel blocks and loops it sits inside. */
   readonly depth: number;
   /** When the run reached it, in milliseconds since the epoch. Unknown for some older runs. */
   readonly startedAt?: number;
@@ -144,17 +152,26 @@ export function timelineOf(
                 state: step.state,
               },
             ];
+    const loops = step.round === undefined ? 0 : step.round.split('/').length;
     return {
+      key: step.round === undefined ? step.id : `${step.id}@${step.round}`,
       id: step.id,
+      ...(step.round === undefined ? {} : { round: step.round }),
+      ...(step.rounds === undefined ? {} : { rounds: step.rounds }),
+      ...(step.calledRunId === undefined ? {} : { calledRunId: step.calledRunId }),
       ...(block === undefined ? {} : { block }),
       state: step.state,
-      depth: fileDepths.get(step.id) ?? pathDepths.get(step.id) ?? 0,
+      depth: (fileDepths.get(step.id) ?? pathDepths.get(step.id) ?? 0) + loops,
       ...(startedAt === undefined ? {} : { startedAt }),
       ...(step.durationMs === undefined ? {} : { durationMs: step.durationMs }),
       tries,
       ...(first === undefined ? {} : { toolId: first.toolId, toolName: first.toolName }),
       taken: [
-        ...new Set(run.paths.filter(({ from }) => from === step.id).map(({ output }) => output)),
+        ...new Set(
+          run.paths
+            .filter(({ from, round }) => from === step.id && round === step.round)
+            .map(({ output }) => output),
+        ),
       ],
       ...(step.failure === undefined ? {} : { failure: step.failure }),
       segments,
@@ -173,7 +190,7 @@ export function timelineOf(
     const visit = visits.indexOf(row.id);
     return visit === -1
       ? [1, 0, rows.indexOf(row)]
-      : [0, sortTime.get(row.id) ?? run.startedAt, visit];
+      : [0, row.startedAt ?? sortTime.get(row.id) ?? run.startedAt, visit];
   };
   const ordered = [...rows].sort((a, b) => {
     const [ra, rb] = [rank(a), rank(b)];

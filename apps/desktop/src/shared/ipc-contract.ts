@@ -527,6 +527,11 @@ export type StepStateView =
 
 export interface StepRunView {
   readonly id: string;
+  /**
+   * The round of a block inside a loop, as `<loop>:<index>` with the loops around it first, such as
+   * `For1:3/While1:2`. Left out outside loops.
+   */
+  readonly round?: string;
   /** The kind of block, as in the file. */
   readonly type?: string;
   readonly state: StepStateView;
@@ -549,6 +554,17 @@ export interface StepRunView {
   readonly outputs?: readonly StepOutputView[];
   /** Some values were shortened, or left out, to keep the record small. */
   readonly truncated?: true;
+  /** For a loop, how many rounds it has run. */
+  readonly rounds?: number;
+  /** For a Run automation block, the run it started. */
+  readonly calledRunId?: string;
+}
+
+/** The Run automation block, and its round, that started a run. */
+export interface RunCallerView {
+  readonly runId: string;
+  readonly blockId: string;
+  readonly round?: string;
 }
 
 /** A value a block's tool received. A secret shows only that it was set. */
@@ -578,12 +594,16 @@ export interface AutomationRunStateView {
   readonly steps: readonly StepRunView[];
   /** Connections the run went along, in order. */
   readonly paths: readonly TakenPathView[];
+  /** Set when a Run automation block of another run started this one. */
+  readonly caller?: RunCallerView;
 }
 
 export interface TakenPathView {
   readonly from: string;
   readonly output: string;
   readonly to: string;
+  /** The round it was followed in, for a connection inside a loop. */
+  readonly round?: string;
 }
 
 /** A past run of an automation, from the app or from the CLI. */
@@ -595,6 +615,7 @@ export interface AutomationRunRecordView {
   readonly durationMs?: number;
   readonly failure?: {
     readonly stepId: string;
+    readonly round?: string;
     readonly kind: string;
     readonly message: string;
   };
@@ -602,6 +623,8 @@ export interface AutomationRunRecordView {
   readonly format: 'steps' | 'blocks';
   readonly steps: readonly StepRunView[];
   readonly paths: readonly TakenPathView[];
+  /** Set when a Run automation block of another run started this one. */
+  readonly caller?: RunCallerView;
 }
 
 /** One row of Run history: a tool run, or an automation run standing for the tool runs it made. */

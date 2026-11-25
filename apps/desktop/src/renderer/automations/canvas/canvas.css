@@ -413,6 +413,11 @@
   --family-tint: var(--bildora-family-wait-tint);
 }
 
+.family-loop {
+  --family: var(--bildora-family-loop);
+  --family-tint: var(--bildora-family-loop-tint);
+}
+
 .block.is-selected {
   border-color: var(--bildora-accent);
   box-shadow:
@@ -421,7 +426,8 @@
 }
 
 /* The block under a dragged pick-whip, when one of its values fits the field. */
-.react-flow__node.is-whip-target .block {
+.react-flow__node.is-whip-target .block,
+.react-flow__node.is-whip-target .loop {
   border-color: var(--bildora-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--bildora-accent) 35%, transparent);
 }
@@ -539,6 +545,196 @@
   font-weight: var(--bildora-weight-medium);
   pointer-events: all;
   cursor: grab;
+}
+
+/*
+ * A loop: a frame in its family's color around the blocks it repeats, stronger than a group's.
+ * Only its header and ports take the pointer, so a box can still be drawn inside it.
+ */
+.react-flow__node-loop {
+  pointer-events: none;
+}
+
+.loop {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border: 1.5px solid color-mix(in oklch, var(--family) 55%, transparent);
+  border-radius: var(--bildora-radius-lg);
+  background: color-mix(in oklch, var(--family-tint) 35%, transparent);
+}
+
+.loop .react-flow__handle {
+  pointer-events: all;
+}
+
+.loop.is-selected {
+  border-color: var(--bildora-accent);
+  box-shadow: 0 0 0 1px var(--bildora-accent);
+}
+
+.loop.is-port-peer {
+  border-color: color-mix(in srgb, var(--bildora-accent) 60%, var(--family));
+}
+
+.loop.is-skipped {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
+.loop-header {
+  display: flex;
+  align-items: center;
+  gap: var(--bildora-space-2);
+  height: 32px;
+  padding: 0 var(--bildora-space-2) 0 0;
+  background: var(--family-tint);
+  border-bottom: 1px solid color-mix(in oklch, var(--family) 30%, transparent);
+  border-radius: calc(var(--bildora-radius-lg) - 2px) calc(var(--bildora-radius-lg) - 2px) 0 0;
+  pointer-events: all;
+  cursor: grab;
+}
+
+.loop-header .block-tile {
+  border-right-color: color-mix(in oklch, var(--family) 30%, transparent);
+  border-radius: calc(var(--bildora-radius-lg) - 2px) 0 0 0;
+}
+
+.loop-name {
+  min-width: 0;
+  font-weight: var(--bildora-weight-medium);
+  line-height: var(--bildora-line-tight);
+}
+
+.loop-kind {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--bildora-text-muted);
+  font-size: var(--bildora-text-sm);
+}
+
+.loop-chip {
+  margin: 0 2px;
+  padding: 0 6px;
+  border-radius: var(--bildora-radius-sm);
+  background: color-mix(in oklch, var(--family) 18%, var(--bildora-surface-raised));
+  color: var(--bildora-text);
+  font-family: var(--bildora-font-mono);
+  font-size: var(--bildora-text-xs);
+}
+
+/* A selected frame grows from a small square at any of its corners. */
+.loop-corner.react-flow__resize-control.handle {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--bildora-accent);
+  border-radius: 1.5px;
+  background: var(--bildora-surface-raised);
+  pointer-events: all;
+  /* Above the header, which would otherwise cover the top corners. */
+  z-index: 5;
+}
+
+/* The corners share the class ports are drawn by, but none of their shape. */
+.loop-corner.react-flow__resize-control.handle::before {
+  content: none;
+}
+
+.loop .block-state {
+  top: -9px;
+  left: -9px;
+}
+
+.loop-detail {
+  display: block;
+  padding: var(--bildora-space-1) var(--bildora-space-3);
+  color: var(--bildora-text-muted);
+  font-size: var(--bildora-text-sm);
+}
+
+.loop.is-failed .loop-detail {
+  color: var(--bildora-status-failed);
+}
+
+/* The body port sits under the header on the left; its line runs down to the first block inside. */
+.handle--body {
+  --port-color: var(--family);
+}
+
+/* "‹ Round 3 / 12 ›" and a dot per round, in the run view. */
+.loop-rounds {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--bildora-text-sm);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+
+.loop-round-step {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--bildora-text-muted);
+  background: none;
+  border: none;
+  border-radius: var(--bildora-radius-sm);
+  cursor: pointer;
+}
+
+.loop-round-step:not(:disabled):hover {
+  color: var(--bildora-text);
+  background: var(--bildora-surface-hover);
+}
+
+.loop-round-step:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.loop-round-text {
+  white-space: nowrap;
+}
+
+.loop-round-dots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  max-width: 160px;
+  margin-left: var(--bildora-space-1);
+}
+
+.loop-round-dot {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  background: var(--bildora-text-muted);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.loop-round-dot.is-completed {
+  background: var(--bildora-status-completed);
+}
+
+.loop-round-dot.is-failed {
+  background: var(--bildora-status-failed);
+}
+
+.loop-round-dot.is-running {
+  background: var(--bildora-status-running);
+}
+
+.loop-round-dot.is-current {
+  outline: 2px solid var(--bildora-text);
+  outline-offset: 1px;
 }
 
 /* The run view: state by icon, Skipped blocks dimmed, the path taken drawn heavier. */
@@ -1281,4 +1477,45 @@
 
 .block.is-failed .block-detail {
   color: var(--bildora-status-failed);
+}
+
+/* The automation a Run automation block calls, with a way to open it. */
+.call-target {
+  display: flex;
+  align-items: center;
+  gap: var(--bildora-space-2);
+  min-width: 0;
+}
+
+.call-target > span {
+  flex: 1;
+  font-weight: var(--bildora-weight-medium);
+}
+
+/* In the header of a called run, the run that called it. */
+.called-by {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--bildora-space-1);
+  white-space: nowrap;
+}
+
+/* A While's condition: what it reads back as, quick pieces, and what it can read. */
+.while-readback {
+  margin: 0;
+  color: var(--bildora-text-muted);
+  font-size: var(--bildora-text-sm);
+}
+
+.while-inserts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bildora-space-1);
+}
+
+.while-inserts button {
+  padding: 1px var(--bildora-space-2);
+  border-style: dashed;
+  color: var(--bildora-text-muted);
+  font-size: var(--bildora-text-sm);
 }

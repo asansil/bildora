@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { AutomationBlock, AutomationConnection } from '@bildora/protocol';
 import { sizeOf } from './flow-document.js';
 import { layoutBlocks, placeMissing } from './layout.js';
-import { emptyDocument } from './flow-document.js';
+import { documentFrames, emptyDocument } from './flow-document.js';
+import type { Rect } from './loop-frames.js';
 
 const run = (id: string): AutomationBlock => ({ id, type: 'run', tool: 'acme.tool' });
 
@@ -84,5 +85,54 @@ describe('layout', () => {
     });
     expect(placed?.['extract']?.x).toBeGreaterThan(sizeOf({ id: 'start', type: 'start' }).width);
     expect(placed?.['extract']?.y).toBe(0);
+  });
+});
+
+describe('laying out loops', () => {
+  it('puts the blocks of each loop inside its frame, and nothing else there', async () => {
+    const blocks: AutomationBlock[] = [
+      { id: 'start', type: 'start' },
+      { id: 'Outer', type: 'for', items: { kind: 'count', count: 2 } },
+      { id: 'A', type: 'wait-for-time', seconds: 1, loop: 'Outer' },
+      {
+        id: 'Inner',
+        type: 'while',
+        loop: 'Outer',
+        maxRounds: 2,
+        condition: { expression: 'loop.index < 2' },
+      },
+      { id: 'B', type: 'wait-for-time', seconds: 1, loop: 'Inner' },
+      { id: 'After', type: 'wait-for-time', seconds: 1 },
+    ];
+    const connections = [
+      { from: 'start', to: 'Outer' },
+      { from: 'Outer', output: 'body', to: 'A' },
+      { from: 'A', to: 'Inner' },
+      { from: 'Inner', output: 'body', to: 'B' },
+      { from: 'Outer', to: 'After' },
+    ];
+    const positions = await layoutBlocks(blocks, connections);
+    const document = { ...emptyDocument(), blocks, connections, positions };
+    const frames = documentFrames(document);
+    const outer = frames.get('Outer');
+    const inner = frames.get('Inner');
+    const inside = (rect: Rect | undefined, id: string): boolean => {
+      const at = positions[id];
+      const block = blocks.find((item) => item.id === id);
+      if (rect === undefined || at === undefined || block === undefined) return false;
+      const { width, height } = sizeOf(block);
+      return (
+        at.x >= rect.x &&
+        at.y >= rect.y &&
+        at.x + width <= rect.x + rect.width &&
+        at.y + height <= rect.y + rect.height
+      );
+    };
+    expect(inside(outer, 'A')).toBe(true);
+    expect(inside(inner, 'B')).toBe(true);
+    expect(inside(outer, 'B')).toBe(true);
+    expect(inside(outer, 'start')).toBe(false);
+    expect(inside(outer, 'After')).toBe(false);
+    expect(positions['Outer']).toEqual({ x: outer?.x, y: outer?.y });
   });
 });
