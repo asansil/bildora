@@ -10,7 +10,7 @@ import type {
 } from '../../shared/ipc-contract.js';
 import { RunStateBadge, RunStateIcon } from '../shell/RunStateBadge.js';
 import { AutomationRunDetail } from './AutomationRunDetail.js';
-import { formatDuration, formatTime, historyState } from './history-format.js';
+import { TRIGGER_ROWS, formatDuration, formatTime, historyState } from './history-format.js';
 import { RunFacts } from './RunFacts.js';
 
 const api = window.bildora;
@@ -117,7 +117,7 @@ function EntryRow({
             <span className="truncate">{name}</span>
           </span>
           <span className="muted truncate">
-            {t(entry.trigger === 'cli' ? 'history.automationRowCli' : 'history.automationRow', {
+            {t(TRIGGER_ROWS[entry.trigger], {
               time,
             })}
           </span>

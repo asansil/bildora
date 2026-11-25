@@ -12,6 +12,7 @@ import {
   startAutomationRun,
 } from '@bildora/core';
 import type {
+  AutomationAt,
   AutomationRun,
   AutomationRunOptions,
   AutomationRunView,
@@ -35,8 +36,10 @@ import type {
   AutomationListView,
   AutomationProblemView,
   AutomationView,
+  ScheduleStatusView,
 } from '../shared/ipc-contract.js';
 import type { ServiceRunRequest } from './run-service.js';
+import type { ScheduleService } from './schedule-service.js';
 
 /** How often a run's state reaches the shell. A chatty tool must not flood the page. */
 const SHELL_UPDATE_MS = 33;
@@ -53,6 +56,8 @@ export interface AutomationServiceOptions {
     request: ServiceRunRequest,
   ) => Promise<RecordedToolRun>;
   readonly onChange: (views: readonly AutomationRunView[]) => void;
+  /** Keeps scheduled tasks in step, where this computer can schedule. */
+  readonly schedules?: ScheduleService;
 }
 
 interface ActiveAutomation {
@@ -163,6 +168,8 @@ export class AutomationService {
       );
     }
     const saved = await saveAutomation(dataDir, workspace, parsed.automation);
+    // A task that cannot follow now says so in the Start block; the file is saved either way.
+    await this.options.schedules?.apply(workspace, saved).catch(() => undefined);
     return this.viewOf(saved, workspace);
   }
 
@@ -180,8 +187,37 @@ export class AutomationService {
       throw new Error('This automation is running');
     }
     await removeAutomation(dataDir, workspace, id, history);
+    await this.options.schedules
+      ?.forget({ workspaceId: workspace, automationId: id })
+      .catch(() => undefined);
     this.lastFinished.delete(`${workspace}/${id}`);
     this.sendChanges();
+  }
+
+  private async scheduleTarget(
+    id: string,
+  ): Promise<{ schedules: ScheduleService; target: AutomationAt }> {
+    const { dataDir, workspaceId, schedules } = this.options;
+    if (schedules === undefined) throw new Error('This computer cannot schedule automations');
+    const workspace = workspaceId();
+    const automation = await getAutomation(dataDir, workspace, id);
+    if (automation === undefined) throw new Error('This automation no longer exists');
+    return { schedules, target: { workspaceId: workspace, automation } };
+  }
+
+  /** How an automation's schedule stands on this computer. */
+  async scheduleStatus(id: string): Promise<ScheduleStatusView> {
+    const { schedules, target } = await this.scheduleTarget(id);
+    return schedules.status(target);
+  }
+
+  /** Turns an automation's schedule on or off for this computer, as saved in its file. */
+  async setSchedule(
+    id: string,
+    choice: { readonly on: boolean; readonly signedOut?: boolean | undefined },
+  ): Promise<ScheduleStatusView> {
+    const { schedules, target } = await this.scheduleTarget(id);
+    return schedules.set(target, choice);
   }
 
   /** Tells whether an automation is going on in this session. The CLI's runs are its own. */

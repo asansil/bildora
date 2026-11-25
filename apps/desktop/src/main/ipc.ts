@@ -17,6 +17,7 @@ import { t } from '../shared/i18n/translate.js';
 import {
   automationDraftSchema,
   automationIdSchema,
+  automationScheduleSchema,
   automationStartSchema,
   automationConfirmSchema,
   automationRunIdSchema,
@@ -310,6 +311,12 @@ export function registerIpc(context: IpcContext): void {
     automations.confirm(runId, stepId);
   });
   handle(CHANNELS.automationsRuns, noInputSchema, () => automations.views());
+  handle(CHANNELS.automationsScheduleStatus, automationIdSchema, ({ id }) =>
+    automations.scheduleStatus(id),
+  );
+  handle(CHANNELS.automationsScheduleSet, automationScheduleSchema, ({ id, on, signedOut }) =>
+    automations.setSchedule(id, { on, signedOut }),
+  );
   handle(CHANNELS.automationsHistory, automationIdSchema, ({ id }) =>
     history.listAutomationRuns(workspaces.activeId, id),
   );

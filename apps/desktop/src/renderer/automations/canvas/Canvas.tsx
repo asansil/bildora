@@ -51,7 +51,14 @@ import type {
   TakenPathView,
   ToolView,
 } from '../../../shared/ipc-contract.js';
-import { blockKindText, loopHeader, loopSummary, outputLabel, portText } from './block-text.js';
+import {
+  blockKindText,
+  loopHeader,
+  loopSummary,
+  outputLabel,
+  portText,
+  scheduleText,
+} from './block-text.js';
 import {
   NOTE_SIZE,
   blockOf,
@@ -804,6 +811,9 @@ export function Canvas({
             name: names.get(block.id) ?? block.id,
             // Start's name already says what it is, so its second line says when it runs.
             kindLabel: blockKindText(block, tools, automations),
+            ...(block.type === 'start' && block.mode === 'scheduled' && block.schedule !== undefined
+              ? { schedule: scheduleText(block.schedule) }
+              : {}),
             outputs: outputsOf(block).map((id) => ({ id, label: outputLabel(id) })),
             domId: domId(prefix, block.id),
             blockId: block.id,

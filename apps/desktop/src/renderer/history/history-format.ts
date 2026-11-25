@@ -1,6 +1,30 @@
 import { t } from '../../shared/i18n/translate.js';
+import type { MessageKey } from '../../shared/i18n/translate.js';
 import type { HistoryStatus } from '../../shared/ipc-contract.js';
 import type { ToolState } from '../tools/run-state.js';
+
+type Trigger = 'app' | 'cli' | 'schedule';
+
+/** Where an automation run came from, as the automation's Past runs list says it. */
+export const TRIGGER_LABELS: Readonly<Record<Trigger, MessageKey>> = {
+  app: 'automation.fromApp',
+  cli: 'automation.fromCli',
+  schedule: 'automation.fromSchedule',
+};
+
+/** Where an automation run came from, as its history detail says it. */
+export const TRIGGER_NAMES: Readonly<Record<Trigger, MessageKey>> = {
+  app: 'history.fromApp',
+  cli: 'history.fromCli',
+  schedule: 'history.fromSchedule',
+};
+
+/** A history row's title, which says when a run did not come from the app. */
+export const TRIGGER_ROWS: Readonly<Record<Trigger, MessageKey>> = {
+  app: 'history.automationRow',
+  cli: 'history.automationRowCli',
+  schedule: 'history.automationRowSchedule',
+};
 
 const MILLISECONDS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;

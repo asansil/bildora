@@ -135,6 +135,8 @@ input:not([type]),
 input[type='number'],
 input[type='password'],
 input[type='search'],
+input[type='date'],
+input[type='time'],
 select {
   width: 100%;
   height: var(--bildora-control-height);

@@ -111,6 +111,13 @@ export const automationStartSchema = z.strictObject({
   inputs: valuesSchema.optional(),
 });
 export const automationRunIdSchema = z.strictObject({ runId: idSchema });
+/** Turns an automation's schedule on or off for this computer, or changes how it runs. */
+export const automationScheduleSchema = z.strictObject({
+  id: idSchema,
+  on: z.boolean(),
+  /** Runs with nobody signed in, which asks for administrator rights. */
+  signedOut: z.boolean().optional(),
+});
 export const automationConfirmSchema = z.strictObject({
   runId: idSchema,
   /** The block to answer, when a run waits on several at once. */
@@ -609,7 +616,7 @@ export interface TakenPathView {
 /** A past run of an automation, from the app or from the CLI. */
 export interface AutomationRunRecordView {
   readonly runId: string;
-  readonly trigger: 'app' | 'cli';
+  readonly trigger: 'app' | 'cli' | 'schedule';
   readonly startedAt: number;
   readonly status: HistoryStatus;
   readonly durationMs?: number;
@@ -653,4 +660,20 @@ export interface HistoryRecordView extends HistorySummaryView {
   }[];
   readonly output: string;
   readonly outputTruncated: boolean;
+}
+
+/** How an automation's schedule stands on this computer. */
+export type ScheduleKind = 'off' | 'blocked' | 'on' | 'missing' | 'changed' | 'outdated';
+
+export interface ScheduleStatusView {
+  readonly kind: ScheduleKind;
+  /** Why a schedule that is on cannot run. */
+  readonly blocker?: 'not-scheduled' | 'input-without-default' | 'past';
+  /** Whether it runs with nobody signed in, as chosen for this computer. */
+  readonly signedOut: boolean;
+  readonly nextRun?: string;
+  readonly lastRun?: string;
+  /** The exit code of the last run, which `bildora run` documents. */
+  readonly lastResult?: number;
+  readonly running: boolean;
 }

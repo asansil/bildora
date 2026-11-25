@@ -33,6 +33,8 @@ export const CHANNELS = {
   automationsRuns: 'automations:runs',
   automationsChanged: 'automations:changed',
   automationsHistory: 'automations:history',
+  automationsScheduleStatus: 'automations:schedule-status',
+  automationsScheduleSet: 'automations:schedule-set',
   profilesList: 'profiles:list',
   profilesSave: 'profiles:save',
   profilesRemove: 'profiles:remove',

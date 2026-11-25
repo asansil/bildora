@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BrowserWindow, app, dialog, nativeTheme, session } from 'electron';
@@ -6,15 +7,21 @@ import appIcon from '../../resources/icon.png?asset';
 import {
   RunHistory,
   ToolRegistry,
+  WindowsScheduler,
   createCredentialStore,
+  listAutomations,
+  listWorkspaces,
   resolveDataDir,
   startToolRun,
+  taskRootFor,
 } from '@bildora/core';
+import type { AutomationAt } from '@bildora/core';
 import { CHANNELS } from '../shared/channels.js';
 import { t } from '../shared/i18n/translate.js';
 import { AutomationService } from './automation-service.js';
 import { registerIpc } from './ipc.js';
 import { RunService } from './run-service.js';
+import { SCHEDULED_RUN_ARGUMENT, ScheduleService, scheduledCommand } from './schedule-service.js';
 import type { RunContext } from './run-service.js';
 import { ToolService } from './tool-service.js';
 import { shellWebPreferences, titleBarOverlay } from './web-preferences.js';
@@ -135,6 +142,24 @@ async function openHistory(): Promise<{ history: RunHistory; problem?: string }>
   }
 }
 
+/**
+ * Keeps scheduled tasks in step with every automation of every Workspace, as Bildora starts. A
+ * Workspace or file that cannot be read keeps its tasks, since its automations may only be damaged.
+ */
+async function reviewSchedules(schedules: ScheduleService): Promise<void> {
+  const { workspaces, problems } = await listWorkspaces(dataDir);
+  const targets: AutomationAt[] = [];
+  let complete = problems.length === 0;
+  for (const workspace of workspaces) {
+    const list = await listAutomations(dataDir, workspace.id);
+    complete &&= list.problems.length === 0;
+    targets.push(
+      ...list.automations.map((automation) => ({ workspaceId: workspace.id, automation })),
+    );
+  }
+  await schedules.review(targets, complete);
+}
+
 async function start(): Promise<void> {
   await app.whenReady();
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
@@ -166,8 +191,23 @@ async function start(): Promise<void> {
       sendToShell(CHANNELS.runsOutput, output);
     },
   );
+  // Only Windows has a scheduler Bildora can drive so far.
+  const schedules =
+    process.platform === 'win32'
+      ? new ScheduleService(
+          dataDir,
+          new WindowsScheduler({ root: taskRootFor(dataDir) }),
+          (location) =>
+            scheduledCommand(
+              process.execPath,
+              app.isPackaged ? undefined : app.getAppPath(),
+              location,
+            ),
+        )
+      : undefined;
   const automations = new AutomationService({
     dataDir,
+    ...(schedules === undefined ? {} : { schedules }),
     registry,
     history,
     workspaceId: () => workspaces.activeId,
@@ -196,9 +236,44 @@ async function start(): Promise<void> {
   });
 
   shellWindow = createShellWindow(runs, automations);
+  // Nothing waits for this: a task out of step shows in its Start block when someone opens it.
+  if (schedules !== undefined) void reviewSchedules(schedules).catch(() => undefined);
 }
 
-if (app.requestSingleInstanceLock()) {
+/** What the command module gives: the bildora command, run in this process. */
+interface CommandModule {
+  readonly main: (args: readonly string[], trigger: 'cli' | 'schedule') => Promise<number>;
+}
+
+function isCommandModule(value: unknown): value is CommandModule {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'main' in value &&
+    typeof value.main === 'function'
+  );
+}
+
+/**
+ * Runs one automation for a scheduled task, with no window, and quits with the command's exit code,
+ * which Task Scheduler shows as the task's last result.
+ */
+async function runScheduled(args: readonly string[]): Promise<void> {
+  const exitCodeCannotStart = 5;
+  try {
+    const entry = createRequire(import.meta.url).resolve('@bildora/cli/dist/main.js');
+    const command: unknown = await import(pathToFileURL(entry).href);
+    app.exit(isCommandModule(command) ? await command.main(args, 'schedule') : exitCodeCannotStart);
+  } catch {
+    app.exit(exitCodeCannotStart);
+  }
+}
+
+const scheduledAt = process.argv.indexOf(SCHEDULED_RUN_ARGUMENT);
+if (scheduledAt !== -1) {
+  // Before the single-instance lock: a scheduled run must not hand over to an open app.
+  void runScheduled(process.argv.slice(scheduledAt + 1));
+} else if (app.requestSingleInstanceLock()) {
   app.on('second-instance', () => {
     if (shellWindow?.isMinimized() === true) {
       shellWindow.restore();

@@ -33,7 +33,12 @@ import type {
   ToolView,
 } from '../../shared/ipc-contract.js';
 import { AUTOMATION_PANEL_SIZES } from '../../shared/ipc-contract.js';
-import { formatDuration, formatTime, historyState } from '../history/history-format.js';
+import {
+  TRIGGER_LABELS,
+  formatDuration,
+  formatTime,
+  historyState,
+} from '../history/history-format.js';
 import { PanelResizer } from '../shell/PanelResizer.js';
 import { RunStateBadge } from '../shell/RunStateBadge.js';
 import { ConsolePane } from '../tools/ConsolePane.js';
@@ -48,6 +53,7 @@ import { BlockSettings } from './canvas/BlockSettings.js';
 import { blockCardMenu } from './canvas/block-menu.js';
 import type { BlockTab } from './canvas/BlockSettings.js';
 import { PanelSectionsContext } from './canvas/PanelSection.js';
+import { ScheduleStatusContext, useScheduleStatus } from './schedule-status.js';
 import type { PanelSections } from './canvas/PanelSection.js';
 import { blockKindText, blockNames, kindLabel, roundText } from './canvas/block-text.js';
 import { Canvas } from './canvas/Canvas.js';
@@ -150,9 +156,7 @@ function PastRuns({ runs, shown, onOpen, onOpenOutput, onOpenInHistory }: PastRu
               {...finishedLabel(run.status, run.steps)}
             />
             <span className="truncate">{formatTime(run.startedAt)}</span>
-            <span className="muted">
-              {t(run.trigger === 'cli' ? 'automation.fromCli' : 'automation.fromApp')}
-            </span>
+            <span className="muted">{t(TRIGGER_LABELS[run.trigger])}</span>
             <span className="row-count">{formatDuration(run.durationMs)}</span>
             {run.failure === undefined ? null : (
               <span className="muted automation-run-failure">{run.failure.message}</span>
@@ -914,6 +918,16 @@ function FlowEditor({
       .catch(onError);
   }
 
+  // The schedule's task follows the saved file, so turning it on saves what is on screen first.
+  const schedule = useScheduleStatus(
+    automation?.id,
+    saved,
+    async () => {
+      if (dirty) await store();
+    },
+    onError,
+  );
+
   function changePanels(change: AutomationPanelsView, commit = true): void {
     onPanels({ ...panels, ...change }, commit);
   }
@@ -1096,622 +1110,631 @@ function FlowEditor({
   };
 
   return (
-    <section
-      className="automation-tab flow-tab"
-      data-testid="automations"
-      onKeyDown={(event) => {
-        // Text fields keep their own undo; elsewhere in the tab, undo steps through the flow.
-        const target = event.target as HTMLElement;
-        const typing = target.closest('input, textarea, select, [contenteditable="true"]') !== null;
-        const key = event.key.toLowerCase();
-        if (event.ctrlKey && !event.altKey && !typing && view.kind === 'edit') {
-          if (key === 'z' && !event.shiftKey) {
-            event.preventDefault();
-            step('undo');
-            return;
-          }
-          if (key === 'y' || (key === 'z' && event.shiftKey)) {
-            event.preventDefault();
-            step('redo');
-            return;
-          }
-        }
-        // Ctrl+S saves from anywhere in the tab, text fields included; F5 saves and runs.
-        if (event.ctrlKey && !event.shiftKey && !event.altKey && key === 's') {
-          event.preventDefault();
-          if (editor.save.enabled) editor.save.run();
-          return;
-        }
-        if (event.key === 'F5' && !event.ctrlKey && !event.shiftKey && !event.altKey && !typing) {
-          event.preventDefault();
-          if (editor.saveAndRun.enabled) editor.saveAndRun.run();
-          return;
-        }
-        // Ctrl+G frames the selected blocks, wherever focus is in the tab.
-        if (event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'g') {
-          if (runOnView !== undefined || selectedBlocks.length === 0) return;
-          event.preventDefault();
-          group();
-        }
-      }}
-    >
-      <header className="flow-header">
-        <input
-          ref={nameField}
-          className="flow-name"
-          aria-label={t('automation.name')}
-          placeholder={t('canvas.namePlaceholder')}
-          value={document.name}
-          onChange={(event) => {
-            const name = event.target.value;
-            change((current) => ({ ...current, name }), 'name');
-          }}
-        />
-        <input
-          className="flow-description"
-          aria-label={t('automation.description')}
-          placeholder={t('canvas.descriptionPlaceholder')}
-          value={document.description}
-          onChange={(event) => {
-            const description = event.target.value;
-            change((current) => ({ ...current, description }), 'description');
-          }}
-        />
-        {runOnView === undefined ? null : (
-          <RunStateBadge
-            state={
-              view.kind === 'past' ? historyState(view.record.status) : (run?.status ?? 'idle')
+    // The Start block's panel and its block on the canvas both show how the schedule stands.
+    <ScheduleStatusContext value={automation === undefined ? undefined : schedule}>
+      <section
+        className="automation-tab flow-tab"
+        data-testid="automations"
+        onKeyDown={(event) => {
+          // Text fields keep their own undo; elsewhere in the tab, undo steps through the flow.
+          const target = event.target as HTMLElement;
+          const typing =
+            target.closest('input, textarea, select, [contenteditable="true"]') !== null;
+          const key = event.key.toLowerCase();
+          if (event.ctrlKey && !event.altKey && !typing && view.kind === 'edit') {
+            if (key === 'z' && !event.shiftKey) {
+              event.preventDefault();
+              step('undo');
+              return;
             }
-            {...finishedLabel(
-              view.kind === 'past' ? view.record.status : (run?.status ?? ''),
-              runOnView.steps,
-            )}
+            if (key === 'y' || (key === 'z' && event.shiftKey)) {
+              event.preventDefault();
+              step('redo');
+              return;
+            }
+          }
+          // Ctrl+S saves from anywhere in the tab, text fields included; F5 saves and runs.
+          if (event.ctrlKey && !event.shiftKey && !event.altKey && key === 's') {
+            event.preventDefault();
+            if (editor.save.enabled) editor.save.run();
+            return;
+          }
+          if (event.key === 'F5' && !event.ctrlKey && !event.shiftKey && !event.altKey && !typing) {
+            event.preventDefault();
+            if (editor.saveAndRun.enabled) editor.saveAndRun.run();
+            return;
+          }
+          // Ctrl+G frames the selected blocks, wherever focus is in the tab.
+          if (
+            event.ctrlKey &&
+            !event.shiftKey &&
+            !event.altKey &&
+            event.key.toLowerCase() === 'g'
+          ) {
+            if (runOnView !== undefined || selectedBlocks.length === 0) return;
+            event.preventDefault();
+            group();
+          }
+        }}
+      >
+        <header className="flow-header">
+          <input
+            ref={nameField}
+            className="flow-name"
+            aria-label={t('automation.name')}
+            placeholder={t('canvas.namePlaceholder')}
+            value={document.name}
+            onChange={(event) => {
+              const name = event.target.value;
+              change((current) => ({ ...current, name }), 'name');
+            }}
           />
-        )}
-        {runOnView?.caller === undefined ? null : (
-          <CalledBy caller={runOnView.caller} onShowRun={onShowRun} />
-        )}
-        <div className="actions">
-          {view.kind === 'edit' ? null : (
-            <button
-              type="button"
-              onClick={() => {
-                setView({ kind: 'edit' });
-                setSelected(new Set());
-              }}
-            >
-              <ArrowLeft className="icon" aria-hidden="true" />
-              {t('canvas.backToEditing')}
-            </button>
+          <input
+            className="flow-description"
+            aria-label={t('automation.description')}
+            placeholder={t('canvas.descriptionPlaceholder')}
+            value={document.description}
+            onChange={(event) => {
+              const description = event.target.value;
+              change((current) => ({ ...current, description }), 'description');
+            }}
+          />
+          {runOnView === undefined ? null : (
+            <RunStateBadge
+              state={
+                view.kind === 'past' ? historyState(view.record.status) : (run?.status ?? 'idle')
+              }
+              {...finishedLabel(
+                view.kind === 'past' ? view.record.status : (run?.status ?? ''),
+                runOnView.steps,
+              )}
+            />
           )}
-          {view.kind === 'edit' ? (
-            <>
+          {runOnView?.caller === undefined ? null : (
+            <CalledBy caller={runOnView.caller} onShowRun={onShowRun} />
+          )}
+          <div className="actions">
+            {view.kind === 'edit' ? null : (
               <button
                 type="button"
-                className="icon-button"
-                aria-label={t('canvas.undo')}
-                title={t('canvas.undoShortcut')}
-                disabled={history.past.length === 0}
                 onClick={() => {
-                  step('undo');
+                  setView({ kind: 'edit' });
+                  setSelected(new Set());
                 }}
               >
-                <Undo2 className="icon" aria-hidden="true" />
+                <ArrowLeft className="icon" aria-hidden="true" />
+                {t('canvas.backToEditing')}
               </button>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={t('canvas.redo')}
-                title={t('canvas.redoShortcut')}
-                disabled={history.future.length === 0}
-                onClick={() => {
-                  step('redo');
-                }}
-              >
-                <Redo2 className="icon" aria-hidden="true" />
-              </button>
-            </>
-          ) : null}
-          <button
-            type="button"
-            className="icon-button"
-            aria-label={t('canvas.save')}
-            title={named ? t('canvas.saveShortcut') : t('canvas.nameFirst')}
-            disabled={!dirty || !named || saving}
-            onClick={save}
-          >
-            <Save className="icon" aria-hidden="true" />
-          </button>
-          {running ? (
-            <button
-              type="button"
-              className="icon-button"
-              aria-label={t('automation.stop')}
-              title={t('automation.stop')}
-              onClick={() => {
-                void api.cancelAutomation(run.runId).catch(onError);
-              }}
-            >
-              <Square className="icon" aria-hidden="true" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="icon-button primary"
-              aria-label={
-                dirty || automation === undefined ? t('canvas.saveAndRun') : t('automation.run')
-              }
-              title={
-                dirty || automation === undefined
-                  ? t('canvas.saveAndRunShortcut')
-                  : t('canvas.runShortcut')
-              }
-              disabled={saving}
-              onClick={() => {
-                saveAndRun().catch(onError);
-              }}
-            >
-              <Play className="icon" aria-hidden="true" />
-            </button>
-          )}
-        </div>
-      </header>
-      {view.kind === 'live' && run !== undefined
-        ? run.steps
-            .filter(({ state, message }) => state === 'running' && message !== undefined)
-            .map((step) => (
-              <div
-                key={step.id}
-                className="notice flow-waiting"
-                role="status"
-                data-testid="automation-waiting"
-              >
-                <Hand className="icon" aria-hidden="true" />
-                <p>
-                  <strong>{t('automation.waitingForYou')}</strong> {step.message}
-                </p>
+            )}
+            {view.kind === 'edit' ? (
+              <>
                 <button
                   type="button"
-                  className="primary"
+                  className="icon-button"
+                  aria-label={t('canvas.undo')}
+                  title={t('canvas.undoShortcut')}
+                  disabled={history.past.length === 0}
                   onClick={() => {
-                    void api.confirmAutomation(run.runId, step.id).catch(onError);
+                    step('undo');
                   }}
                 >
-                  {t('automation.continue')}
+                  <Undo2 className="icon" aria-hidden="true" />
                 </button>
-              </div>
-            ))
-        : null}
-      <div className="flow-body" style={{ gridTemplateColumns: columns }}>
-        {runOnView !== undefined ? null : libraryCollapsed ? (
-          <div className="flow-strip flow-strip-library">
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={t('canvas.redo')}
+                  title={t('canvas.redoShortcut')}
+                  disabled={history.future.length === 0}
+                  onClick={() => {
+                    step('redo');
+                  }}
+                >
+                  <Redo2 className="icon" aria-hidden="true" />
+                </button>
+              </>
+            ) : null}
             <button
               type="button"
               className="icon-button"
-              aria-label={t('canvas.showLibrary')}
-              title={t('canvas.showLibrary')}
-              aria-expanded="false"
+              aria-label={t('canvas.save')}
+              title={named ? t('canvas.saveShortcut') : t('canvas.nameFirst')}
+              disabled={!dirty || !named || saving}
+              onClick={save}
+            >
+              <Save className="icon" aria-hidden="true" />
+            </button>
+            {running ? (
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={t('automation.stop')}
+                title={t('automation.stop')}
+                onClick={() => {
+                  void api.cancelAutomation(run.runId).catch(onError);
+                }}
+              >
+                <Square className="icon" aria-hidden="true" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="icon-button primary"
+                aria-label={
+                  dirty || automation === undefined ? t('canvas.saveAndRun') : t('automation.run')
+                }
+                title={
+                  dirty || automation === undefined
+                    ? t('canvas.saveAndRunShortcut')
+                    : t('canvas.runShortcut')
+                }
+                disabled={saving}
+                onClick={() => {
+                  saveAndRun().catch(onError);
+                }}
+              >
+                <Play className="icon" aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        </header>
+        {view.kind === 'live' && run !== undefined
+          ? run.steps
+              .filter(({ state, message }) => state === 'running' && message !== undefined)
+              .map((step) => (
+                <div
+                  key={step.id}
+                  className="notice flow-waiting"
+                  role="status"
+                  data-testid="automation-waiting"
+                >
+                  <Hand className="icon" aria-hidden="true" />
+                  <p>
+                    <strong>{t('automation.waitingForYou')}</strong> {step.message}
+                  </p>
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => {
+                      void api.confirmAutomation(run.runId, step.id).catch(onError);
+                    }}
+                  >
+                    {t('automation.continue')}
+                  </button>
+                </div>
+              ))
+          : null}
+        <div className="flow-body" style={{ gridTemplateColumns: columns }}>
+          {runOnView !== undefined ? null : libraryCollapsed ? (
+            <div className="flow-strip flow-strip-library">
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={t('canvas.showLibrary')}
+                title={t('canvas.showLibrary')}
+                aria-expanded="false"
+                onClick={() => {
+                  changePanels({ libraryCollapsed: false });
+                }}
+              >
+                <ChevronRight className="icon" aria-hidden="true" />
+              </button>
+            </div>
+          ) : (
+            <>
+              <BlockLibrary
+                tools={tools}
+                automations={callable}
+                canJoin={canJoin}
+                onAdd={(choice) => {
+                  if (choice.kind === 'note') note();
+                  else add(choice);
+                }}
+                onCollapse={() => {
+                  changePanels({ libraryCollapsed: true });
+                }}
+              />
+              <PanelResizer
+                value={libraryWidth}
+                {...AUTOMATION_PANEL_SIZES.libraryWidth}
+                initial={AUTOMATION_PANEL_SIZES.libraryWidth.default}
+                label={t('canvas.resizeLibrary')}
+                onResize={(size) => {
+                  changePanels({ libraryWidth: size }, false);
+                }}
+                onCommit={(size) => {
+                  changePanels({ libraryWidth: size });
+                }}
+              />
+            </>
+          )}
+          <Canvas
+            document={document}
+            names={names}
+            automations={automations}
+            tools={tools}
+            problemCounts={problemCounts}
+            selected={selected}
+            active={active}
+            {...(runOnView === undefined ? {} : { run: runOnView })}
+            roundChoices={roundChoices.rounds}
+            onChooseRound={chooseRound}
+            {...(reveal === undefined ? {} : { reveal })}
+            onChange={change}
+            onSelect={select}
+            {...(automation === undefined ? {} : { automationId: automation.id })}
+            onAddAt={(choice, at, into) => {
+              if (choice.kind === 'note') note(at);
+              else add(choice, at, undefined, into);
+            }}
+            library={library}
+            onOpenBlock={(id) => {
+              pick(id);
+            }}
+            onOpenCall={(id) => {
+              const block = blockOf(document, id);
+              if (block?.type !== 'run-automation') return false;
+              if (runOnView === undefined) {
+                onOpenAutomation(block.automation);
+                return true;
+              }
+              const called = shownSteps.get(id)?.calledRunId;
+              if (called === undefined) return false;
+              onShowRun(block.automation, called);
+              return true;
+            }}
+            onRenameBlock={(id) => {
+              pick(id);
+              setRenaming(id);
+            }}
+            onReplaceBlock={(id, choice) => {
+              const replaced = replaceBlock(document, id, namedChoice(choice, tools));
+              if (replaced === undefined) return undefined;
+              change(() => replaced.document);
+              setSelected(new Set([replaced.id]));
+              return replaced.id;
+            }}
+            onAddAfter={(anchor, choice) => add(choice, undefined, anchor)}
+            {...(focusRequest === undefined ? {} : { focusRequest })}
+            options={canvasOptions}
+            onOptions={onCanvasOptions}
+            editor={editor}
+            onCommands={keepCommands}
+            onError={onError}
+          />
+          {settingsCollapsed ? (
+            <div className="flow-strip flow-strip-settings">
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={t('canvas.showSettings')}
+                title={t('canvas.showSettings')}
+                aria-expanded="false"
+                onClick={() => {
+                  changePanels({ settingsCollapsed: false });
+                }}
+              >
+                <ChevronLeft className="icon" aria-hidden="true" />
+              </button>
+            </div>
+          ) : (
+            <PanelResizer
+              value={settingsWidth}
+              {...AUTOMATION_PANEL_SIZES.settingsWidth}
+              initial={AUTOMATION_PANEL_SIZES.settingsWidth.default}
+              invert
+              label={t('canvas.resizeSettings')}
+              onResize={(size) => {
+                changePanels({ settingsWidth: size }, false);
+              }}
+              onCommit={(size) => {
+                changePanels({ settingsWidth: size });
+              }}
+            />
+          )}
+          <aside
+            className="flow-side flow-settings"
+            aria-label={t('canvas.settings')}
+            hidden={settingsCollapsed}
+          >
+            <button
+              type="button"
+              className="icon-button panel-collapse"
+              aria-label={t('canvas.hideSettings')}
+              title={t('canvas.hideSettings')}
+              aria-expanded="true"
               onClick={() => {
-                changePanels({ libraryCollapsed: false });
+                changePanels({ settingsCollapsed: true });
               }}
             >
               <ChevronRight className="icon" aria-hidden="true" />
             </button>
-          </div>
-        ) : (
-          <>
-            <BlockLibrary
-              tools={tools}
-              automations={callable}
-              canJoin={canJoin}
-              onAdd={(choice) => {
-                if (choice.kind === 'note') note();
-                else add(choice);
-              }}
-              onCollapse={() => {
-                changePanels({ libraryCollapsed: true });
-              }}
-            />
-            <PanelResizer
-              value={libraryWidth}
-              {...AUTOMATION_PANEL_SIZES.libraryWidth}
-              initial={AUTOMATION_PANEL_SIZES.libraryWidth.default}
-              label={t('canvas.resizeLibrary')}
-              onResize={(size) => {
-                changePanels({ libraryWidth: size }, false);
-              }}
-              onCommit={(size) => {
-                changePanels({ libraryWidth: size });
-              }}
-            />
-          </>
-        )}
-        <Canvas
-          document={document}
-          names={names}
-          automations={automations}
-          tools={tools}
-          problemCounts={problemCounts}
-          selected={selected}
-          active={active}
-          {...(runOnView === undefined ? {} : { run: runOnView })}
-          roundChoices={roundChoices.rounds}
-          onChooseRound={chooseRound}
-          {...(reveal === undefined ? {} : { reveal })}
-          onChange={change}
-          onSelect={select}
-          {...(automation === undefined ? {} : { automationId: automation.id })}
-          onAddAt={(choice, at, into) => {
-            if (choice.kind === 'note') note(at);
-            else add(choice, at, undefined, into);
-          }}
-          library={library}
-          onOpenBlock={(id) => {
-            pick(id);
-          }}
-          onOpenCall={(id) => {
-            const block = blockOf(document, id);
-            if (block?.type !== 'run-automation') return false;
-            if (runOnView === undefined) {
-              onOpenAutomation(block.automation);
-              return true;
-            }
-            const called = shownSteps.get(id)?.calledRunId;
-            if (called === undefined) return false;
-            onShowRun(block.automation, called);
-            return true;
-          }}
-          onRenameBlock={(id) => {
-            pick(id);
-            setRenaming(id);
-          }}
-          onReplaceBlock={(id, choice) => {
-            const replaced = replaceBlock(document, id, namedChoice(choice, tools));
-            if (replaced === undefined) return undefined;
-            change(() => replaced.document);
-            setSelected(new Set([replaced.id]));
-            return replaced.id;
-          }}
-          onAddAfter={(anchor, choice) => add(choice, undefined, anchor)}
-          {...(focusRequest === undefined ? {} : { focusRequest })}
-          options={canvasOptions}
-          onOptions={onCanvasOptions}
-          editor={editor}
-          onCommands={keepCommands}
-          onError={onError}
-        />
-        {settingsCollapsed ? (
-          <div className="flow-strip flow-strip-settings">
-            <button
-              type="button"
-              className="icon-button"
-              aria-label={t('canvas.showSettings')}
-              title={t('canvas.showSettings')}
-              aria-expanded="false"
-              onClick={() => {
-                changePanels({ settingsCollapsed: false });
-              }}
-            >
-              <ChevronLeft className="icon" aria-hidden="true" />
-            </button>
-          </div>
-        ) : (
+            {runOnView !== undefined ? (
+              <RunDetails
+                block={selectedBlock}
+                step={only === undefined ? undefined : shownSteps.get(only)}
+                name={only === undefined ? '' : nameOf(only)}
+                live={view.kind === 'live'}
+                tools={tools}
+                automations={automations}
+                onShowRun={onShowRun}
+                onContinue={(blockId) => {
+                  if (run !== undefined) {
+                    void api.confirmAutomation(run.runId, blockId).catch(onError);
+                  }
+                }}
+                onShowTool={onShowTool}
+              />
+            ) : selectedBlocks.length > 1 ? (
+              <SelectionSettings count={selectedBlocks.length} onGroup={group} />
+            ) : selectedNote !== undefined ? (
+              <NoteSettings
+                key={`${selectedNote.id}:${String(undoCount)}`}
+                note={selectedNote}
+                onChange={(next) => {
+                  change((current) => updateNote(current, next), `note:${next.id}`);
+                }}
+              />
+            ) : selectedGroup !== undefined ? (
+              <GroupSettings
+                key={`${selectedGroup.id}:${String(undoCount)}`}
+                group={selectedGroup}
+                onChange={(next) => {
+                  change((current) => updateGroup(current, next), `group:${next.id}`);
+                }}
+                onUngroup={() => {
+                  change((current) => ungroup(current, selectedGroup.id));
+                  setSelected(new Set(selectedGroup.blocks));
+                }}
+              />
+            ) : selectedBlock === undefined ? (
+              <>
+                <p className="field-hint">{t('canvas.pickBlock')}</p>
+                {automation === undefined ? null : (
+                  <>
+                    <h2>{t('automation.fromCommandLine')}</h2>
+                    <code className="automation-command" data-testid="automation-command">
+                      {commandFor(automation.id)}
+                    </code>
+                  </>
+                )}
+              </>
+            ) : (
+              <PanelSectionsContext value={sections}>
+                <BlockSettings
+                  key={`${selectedBlock.id}:${String(undoCount)}`}
+                  block={selectedBlock}
+                  blocks={document.blocks}
+                  connections={document.connections}
+                  tab={blockTab}
+                  onTab={setBlockTab}
+                  tools={tools}
+                  automations={automations}
+                  onOpenAutomation={onOpenAutomation}
+                  names={names}
+                  context={valueContext}
+                  problems={checked.filter(({ blockId }) => blockId === selectedBlock.id)}
+                  onChange={(block, renamed) => {
+                    change(
+                      (current) => updateBlock(current, block, renamed),
+                      renamed === undefined ? `block:${block.id}` : undefined,
+                    );
+                  }}
+                  onRename={() => {
+                    setRenaming(selectedBlock.id);
+                  }}
+                  menu={blockCardMenu(selectedBlock, canvasCommands, {
+                    rename: () => {
+                      setRenaming(selectedBlock.id);
+                    },
+                    showOnCanvas: () => {
+                      const id = selectedBlock.id;
+                      setReveal((current) => ({
+                        id,
+                        count: (current?.count ?? 0) + 1,
+                        center: true,
+                      }));
+                    },
+                    copyId: () => {
+                      void navigator.clipboard.writeText(selectedBlock.id).catch(onError);
+                    },
+                    openTool:
+                      selectedBlock.type === 'run' &&
+                      tools.some(({ id }) => id === selectedBlock.tool)
+                        ? () => {
+                            onShowTool(selectedBlock.tool);
+                          }
+                        : undefined,
+                  })}
+                  onDone={() => {
+                    const id = selectedBlock.id;
+                    setFocusRequest((current) => ({ id, count: (current?.count ?? 0) + 1 }));
+                  }}
+                  onGoTo={pick}
+                  onError={onError}
+                />
+              </PanelSectionsContext>
+            )}
+          </aside>
+        </div>
+        {lowerCollapsed ? null : (
           <PanelResizer
-            value={settingsWidth}
-            {...AUTOMATION_PANEL_SIZES.settingsWidth}
-            initial={AUTOMATION_PANEL_SIZES.settingsWidth.default}
+            value={lowerHeight}
+            {...AUTOMATION_PANEL_SIZES.lowerHeight}
+            initial={AUTOMATION_PANEL_SIZES.lowerHeight.default}
+            orientation="horizontal"
             invert
-            label={t('canvas.resizeSettings')}
+            label={t('canvas.resizeLower')}
             onResize={(size) => {
-              changePanels({ settingsWidth: size }, false);
+              changePanels({ lowerHeight: size }, false);
             }}
             onCommit={(size) => {
-              changePanels({ settingsWidth: size });
+              changePanels({ lowerHeight: size });
             }}
           />
         )}
-        <aside
-          className="flow-side flow-settings"
-          aria-label={t('canvas.settings')}
-          hidden={settingsCollapsed}
+        <div
+          className={`flow-lower${lowerCollapsed ? ' is-collapsed' : ''}`}
+          style={lowerCollapsed ? undefined : { height: lowerHeight }}
         >
-          <button
-            type="button"
-            className="icon-button panel-collapse"
-            aria-label={t('canvas.hideSettings')}
-            title={t('canvas.hideSettings')}
-            aria-expanded="true"
-            onClick={() => {
-              changePanels({ settingsCollapsed: true });
-            }}
-          >
-            <ChevronRight className="icon" aria-hidden="true" />
-          </button>
-          {runOnView !== undefined ? (
-            <RunDetails
-              block={selectedBlock}
-              step={only === undefined ? undefined : shownSteps.get(only)}
-              name={only === undefined ? '' : nameOf(only)}
-              live={view.kind === 'live'}
-              tools={tools}
-              automations={automations}
-              onShowRun={onShowRun}
-              onContinue={(blockId) => {
-                if (run !== undefined) {
-                  void api.confirmAutomation(run.runId, blockId).catch(onError);
-                }
+          <div className="flow-lower-tabs" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={lower === 'problems'}
+              onClick={() => {
+                showLower('problems');
               }}
-              onShowTool={onShowTool}
-            />
-          ) : selectedBlocks.length > 1 ? (
-            <SelectionSettings count={selectedBlocks.length} onGroup={group} />
-          ) : selectedNote !== undefined ? (
-            <NoteSettings
-              key={`${selectedNote.id}:${String(undoCount)}`}
-              note={selectedNote}
-              onChange={(next) => {
-                change((current) => updateNote(current, next), `note:${next.id}`);
+            >
+              {t('canvas.problems', { count: named ? checked.length : checked.length + 1 })}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={lower === 'runs'}
+              onClick={() => {
+                showLower('runs');
               }}
-            />
-          ) : selectedGroup !== undefined ? (
-            <GroupSettings
-              key={`${selectedGroup.id}:${String(undoCount)}`}
-              group={selectedGroup}
-              onChange={(next) => {
-                change((current) => updateGroup(current, next), `group:${next.id}`);
+            >
+              {t('automation.pastRuns')}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={lower === 'outline'}
+              onClick={() => {
+                showLower('outline');
               }}
-              onUngroup={() => {
-                change((current) => ungroup(current, selectedGroup.id));
-                setSelected(new Set(selectedGroup.blocks));
+            >
+              {t('canvas.outline')}
+            </button>
+            {runOnView === undefined ? null : (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={lower === 'output'}
+                onClick={() => {
+                  showLower('output');
+                }}
+              >
+                {t('canvas.output')}
+              </button>
+            )}
+            {runOnView === undefined ? null : (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={lower === 'data'}
+                onClick={() => {
+                  showLower('data');
+                }}
+              >
+                {t('canvas.data')}
+              </button>
+            )}
+            <button
+              type="button"
+              className="icon-button panel-collapse"
+              aria-label={t(lowerCollapsed ? 'canvas.showLower' : 'canvas.hideLower')}
+              title={t(lowerCollapsed ? 'canvas.showLower' : 'canvas.hideLower')}
+              aria-expanded={!lowerCollapsed}
+              onClick={() => {
+                changePanels({ lowerCollapsed: !lowerCollapsed });
               }}
-            />
-          ) : selectedBlock === undefined ? (
-            <>
-              <p className="field-hint">{t('canvas.pickBlock')}</p>
-              {automation === undefined ? null : (
-                <>
-                  <h2>{t('automation.fromCommandLine')}</h2>
-                  <code className="automation-command" data-testid="automation-command">
-                    {commandFor(automation.id)}
-                  </code>
-                </>
+            >
+              {lowerCollapsed ? (
+                <ChevronUp className="icon" aria-hidden="true" />
+              ) : (
+                <ChevronDown className="icon" aria-hidden="true" />
               )}
-            </>
-          ) : (
-            <PanelSectionsContext value={sections}>
-              <BlockSettings
-                key={`${selectedBlock.id}:${String(undoCount)}`}
+            </button>
+          </div>
+          <div className="flow-lower-body" role="tabpanel" hidden={lowerCollapsed}>
+            {lower === 'data' && runOnView !== undefined ? (
+              <DataView step={only === undefined ? undefined : shownSteps.get(only)} />
+            ) : lower === 'output' && runOnView !== undefined ? (
+              <BlockOutput
                 block={selectedBlock}
-                blocks={document.blocks}
-                connections={document.connections}
-                tab={blockTab}
-                onTab={setBlockTab}
-                tools={tools}
-                automations={automations}
-                onOpenAutomation={onOpenAutomation}
-                names={names}
-                context={valueContext}
-                problems={checked.filter(({ blockId }) => blockId === selectedBlock.id)}
-                onChange={(block, renamed) => {
-                  change(
-                    (current) => updateBlock(current, block, renamed),
-                    renamed === undefined ? `block:${block.id}` : undefined,
-                  );
-                }}
-                onRename={() => {
-                  setRenaming(selectedBlock.id);
-                }}
-                menu={blockCardMenu(selectedBlock, canvasCommands, {
-                  rename: () => {
-                    setRenaming(selectedBlock.id);
-                  },
-                  showOnCanvas: () => {
-                    const id = selectedBlock.id;
-                    setReveal((current) => ({
-                      id,
-                      count: (current?.count ?? 0) + 1,
-                      center: true,
-                    }));
-                  },
-                  copyId: () => {
-                    void navigator.clipboard.writeText(selectedBlock.id).catch(onError);
-                  },
-                  openTool:
-                    selectedBlock.type === 'run' &&
-                    tools.some(({ id }) => id === selectedBlock.tool)
-                      ? () => {
-                          onShowTool(selectedBlock.tool);
-                        }
-                      : undefined,
-                })}
-                onDone={() => {
-                  const id = selectedBlock.id;
-                  setFocusRequest((current) => ({ id, count: (current?.count ?? 0) + 1 }));
-                }}
-                onGoTo={pick}
+                step={only === undefined ? undefined : shownSteps.get(only)}
                 onError={onError}
               />
-            </PanelSectionsContext>
-          )}
-        </aside>
-      </div>
-      {lowerCollapsed ? null : (
-        <PanelResizer
-          value={lowerHeight}
-          {...AUTOMATION_PANEL_SIZES.lowerHeight}
-          initial={AUTOMATION_PANEL_SIZES.lowerHeight.default}
-          orientation="horizontal"
-          invert
-          label={t('canvas.resizeLower')}
-          onResize={(size) => {
-            changePanels({ lowerHeight: size }, false);
-          }}
-          onCommit={(size) => {
-            changePanels({ lowerHeight: size });
-          }}
-        />
-      )}
-      <div
-        className={`flow-lower${lowerCollapsed ? ' is-collapsed' : ''}`}
-        style={lowerCollapsed ? undefined : { height: lowerHeight }}
-      >
-        <div className="flow-lower-tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={lower === 'problems'}
-            onClick={() => {
-              showLower('problems');
-            }}
-          >
-            {t('canvas.problems', { count: named ? checked.length : checked.length + 1 })}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={lower === 'runs'}
-            onClick={() => {
-              showLower('runs');
-            }}
-          >
-            {t('automation.pastRuns')}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={lower === 'outline'}
-            onClick={() => {
-              showLower('outline');
-            }}
-          >
-            {t('canvas.outline')}
-          </button>
-          {runOnView === undefined ? null : (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={lower === 'output'}
-              onClick={() => {
-                showLower('output');
-              }}
-            >
-              {t('canvas.output')}
-            </button>
-          )}
-          {runOnView === undefined ? null : (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={lower === 'data'}
-              onClick={() => {
-                showLower('data');
-              }}
-            >
-              {t('canvas.data')}
-            </button>
-          )}
-          <button
-            type="button"
-            className="icon-button panel-collapse"
-            aria-label={t(lowerCollapsed ? 'canvas.showLower' : 'canvas.hideLower')}
-            title={t(lowerCollapsed ? 'canvas.showLower' : 'canvas.hideLower')}
-            aria-expanded={!lowerCollapsed}
-            onClick={() => {
-              changePanels({ lowerCollapsed: !lowerCollapsed });
-            }}
-          >
-            {lowerCollapsed ? (
-              <ChevronUp className="icon" aria-hidden="true" />
-            ) : (
-              <ChevronDown className="icon" aria-hidden="true" />
-            )}
-          </button>
-        </div>
-        <div className="flow-lower-body" role="tabpanel" hidden={lowerCollapsed}>
-          {lower === 'data' && runOnView !== undefined ? (
-            <DataView step={only === undefined ? undefined : shownSteps.get(only)} />
-          ) : lower === 'output' && runOnView !== undefined ? (
-            <BlockOutput
-              block={selectedBlock}
-              step={only === undefined ? undefined : shownSteps.get(only)}
-              onError={onError}
-            />
-          ) : lower === 'outline' ? (
-            <Outline
-              document={document}
-              names={names}
-              onPick={(id) => {
-                setSelected(new Set([id]));
-                setFocusRequest((current) => ({ id, count: (current?.count ?? 0) + 1 }));
-              }}
-            />
-          ) : lower === 'problems' ? (
-            named ? (
-              <Problems
-                problems={checked}
-                refusal={refusal === undefined ? undefined : refusalText(refusal)}
-                nameOf={nameOf}
-                onPick={pick}
+            ) : lower === 'outline' ? (
+              <Outline
+                document={document}
+                names={names}
+                onPick={(id) => {
+                  setSelected(new Set([id]));
+                  setFocusRequest((current) => ({ id, count: (current?.count ?? 0) + 1 }));
+                }}
               />
-            ) : refusal?.kind === 'unnamed' ? (
-              <p className="field-problem" role="alert" data-testid="run-refused">
-                {refusalText(refusal)}
-              </p>
+            ) : lower === 'problems' ? (
+              named ? (
+                <Problems
+                  problems={checked}
+                  refusal={refusal === undefined ? undefined : refusalText(refusal)}
+                  nameOf={nameOf}
+                  onPick={pick}
+                />
+              ) : refusal?.kind === 'unnamed' ? (
+                <p className="field-problem" role="alert" data-testid="run-refused">
+                  {refusalText(refusal)}
+                </p>
+              ) : (
+                <p className="field-problem">{t('canvas.nameFirst')}</p>
+              )
             ) : (
-              <p className="field-problem">{t('canvas.nameFirst')}</p>
-            )
-          ) : (
-            <PastRuns
-              runs={past}
-              shown={view.kind === 'past' ? view.record.runId : undefined}
-              onOpen={(record) => {
-                setView({ kind: 'past', record });
-                setSelected(new Set());
-                setRefusal(undefined);
-              }}
-              onOpenOutput={(record) => {
-                setView({ kind: 'past', record });
-                showLower('output');
-              }}
-              onOpenInHistory={(runId) => {
-                if (automation !== undefined) onOpenInHistory(automation.id, runId);
-              }}
-            />
-          )}
+              <PastRuns
+                runs={past}
+                shown={view.kind === 'past' ? view.record.runId : undefined}
+                onOpen={(record) => {
+                  setView({ kind: 'past', record });
+                  setSelected(new Set());
+                  setRefusal(undefined);
+                }}
+                onOpenOutput={(record) => {
+                  setView({ kind: 'past', record });
+                  showLower('output');
+                }}
+                onOpenInHistory={(runId) => {
+                  if (automation !== undefined) onOpenInHistory(automation.id, runId);
+                }}
+              />
+            )}
+          </div>
         </div>
-      </div>
-      {asking === undefined ? null : (
-        <RunInputsDialog
-          name={document.name}
-          inputs={inputsOfFlow(document.blocks)}
-          onRun={(values) => {
-            const id = asking;
-            setAsking(undefined);
-            void start(id, values);
-          }}
-          onClose={() => {
-            setAsking(undefined);
-          }}
-          onError={onError}
-        />
-      )}
-      {renaming === undefined || blockOf(document, renaming) === undefined ? null : (
-        <RenameDialog
-          current={renaming}
-          callers={renamingCallers.map(({ name }) => name)}
-          problemOf={(next) => blockIdProblem(document, renaming, next)}
-          onRename={(next) => {
-            change((current) => renameBlock(current, renaming, next));
-            setSelected(new Set([next]));
-            if (automation !== undefined && renamingCallers.length > 0) {
-              onRenameInCallers({ called: automation.id, from: renaming, to: next });
-            }
-          }}
-          onClose={() => {
-            setRenaming(undefined);
-          }}
-        />
-      )}
-    </section>
+        {asking === undefined ? null : (
+          <RunInputsDialog
+            name={document.name}
+            inputs={inputsOfFlow(document.blocks)}
+            onRun={(values) => {
+              const id = asking;
+              setAsking(undefined);
+              void start(id, values);
+            }}
+            onClose={() => {
+              setAsking(undefined);
+            }}
+            onError={onError}
+          />
+        )}
+        {renaming === undefined || blockOf(document, renaming) === undefined ? null : (
+          <RenameDialog
+            current={renaming}
+            callers={renamingCallers.map(({ name }) => name)}
+            problemOf={(next) => blockIdProblem(document, renaming, next)}
+            onRename={(next) => {
+              change((current) => renameBlock(current, renaming, next));
+              setSelected(new Set([next]));
+              if (automation !== undefined && renamingCallers.length > 0) {
+                onRenameInCallers({ called: automation.id, from: renaming, to: next });
+              }
+            }}
+            onClose={() => {
+              setRenaming(undefined);
+            }}
+          />
+        )}
+      </section>
+    </ScheduleStatusContext>
   );
 }

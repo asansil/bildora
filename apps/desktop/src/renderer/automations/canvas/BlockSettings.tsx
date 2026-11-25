@@ -28,6 +28,7 @@ import { InputsEditor } from './InputsEditor.js';
 import { isDisabled } from './flow-document.js';
 import { ForSettings, WhileSettings } from './LoopSettings.js';
 import { PanelSection } from './PanelSection.js';
+import { StartSettings } from './StartSettings.js';
 import { RunFields } from './RunFields.js';
 import { sharedValues, usersOf, valueChoices } from './values.js';
 import type { ValueContext } from './values.js';
@@ -169,15 +170,18 @@ export function BlockSettings({
     switch (block.type) {
       case 'start':
         return (
-          <PanelSection id="start.inputs" title={t('canvas.sectionInputs')}>
-            <InputsEditor
-              inputs={block.inputs ?? []}
-              onChange={(inputs) => {
-                const rest = without(block, 'inputs');
-                onChange(inputs.length === 0 ? rest : { ...rest, inputs: [...inputs] });
-              }}
-            />
-          </PanelSection>
+          <>
+            <StartSettings block={block} onChange={onChange} />
+            <PanelSection id="start.inputs" title={t('canvas.sectionInputs')}>
+              <InputsEditor
+                inputs={block.inputs ?? []}
+                onChange={(inputs) => {
+                  const rest = without(block, 'inputs');
+                  onChange(inputs.length === 0 ? rest : { ...rest, inputs: [...inputs] });
+                }}
+              />
+            </PanelSection>
+          </>
         );
       case 'run':
         return (
