@@ -528,6 +528,7 @@ function framedLoops(
   blocks: readonly AutomationBlock[],
   positions: Readonly<Record<string, AutomationPosition>>,
   released: ReadonlySet<string> = new Set(),
+  held: ReadonlyMap<string, Rect> = new Map(),
 ): CanvasNode[] {
   if (!blocks.some(isLoopBlock)) return [...nodes];
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -541,9 +542,9 @@ function framedLoops(
   const positionOf = (id: string): AutomationPosition | undefined => {
     const node = byId.get(id);
     const kept = positions[id];
-    if (node?.resizing === true && node.width !== undefined && node.height !== undefined) {
-      return { ...node.position, width: node.width, height: node.height };
-    }
+    // A frame being resized, or just let go of, takes the rect its corner was dragged to.
+    const resized = held.get(id);
+    if (resized !== undefined) return resized;
     // A frame just let go is where it was dropped, not where the flow had it before.
     if (node?.dragging !== true && !released.has(id)) return kept ?? node?.position;
     if (node === undefined) return kept;
@@ -587,8 +588,9 @@ function framed(
   positions: Readonly<Record<string, AutomationPosition>>,
   groups: readonly AutomationGroup[],
   released?: ReadonlySet<string>,
+  held?: ReadonlyMap<string, Rect>,
 ): CanvasNode[] {
-  return framedGroups(framedLoops(nodes, blocks, positions, released), groups);
+  return framedGroups(framedLoops(nodes, blocks, positions, released, held), groups);
 }
 
 /** What moves with an item dragged by itself: a loop's blocks, or a group's blocks and loops. */
@@ -992,27 +994,45 @@ export function Canvas({
     });
   }, []);
 
+  /** Each frame being resized from a corner, with the rect it is dragged to. */
+  const resizeRects = useRef(new Map<string, Rect>());
   const onNodesChange = useCallback(
     (changes: NodeChange<CanvasNode>[]) => {
       let next = applyNodeChanges(changes, nodes);
+      // The rect a frame's corner is dragged to, read from the resize itself: a measure of the
+      // frame taken meanwhile can still hold its old size.
+      const live = resizeRects.current;
+      for (const change of changes) {
+        if (change.type === 'dimensions' && change.resizing === true && change.dimensions) {
+          const node = nodes.find(({ id }) => id === change.id);
+          if (node?.type !== 'loop') continue;
+          const at = live.get(change.id) ?? { ...node.position, width: 0, height: 0 };
+          live.set(change.id, { ...at, ...change.dimensions });
+        }
+      }
+      for (const change of changes) {
+        const at = change.type === 'position' ? live.get(change.id) : undefined;
+        if (at !== undefined && change.type === 'position' && change.position !== undefined) {
+          live.set(change.id, { ...at, ...change.position });
+        }
+      }
       // A frame resized from a corner moves too; its blocks stay where they are.
-      const resizing = new Set(
-        changes.flatMap((change) =>
+      const resizing = new Set([
+        ...live.keys(),
+        ...changes.flatMap((change) =>
           change.type === 'dimensions' && change.resizing !== undefined ? [change.id] : [],
         ),
-      );
+      ]);
       // Where each frame let go of a resize ends up, before frames are drawn around their blocks.
       const resizedRects = new Map(
         changes.flatMap((change) => {
-          if (change.type !== 'dimensions' || change.resizing !== false || !change.dimensions) {
-            return [];
-          }
-          const node = next.find((item) => item.id === change.id);
-          return node?.type === 'loop'
-            ? [[change.id, { ...node.position, ...change.dimensions }]]
-            : [];
+          if (change.type !== 'dimensions' || change.resizing !== false) return [];
+          const rect = live.get(change.id);
+          live.delete(change.id);
+          return rect === undefined ? [] : [[change.id, rect] as const];
         }),
       );
+      const held = new Map([...live, ...resizedRects]);
       const dragged = new Set(
         changes.flatMap((change) => (change.type === 'position' ? [change.id] : [])),
       );
@@ -1043,7 +1063,7 @@ export function Canvas({
             : [],
         ),
       );
-      next = framed(next, document.blocks, document.positions, document.groups, released);
+      next = framed(next, document.blocks, document.positions, document.groups, released, held);
 
       // A drag or a resize reaches the document once it ends.
       const moved: Record<string, AutomationPosition> = {};
