@@ -11,7 +11,7 @@ interface WelcomeProps {
 export function Welcome({ onAdd, onImport }: WelcomeProps) {
   return (
     <section className="welcome" data-testid="welcome">
-      <BildoraMark />
+      <BildoraMark size="large" />
       <h1>{t('welcome.title')}</h1>
       <p>{t('welcome.body')}</p>
       <div className="actions">
