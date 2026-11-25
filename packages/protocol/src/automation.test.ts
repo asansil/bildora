@@ -267,6 +267,43 @@ describe('values worked out from others', () => {
     ).not.toEqual([]);
   });
 
+  it('accepts a schedule on Start, and needs one when the mode is scheduled', () => {
+    const withStart = (changes: object) => ({
+      ...base,
+      blocks: [{ ...start, ...changes }],
+      connections: [],
+    });
+    const schedules = [
+      { repeat: 'once', date: '2026-12-01', time: '08:30' },
+      { repeat: 'daily', time: '23:59', runMissed: false },
+      { repeat: 'weekly', days: ['mon', 'fri'], time: '07:00', timeLimitMinutes: 30 },
+      { repeat: 'hours', every: 4, from: '00:00' },
+    ];
+    for (const schedule of schedules) {
+      expect(issues(withStart({ mode: 'scheduled', schedule }))).toEqual([]);
+    }
+    // A button keeps its schedule, so that switching modes loses nothing.
+    expect(issues(withStart({ mode: 'button', schedule: schedules[1] }))).toEqual([]);
+    expect(issues(withStart({ mode: 'scheduled' }))).toEqual([
+      'The Start block is set to run on a schedule, and has none',
+    ]);
+    expect(
+      issues(withStart({ schedule: { repeat: 'weekly', days: ['mon', 'mon'], time: '07:00' } })),
+    ).toEqual(['The schedule names "mon" more than once']);
+    for (const wrong of [
+      { repeat: 'daily', time: '24:00' },
+      { repeat: 'daily', time: '7:00' },
+      { repeat: 'once', date: '2026-02-30', time: '08:00' },
+      { repeat: 'weekly', days: [], time: '08:00' },
+      { repeat: 'hours', every: 0, from: '08:00' },
+      { repeat: 'hours', every: 25, from: '08:00' },
+      { repeat: 'daily', time: '08:00', timeLimitMinutes: 0 },
+      { repeat: 'monthly', time: '08:00' },
+    ]) {
+      expect(issues(withStart({ schedule: wrong }))).not.toEqual([]);
+    }
+  });
+
   it('accepts rules on values, with a value only when the operator compares', () => {
     const rule = (changes: object) =>
       chain(run('a'), {
