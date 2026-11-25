@@ -19,6 +19,8 @@ interface SettingsViewProps {
   readonly historyRunLimit: number;
   readonly onTheme: (theme: ShellTheme) => void;
   readonly onHistoryRunLimit: (limit: number) => void;
+  readonly warnBeforeTests: boolean;
+  readonly onWarnBeforeTests: (warn: boolean) => void;
   readonly onClearHistory: () => void;
   readonly onPathVariablesChanged: () => void;
   readonly onError: (error: unknown) => void;
@@ -32,6 +34,8 @@ export function SettingsView({
   historyRunLimit,
   onTheme,
   onHistoryRunLimit,
+  warnBeforeTests,
+  onWarnBeforeTests,
   onClearHistory,
   onPathVariablesChanged,
   onError,
@@ -100,6 +104,19 @@ export function SettingsView({
             onBlur={commitLimit}
           />
           <span className="field-hint">{t('settings.historyLimitHint')}</span>
+        </div>
+        <div className="field settings-field">
+          <label className="field-check">
+            <input
+              type="checkbox"
+              checked={warnBeforeTests}
+              onChange={(event) => {
+                onWarnBeforeTests(event.target.checked);
+              }}
+            />
+            {t('settings.warnBeforeTests')}
+          </label>
+          <span className="field-hint">{t('settings.warnBeforeTestsHint')}</span>
         </div>
         <PathVariablesEditor onChanged={onPathVariablesChanged} onError={onError} />
       </div>

@@ -80,6 +80,8 @@ const api: ShellApi = {
       CHANNELS.automationsScheduleSet,
       signedOut === undefined ? { id, on } : { id, on, signedOut },
     ),
+  planTest: (request) => invoke(CHANNELS.automationsTestPlan, request),
+  testAutomation: (request) => invoke(CHANNELS.automationsRunFrom, request),
   listProfiles: (toolId) => invoke(CHANNELS.profilesList, { id: toolId }),
   saveProfile: (input) => invoke(CHANNELS.profilesSave, input),
   removeProfile: (toolId, id) => invoke(CHANNELS.profilesRemove, { toolId, id }),

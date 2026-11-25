@@ -173,6 +173,7 @@ export function App() {
   /** The automation whose name the sidebar asked to change, and how many times it was asked. */
   const [renaming, setRenaming] = useState<{ id: string; count: number } | undefined>(undefined);
   const [historyRunLimit, setHistoryRunLimit] = useState(200);
+  const [warnBeforeTests, setWarnBeforeTests] = useState(true);
   const [recent, setRecent] = useState(EMPTY_RECENT);
   const [tabs, setTabs] = useState<TabState>(NO_TABS);
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>({});
@@ -282,6 +283,7 @@ export function App() {
       .getPreferences()
       .then((preferences) => {
         setHistoryRunLimit(preferences.historyRunLimit);
+        setWarnBeforeTests(preferences.warnBeforeTests);
       })
       .catch(report);
     const stopListening = api.onRunsChanged(setRuns);
@@ -895,6 +897,11 @@ export function App() {
     void api.setPreferences({ historyRunLimit: next }).catch(report);
   }
 
+  function changeWarnBeforeTests(next: boolean): void {
+    setWarnBeforeTests(next);
+    void api.setPreferences({ warnBeforeTests: next }).catch(report);
+  }
+
   function clearHistory(): void {
     void api
       .clearHistory()
@@ -1220,6 +1227,10 @@ export function App() {
         <AutomationTab
           automation={automation}
           run={automationRunOf(tab.id)}
+          warnBeforeTests={warnBeforeTests}
+          onStopTestWarning={() => {
+            changeWarnBeforeTests(false);
+          }}
           tools={allTools}
           automations={automations.automations}
           active={tab.key === tabs.activeKey}
@@ -1701,6 +1712,8 @@ export function App() {
           historyRunLimit={historyRunLimit}
           onTheme={changeTheme}
           onHistoryRunLimit={changeHistoryRunLimit}
+          warnBeforeTests={warnBeforeTests}
+          onWarnBeforeTests={changeWarnBeforeTests}
           onClearHistory={clearHistory}
           onPathVariablesChanged={() => {
             void reload().catch(report);

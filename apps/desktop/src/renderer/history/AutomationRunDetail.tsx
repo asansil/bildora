@@ -29,6 +29,7 @@ import { ProgramIcon } from '../shell/ProgramIcon.js';
 import { RunStateBadge, RunStateIcon } from '../shell/RunStateBadge.js';
 import type { BlockState } from '../shell/RunStateBadge.js';
 import { TRIGGER_NAMES, formatDuration, formatTime, historyState } from './history-format.js';
+import { testLabel } from '../automations/test-text.js';
 import { RunFacts } from './RunFacts.js';
 import { timelineOf } from './run-timeline.js';
 import type { Timeline, TimelineRow } from './run-timeline.js';
@@ -347,6 +348,12 @@ export function AutomationRunDetail({
         <dd>{formatDuration(entry.durationMs)}</dd>
         <dt>{t('history.startedFrom')}</dt>
         <dd>{t(TRIGGER_NAMES[entry.trigger])}</dd>
+        {entry.test === undefined ? null : (
+          <>
+            <dt>{t('history.test')}</dt>
+            <dd data-testid="history-test">{testLabel(entry.test, String)}</dd>
+          </>
+        )}
         {entry.caller === undefined ? null : (
           <>
             <dt>{t('history.caller')}</dt>

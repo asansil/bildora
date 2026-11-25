@@ -748,6 +748,12 @@
   border-style: dashed;
 }
 
+/* In a test, blocks that kept what the run it reused left: dimmed, with the state they had. */
+.block.is-reused,
+.loop.is-reused {
+  opacity: 0.55;
+}
+
 .block.is-running {
   border-color: var(--bildora-status-running);
 }

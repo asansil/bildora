@@ -194,7 +194,9 @@ export const en = {
   'history.automationRow': 'Automation · {time}',
   'history.automationRowCli': 'Automation · {time} · from the command line',
   'history.automationRowSchedule': 'Automation · {time} · on schedule',
+  'history.automationRowTest': 'Automation · {time} · {test}',
   'history.startedFrom': 'Started from',
+  'history.test': 'Test',
   'history.fromApp': 'Bildora',
   'history.fromCli': 'The command line',
   'history.fromSchedule': 'Its schedule',
@@ -371,6 +373,9 @@ export const en = {
   'settings.historyLimit': 'Runs kept per tool',
   'settings.historyLimitHint':
     'Older runs are deleted once a tool passes this number. Each run keeps up to 1 MiB of output.',
+  'settings.warnBeforeTests': 'Warn before testing a block',
+  'settings.warnBeforeTestsHint':
+    'Test block and Run from here run real tools, which can change files as a run does.',
   'settings.clearHistory': 'Clear run history',
   'settings.clearHistoryTitle': 'Clear run history?',
   'settings.clearHistoryBody':
@@ -1106,6 +1111,46 @@ export const en = {
   'banner.dismiss': 'Dismiss',
 
   'dialog.close': 'Close',
+
+  'test.menuBlock': 'Test block…',
+  'test.menuFrom': 'Run from here…',
+  'test.saveFirst': 'Save the automation to test its blocks.',
+  'test.titleBlock': 'Test {name}',
+  'test.titleFrom': 'Run from {name}',
+  'test.baseBlock': 'Fields linked to other blocks take what the run of {time} left.',
+  'test.baseFrom': 'Blocks before it keep what the run of {time} left.',
+  'test.noBase': 'There is no run yet, so type the values to test with.',
+  'test.round': 'It runs in round {round}.',
+  'test.fieldMissing': '{field}: {reason}. Type a value to test with.',
+  'test.warning': 'Real tools will run, and can change files, as in a run.',
+  'test.stopWarning': "Don't warn me again",
+  'test.cancel': 'Cancel',
+  'test.runBlock': 'Test block',
+  'test.runFrom': 'Run from here',
+  'test.labelBlock': 'Test of {block}',
+  'test.labelFrom': 'Run from {block}',
+  'test.reused': 'Kept from the run it reused',
+  'test.blocked.not-testable': 'This kind of block cannot be tested on its own.',
+  'test.blocked.start': 'Use Run to run from the Start block.',
+  'test.blocked.inside-loop':
+    'A block inside a loop cannot run from here. Run from the loop instead, or test this block.',
+  'test.blocked.inside-branch':
+    'A block on a branch of a Parallel cannot run from here. Run from the Parallel instead.',
+  'test.blocked.no-run': 'Run the automation once first, so there are values to reuse.',
+  'test.blocked.round-gone':
+    'The latest run did not keep this round. Run the automation again to test it.',
+  'test.missing.not-run':
+    'The latest run did not reach "{block}", so it has no value to reuse. Run the automation again.',
+  'test.missing.failed':
+    '"{block}" failed in the latest run, so it has no value to reuse. Fix it, then test it first.',
+  'test.missing.absent':
+    'The latest run has no "{block}". Run the automation again, so it holds the new block.',
+  'test.missing.secret':
+    '"{block}" left a secret value, which history does not keep. Run the automation again.',
+  'test.missing.shortened':
+    'The latest run kept "{block}" shortened, so its value cannot be reused. Run the automation again.',
+  'test.missing.no-output':
+    '"{block}" did not leave the value this block reads. Run the automation again.',
   'dialog.pickFiles': 'Choose programs to add',
   'dialog.pickFolder': 'Choose a folder to import',
   'dialog.programs': 'Programs and scripts',

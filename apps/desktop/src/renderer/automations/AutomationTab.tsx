@@ -30,6 +30,7 @@ import type {
   AutomationView,
   HistoryRecordView,
   StepRunView,
+  TestPlanView,
   ToolView,
 } from '../../shared/ipc-contract.js';
 import { AUTOMATION_PANEL_SIZES } from '../../shared/ipc-contract.js';
@@ -98,6 +99,8 @@ import { inputsOfFlow } from './canvas/values.js';
 import type { ValueContext } from './canvas/values.js';
 import { RenameDialog } from './canvas/RenameDialog.js';
 import { RunInputsDialog } from './RunInputsDialog.js';
+import { TestDialog } from './TestDialog.js';
+import { testLabel } from './test-text.js';
 import { DataView } from './DataView.js';
 import { problemText } from './problem-text.js';
 
@@ -156,7 +159,11 @@ function PastRuns({ runs, shown, onOpen, onOpenOutput, onOpenInHistory }: PastRu
               {...finishedLabel(run.status, run.steps)}
             />
             <span className="truncate">{formatTime(run.startedAt)}</span>
-            <span className="muted">{t(TRIGGER_LABELS[run.trigger])}</span>
+            <span className="muted">
+              {run.test === undefined
+                ? t(TRIGGER_LABELS[run.trigger])
+                : testLabel(run.test, String)}
+            </span>
             <span className="row-count">{formatDuration(run.durationMs)}</span>
             {run.failure === undefined ? null : (
               <span className="muted automation-run-failure">{run.failure.message}</span>
@@ -418,6 +425,10 @@ interface AutomationTabProps {
   /** Absent for a new automation, which has no file yet. */
   readonly automation: AutomationView | undefined;
   readonly run: AutomationRunStateView | undefined;
+  /** Whether testing a block warns first that real tools will run. */
+  readonly warnBeforeTests: boolean;
+  /** Turns that warning off, as its "Don't warn me again" asks. */
+  readonly onStopTestWarning: () => void;
   readonly tools: readonly ToolView[];
   /** Every automation of the Workspace, which Run automation blocks can call. */
   readonly automations: readonly AutomationView[];
@@ -474,6 +485,8 @@ export function AutomationTab(props: AutomationTabProps) {
 function FlowEditor({
   automation,
   run,
+  warnBeforeTests,
+  onStopTestWarning,
   tools,
   automations,
   active,
@@ -1066,6 +1079,81 @@ function FlowEditor({
   // Fixing what stopped the run answers the notice about it.
   if (refusal?.kind === 'problems' && checked.length === 0) setRefusal(undefined);
   if (refusal?.kind === 'unnamed' && named) setRefusal(undefined);
+  /** The test a dialog is asking about: why it cannot start, or the warning and fields. */
+  const [testing, setTesting] = useState<
+    | { readonly kind: 'block' | 'from'; readonly blockId: string; readonly plan: TestPlanView }
+    | undefined
+  >();
+
+  /**
+   * Tests a block alone, or runs from it onward, on what the latest run left. Like Run, it saves
+   * the flow first, so what runs is what is on the canvas.
+   */
+  async function testBlock(blockId: string, kind: 'block' | 'from'): Promise<void> {
+    onUsed();
+    setRefusal(undefined);
+    if (!named) {
+      refuse({ kind: 'unnamed' });
+      nameField.current?.focus();
+      return;
+    }
+    if (automation === undefined) {
+      refuse({ kind: 'error', message: t('test.saveFirst') });
+      return;
+    }
+    let problems: readonly AutomationProblemView[];
+    if (dirty) {
+      problems = blockingProblems((await store()).problems);
+    } else {
+      const found = await api.checkAutomation(draft);
+      setChecked(found);
+      problems = blockingProblems(found);
+    }
+    if (problems.length > 0) {
+      refuse(refusalOf(problems));
+      return;
+    }
+    // Inside a loop, Test block takes the round the run on view shows.
+    const round = kind === 'block' ? shownSteps.get(blockId)?.round : undefined;
+    const plan = await api.planTest({
+      id: automation.id,
+      kind,
+      blockId,
+      ...(round === undefined ? {} : { round }),
+    });
+    const fields = (plan.fields ?? []).filter(({ parameter }) => parameter.secret !== true);
+    if (plan.blocker === undefined && !warnBeforeTests && fields.length === 0) {
+      await runTest({ kind, blockId, plan }, undefined, false);
+      return;
+    }
+    setTesting({ kind, blockId, plan });
+  }
+
+  async function runTest(
+    test: {
+      readonly kind: 'block' | 'from';
+      readonly blockId: string;
+      readonly plan: TestPlanView;
+    },
+    values: Readonly<Record<string, string | number | boolean>> | undefined,
+    stopWarning: boolean,
+  ): Promise<void> {
+    setTesting(undefined);
+    if (stopWarning) onStopTestWarning();
+    if (automation === undefined) return;
+    await api
+      .testAutomation({
+        id: automation.id,
+        kind: test.kind,
+        blockId: test.blockId,
+        ...(test.plan.round === undefined ? {} : { round: test.plan.round }),
+        ...(values === undefined ? {} : { values }),
+      })
+      .catch((error: unknown) => {
+        refuse({ kind: 'error', message: messageOf(error) });
+      });
+  }
+
   const libraryCollapsed = panels.libraryCollapsed === true;
   const settingsCollapsed = panels.settingsCollapsed === true;
   const lowerCollapsed = panels.lowerCollapsed === true;
@@ -1395,6 +1483,13 @@ function FlowEditor({
               return replaced.id;
             }}
             onAddAfter={(anchor, choice) => add(choice, undefined, anchor)}
+            {...(automation === undefined || running
+              ? {}
+              : {
+                  onTestBlock: (id: string, kind: 'block' | 'from') => {
+                    void testBlock(id, kind).catch(onError);
+                  },
+                })}
             {...(focusRequest === undefined ? {} : { focusRequest })}
             options={canvasOptions}
             onOptions={onCanvasOptions}
@@ -1702,6 +1797,22 @@ function FlowEditor({
             )}
           </div>
         </div>
+        {testing === undefined ? null : (
+          <TestDialog
+            kind={testing.kind}
+            name={nameOf(testing.blockId)}
+            plan={testing.plan}
+            warn={warnBeforeTests}
+            nameOf={nameOf}
+            onRun={(values, stopWarning) => {
+              void runTest(testing, values, stopWarning);
+            }}
+            onClose={() => {
+              setTesting(undefined);
+            }}
+            onError={onError}
+          />
+        )}
         {asking === undefined ? null : (
           <RunInputsDialog
             name={document.name}
