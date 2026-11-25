@@ -202,3 +202,33 @@ export type {
   WorkspaceTab,
   WorkspaceTabKind,
 } from './workspaces/workspace-store.js';
+export { SchedulerError } from './schedules/system-scheduler.js';
+export type {
+  PutTaskOptions,
+  SystemScheduler,
+  SystemTask,
+  TaskLocation,
+} from './schedules/system-scheduler.js';
+export { WindowsScheduler, taskRootFor } from './schedules/windows-scheduler.js';
+export type { WindowsSchedulerOptions } from './schedules/windows-scheduler.js';
+export { commandLineOf } from './schedules/task-xml.js';
+export type { TaskCommand, TaskDefinition } from './schedules/task-xml.js';
+export { readScheduleSettings } from './schedules/schedule-settings.js';
+export type { ScheduleSetting } from './schedules/schedule-settings.js';
+export {
+  ScheduleBlockedError,
+  applySchedule,
+  forgetSchedule,
+  reviewSchedules,
+  scheduleBlocker,
+  scheduleState,
+  turnScheduleOff,
+  turnScheduleOn,
+} from './schedules/schedule-sync.js';
+export type {
+  AutomationAt,
+  ScheduleBlocker,
+  ScheduleContext,
+  ScheduleState,
+  TaskTimes,
+} from './schedules/schedule-sync.js';

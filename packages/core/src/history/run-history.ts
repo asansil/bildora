@@ -144,7 +144,8 @@ export interface RunFinish {
   readonly outputTruncated?: boolean | undefined;
 }
 
-export type AutomationTrigger = 'app' | 'cli';
+/** Where a run was started from: the app, the command, or a scheduled task through the command. */
+export type AutomationTrigger = 'app' | 'cli' | 'schedule';
 
 /** `disabled`: the run passed through the block without doing what it does. */
 export type StepState =
