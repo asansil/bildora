@@ -23,18 +23,34 @@ import type { ScheduleStatusView } from '../shared/ipc-contract.js';
 export const SCHEDULED_RUN_ARGUMENT = '--scheduled-run';
 
 /**
+ * The argument that names the data directory a scheduled run uses, when it is not the usual one. A
+ * task runs with the user's environment, not with the one the app was started with.
+ */
+export const DATA_DIR_ARGUMENT = '--data-dir';
+
+/** The data directory given after `--data-dir`, if any. */
+export function dataDirArgument(argv: readonly string[]): string | undefined {
+  const at = argv.indexOf(DATA_DIR_ARGUMENT);
+  const value = at === -1 ? undefined : argv[at + 1];
+  return value === undefined || value === '' ? undefined : value;
+}
+
+/**
  * How a task starts Bildora for one automation: the executable itself, which then runs the command
  * with no window. In development the executable is Electron, which needs the app's folder first.
+ * `dataDir` is given only when it is not the usual one.
  */
 export function scheduledCommand(
   executable: string,
   appFolder: string | undefined,
   { workspaceId, automationId }: TaskLocation,
+  dataDir?: string,
 ): TaskCommand {
   return {
     program: executable,
     arguments: commandLineOf([
       ...(appFolder === undefined ? [] : [appFolder]),
+      ...(dataDir === undefined ? [] : [DATA_DIR_ARGUMENT, dataDir]),
       SCHEDULED_RUN_ARGUMENT,
       'run',
       automationId,
