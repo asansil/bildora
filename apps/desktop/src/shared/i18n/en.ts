@@ -700,7 +700,6 @@ export const en = {
   'canvas.dayLong.sat': 'Saturday',
   'canvas.dayLong.sun': 'Sunday',
   'canvas.sectionStarts': 'Starts',
-  'canvas.sectionComputer': 'This computer',
   'canvas.startsWithRun': 'With Run',
   'canvas.startsOnSchedule': 'On a schedule',
   'canvas.scheduleRepeats': 'Repeats',
@@ -721,9 +720,8 @@ export const en = {
   'canvas.unit.hours': 'hours',
   'canvas.scheduleButtonHint':
     'Run and bildora run start it. Switching to a schedule keeps anything you set there.',
-  'canvas.scheduleRunHere': 'Run on this computer',
-  'canvas.scheduleOffHint':
-    'Off on this computer. Turning it on creates a Windows scheduled task. An automation shared with you never turns itself on.',
+  'canvas.scheduleActive': 'Active',
+  'canvas.scheduleActiveHint': 'Only on this computer. Shared copies start off.',
   'canvas.scheduleSaveFirst': 'Save the automation to turn its schedule on.',
   'canvas.scheduleUnavailable': 'This computer cannot run automations on a schedule.',
   'canvas.scheduleSignedOut': 'Run when nobody is signed in',

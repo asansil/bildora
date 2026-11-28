@@ -1611,11 +1611,44 @@
   flex: none;
 }
 
+/* The schedule's switch and status, above the Start block's sections. */
+.schedule-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bildora-space-2);
+  margin: var(--bildora-space-3);
+  padding: var(--bildora-space-3);
+  border: 1px solid var(--bildora-border);
+  border-radius: var(--bildora-radius-md);
+  background: var(--bildora-surface-raised);
+  /* It appears above the control that shows it, so it eases in instead of jumping. */
+  animation: schedule-card-in var(--bildora-motion-normal) var(--bildora-ease);
+}
+
+.schedule-card:has(.switch[aria-checked='true']) {
+  border-color: color-mix(in oklch, var(--bildora-family-start) 45%, var(--bildora-border));
+}
+
+.schedule-card > .field-hint {
+  margin: 0;
+}
+
+@keyframes schedule-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
 .schedule-switch {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--bildora-space-2);
+}
+
+.schedule-switch-label {
+  font-weight: var(--bildora-weight-semibold);
 }
 
 .switch {
@@ -1648,6 +1681,22 @@
 
 .switch[aria-checked='true']::after {
   left: 16px;
+}
+
+/* A switch keeps its colors under the pointer; only its edge firms up. */
+.switch:hover:not(:disabled) {
+  background: var(--bildora-border);
+  border-color: var(--bildora-border-strong);
+}
+
+.switch[aria-checked='true']:hover:not(:disabled) {
+  background: var(--bildora-accent-hover);
+  border-color: transparent;
+}
+
+/* While Windows creates or removes the task, the switch already shows where it is going. */
+.switch[aria-busy='true'] {
+  cursor: progress;
 }
 
 @media (prefers-reduced-motion: reduce) {

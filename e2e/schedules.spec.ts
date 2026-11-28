@@ -126,7 +126,38 @@ test('schedules an automation on this computer, and turns it off again', async (
   expect(tasks()).toBe(`\\${taskFolder()}\\default\\nightly`);
 
   await settings.getByTestId('schedule-switch').click();
-  await expect(settings.getByTestId('schedule-switch')).toHaveAttribute('aria-checked', 'false', {
+  // The switch moves at once; the task is gone only when it is no longer busy.
+  await expect(settings.getByTestId('schedule-switch')).toHaveAttribute('aria-checked', 'false');
+  await expect(settings.getByTestId('schedule-switch')).toHaveAttribute('aria-busy', 'false', {
+    timeout: TASK_TIMEOUT_MS,
+  });
+  expect(tasks()).toBe('');
+});
+
+test('a single run set in the past says why it cannot be turned on, and turns on once fixed', async () => {
+  test.skip(process.platform !== 'win32', 'Only Windows has a scheduler Bildora drives');
+  const { window } = await launchShell();
+  await openAutomation(window, 'Nightly');
+  await window.locator('.react-flow__node[data-id="start"]').click();
+  const settings = window.getByTestId('block-settings');
+
+  await settings.getByTestId('starts-on-schedule').click();
+  await settings.getByLabel('Repeats').selectOption('once');
+  await settings.getByLabel('On', { exact: true }).fill('2020-01-01');
+  await expect(settings.getByTestId('schedule-notice')).toContainText('has gone by');
+  await expect(settings.getByTestId('schedule-switch')).toBeDisabled();
+
+  await settings.getByLabel('On', { exact: true }).fill('2099-01-01');
+  await expect(settings.getByTestId('schedule-notice')).toHaveCount(0);
+  await settings.getByTestId('schedule-switch').click();
+  await expect(settings.getByTestId('schedule-switch')).toHaveAttribute('aria-checked', 'true');
+  await expect(settings.getByTestId('schedule-times')).toBeVisible({ timeout: TASK_TIMEOUT_MS });
+  await expect(window.getByTestId('app-error')).toHaveCount(0);
+
+  await settings.getByTestId('schedule-switch').click();
+  // The switch moves at once; the task is gone only when it is no longer busy.
+  await expect(settings.getByTestId('schedule-switch')).toHaveAttribute('aria-checked', 'false');
+  await expect(settings.getByTestId('schedule-switch')).toHaveAttribute('aria-busy', 'false', {
     timeout: TASK_TIMEOUT_MS,
   });
   expect(tasks()).toBe('');

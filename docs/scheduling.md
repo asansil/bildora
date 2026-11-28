@@ -13,13 +13,13 @@ Open the automation and select its Start block.
 3. **Run as soon as it can if the computer was off or asleep** is on by default. A run missed that way starts once when the computer is back, however many were missed. Turn it off when the automation only makes sense at its time.
 4. **Time limit** is two hours by default. When it runs out, Windows ends the run, and history shows it as cancelled.
 5. Save the automation.
-6. Under **This computer**, turn on **Run on this computer**. This creates the task in Task Scheduler.
+6. At the top of the panel, turn on **Active**. This creates the task in Task Scheduler.
 
 The schedule is part of the automation file, but turning it on is not. It belongs to this computer, so an automation shared with you or imported never starts running on its own: whoever receives it turns it on where they want it to run.
 
-Once it is on, the Start block shows the schedule in short, such as `Mon, Fri 07:00`, and **This computer** shows the next run and how the last one ended. The run also appears in history, marked as started by its schedule. Runs with the computer on battery are allowed.
+Once it is on, the Start block shows the schedule in short, such as `Mon, Fri 07:00`, and the card at the top of the panel shows the next run and how the last one ended. The run also appears in history, marked as started by its schedule. Runs with the computer on battery are allowed.
 
-Changing the schedule and saving updates the task. Turning **Run on this computer** off, or deleting the automation, removes it. Switching **Starts** back to **With Run** keeps the schedule in the file but removes the task until the block starts on a schedule again.
+Changing the schedule and saving updates the task. Turning **Active** off, or deleting the automation, removes it. Switching **Starts** back to **With Run** keeps the schedule in the file but removes the task until the block starts on a schedule again.
 
 ### When it cannot be turned on
 
@@ -30,7 +30,7 @@ Changing the schedule and saving updates the task. Turning **Run on this compute
 
 By default a task runs only while you are signed in to Windows, locked or not, and needs no password and no administrator rights. **Run when nobody is signed in** also runs it after you sign out. It asks for administrator rights, because Windows allows this mode only to an administrator, and it stores no password, so the automation cannot reach network folders. See [Running with the user logged off](#running-with-the-user-logged-off) for what was verified. To reach network folders with nobody signed in, create the task by hand with a stored password.
 
-For the same reason, changing the schedule of such a task needs administrator rights again. Saving never asks for them on its own: **This computer** says the task is out of date, and **Update…** asks for them.
+For the same reason, changing the schedule of such a task needs administrator rights again. Saving never asks for them on its own: the card at the top of the panel says the task is out of date, and **Update…** asks for them.
 
 ### Tasks changed outside Bildora
 
@@ -41,7 +41,7 @@ A task changed or removed in Task Scheduler is left as it is, and the Start bloc
 - **Removed outside Bildora:** **Create it again** creates the task from the block.
 - **Changed outside Bildora,** including turned off there: the task may not run as the block says. **Restore from this block** writes the task again from the block, which undoes the change.
 
-To schedule an automation in a way the app does not offer, leave **Run on this computer** off and [create the task by hand](#creating-the-task-by-hand) instead.
+To schedule an automation in a way the app does not offer, leave **Active** off and [create the task by hand](#creating-the-task-by-hand) instead.
 
 ## The command
 

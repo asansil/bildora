@@ -1,9 +1,11 @@
 import { use, useId, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   SCHEDULE_DAYS,
   SCHEDULE_EVERY_HOURS_MAX,
   SCHEDULE_TIME_LIMIT_DEFAULT_MINUTES,
   SCHEDULE_TIME_LIMIT_MAX_MINUTES,
+  startBlocker,
 } from '@bildora/protocol';
 import type { AutomationSchedule, ScheduleDay, StartBlock } from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
@@ -426,60 +428,80 @@ function Notice({
   );
 }
 
-/** Whether the schedule is on for this computer, and how its task stands. */
-function ComputerSection() {
+/** A card at the top of the panel with the switch, its warnings and its times. */
+function ScheduleCard({ children }: { readonly children: ReactNode }) {
+  return (
+    <div className="schedule-card" data-testid="schedule-card">
+      {children}
+    </div>
+  );
+}
+
+/**
+ * Whether the schedule is active on this computer, and how its task stands. Turning it on is not
+ * part of the automation's file, so a shared or imported copy starts off wherever it goes.
+ */
+function ScheduleStatus({ block }: { readonly block: StartBlock }) {
   const schedule = use(ScheduleStatusContext);
   const switchId = useId();
+  // Where the switch was moved to, shown at once while Windows creates or removes the task.
+  const [pending, setPending] = useState<boolean>();
   const status = schedule?.status;
   // The tab gives no schedule state to an automation that has no file yet.
   if (schedule === undefined) {
     return (
-      <PanelSection id="start.computer" title={t('canvas.sectionComputer')}>
+      <ScheduleCard>
         <p className="field-hint">{t('canvas.scheduleSaveFirst')}</p>
-      </PanelSection>
+      </ScheduleCard>
     );
   }
   if (status === undefined) {
-    return (
-      <PanelSection id="start.computer" title={t('canvas.sectionComputer')}>
-        {schedule.unavailable ? (
-          <p className="field-hint">{t('canvas.scheduleUnavailable')}</p>
-        ) : null}
-      </PanelSection>
-    );
+    return schedule.unavailable ? (
+      <ScheduleCard>
+        <p className="field-hint">{t('canvas.scheduleUnavailable')}</p>
+      </ScheduleCard>
+    ) : null;
   }
   const { busy, set } = schedule;
   const on = status.kind !== 'off';
+  const shown = busy && pending !== undefined ? pending : on;
+  // The block as edited decides, not the saved file, so a problem shows before the switch is tried
+  // and goes away as soon as it is fixed. Saving brings the task's state to the same answer.
+  const blocker = startBlocker(block, new Date());
   const again = (): void => {
     set(true, status.signedOut);
   };
   return (
-    <PanelSection id="start.computer" title={t('canvas.sectionComputer')}>
+    <ScheduleCard>
       <div className="schedule-switch">
-        <span className="field-label" id={switchId}>
-          {t('canvas.scheduleRunHere')}
+        <span className="schedule-switch-label" id={switchId}>
+          {t('canvas.scheduleActive')}
         </span>
         <button
           type="button"
           role="switch"
           className="switch"
-          aria-checked={on}
+          aria-checked={shown}
           aria-labelledby={switchId}
+          aria-busy={busy}
           data-testid="schedule-switch"
-          disabled={busy}
+          // Off and blocked, there is nothing to turn on until the block is fixed.
+          disabled={!on && blocker !== undefined}
           onClick={() => {
+            if (busy) return;
+            setPending(!on);
             set(!on, on ? undefined : status.signedOut);
           }}
         />
       </div>
-      {status.kind === 'off' ? <p className="field-hint">{t('canvas.scheduleOffHint')}</p> : null}
-      {status.kind === 'blocked' && status.blocker !== undefined ? (
+      <p className="field-hint">{t('canvas.scheduleActiveHint')}</p>
+      {blocker === undefined ? null : (
         <Notice
-          text={t(`canvas.scheduleBlocked.${status.blocker}`)}
-          fix={t(`canvas.scheduleBlocked.${status.blocker}Fix`)}
+          text={t(`canvas.scheduleBlocked.${blocker}`)}
+          fix={t(`canvas.scheduleBlocked.${blocker}Fix`)}
           busy={busy}
         />
-      ) : null}
+      )}
       {status.kind === 'missing' ? (
         <Notice
           text={t('canvas.scheduleMissing')}
@@ -519,7 +541,7 @@ function ComputerSection() {
         </label>
         <p className="field-hint">{t('canvas.scheduleSignedOutHint')}</p>
       </div>
-    </PanelSection>
+    </ScheduleCard>
   );
 }
 
@@ -533,8 +555,8 @@ export function StartSettings({
 }) {
   return (
     <>
+      {block.mode === 'scheduled' ? <ScheduleStatus block={block} /> : null}
       <StartsSection block={block} onChange={onChange} />
-      {block.mode === 'scheduled' ? <ComputerSection /> : null}
     </>
   );
 }
