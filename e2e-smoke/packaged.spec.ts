@@ -1,4 +1,5 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -203,6 +204,101 @@ steps:
     await window.getByRole('dialog').getByRole('button', { name: 'Remove tool' }).click();
   } finally {
     await app.close().catch(() => undefined);
+    await rm(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+/** Runs a PowerShell script and gives what it printed, in UTF-8 so paths keep every letter. */
+function powershell(script: string): string {
+  const utf8 = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8';
+  return execFileSync(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', `${utf8}; ${script}`],
+    { encoding: 'utf8', windowsHide: true },
+  ).trim();
+}
+
+/** The Task Scheduler folder the app gives a data directory that is not the usual one. */
+function taskFolderOf(dataDir: string): string {
+  const hash = createHash('sha256').update(dataDir.toLowerCase()).digest('hex').slice(0, 8);
+  return `Bildora-${hash}`;
+}
+
+/** Removes a test's folder from Task Scheduler, with any task left in it. */
+function removeTaskFolder(name: string): void {
+  powershell(
+    `$s = New-Object -ComObject Schedule.Service; $s.Connect(); $root = $s.GetFolder('\\'); try { $top = $root.GetFolder('${name}'); foreach ($f in @($top.GetFolders(0))) { foreach ($t in @($f.GetTasks(1))) { $f.DeleteTask($t.Name, 0) }; $top.DeleteFolder($f.Name, 0) }; $root.DeleteFolder('${name}', 0) } catch {}`,
+  );
+}
+
+test('a schedule turned on in the packaged app runs its automation with no window', async () => {
+  test.setTimeout(180_000);
+  const folder = await mkdtemp(join(tmpdir(), 'bildora smoke schedule ñ-'));
+  const dataDir = join(folder, 'data');
+  const workspace = join(dataDir, 'workspaces', 'default');
+  const tasks = taskFolderOf(dataDir);
+  const task = `-TaskPath '\\${tasks}\\default\\' -TaskName 'nightly'`;
+  await cp(UNPACKED, join(folder, 'app'), { recursive: true });
+  await mkdir(join(workspace, 'automations'), { recursive: true });
+  await writeFile(join(workspace, 'workspace.yaml'), 'formatVersion: 1\nname: Default\n');
+  await writeFile(
+    join(workspace, 'automations', 'nightly.yaml'),
+    `schemaVersion: 2
+id: nightly
+name: Nightly
+blocks:
+  - { id: start, type: start }
+  - { id: Wait1, type: wait-for-time, seconds: 1 }
+connections:
+  - { from: start, to: Wait1 }
+`,
+  );
+
+  const opened: ElectronApplication[] = [];
+  try {
+    const first = await launch(folder, dataDir);
+    opened.push(first.app);
+    const { window } = first;
+    await window.getByRole('navigation').getByRole('button', { name: 'Automations' }).click();
+    await window
+      .getByTestId('automations-panel')
+      .getByRole('button', { name: 'Nightly', exact: true })
+      .dblclick();
+    await window.locator('.react-flow__node[data-id="start"]').click();
+    const settings = window.getByTestId('block-settings');
+    await settings.getByTestId('starts-on-schedule').click();
+    await settings.getByLabel('Repeats').selectOption('daily');
+    await settings.getByLabel('At', { exact: true }).fill('03:00');
+    await settings.getByTestId('schedule-switch').click();
+    await expect(settings.getByTestId('schedule-times')).toBeVisible({ timeout: 60_000 });
+    await first.app.close();
+
+    // The task names this data directory, since a task runs with the user's own environment.
+    const action = powershell(`(Get-ScheduledTask ${task}).Actions[0].Arguments`);
+    expect(action).toContain(`--data-dir "${dataDir}"`);
+
+    // Started now instead of at three, it runs as it would then: with the app closed, no window.
+    powershell(`Start-ScheduledTask ${task}`);
+    await expect
+      .poll(() => powershell(`(Get-ScheduledTaskInfo ${task}).LastTaskResult`), {
+        message: 'the scheduled run should end with exit code 0',
+        timeout: 90_000,
+      })
+      .toBe('0');
+
+    const again = await launch(folder, dataDir);
+    opened.push(again.app);
+    await again.window.getByRole('navigation').getByRole('button', { name: 'Automations' }).click();
+    await again.window
+      .getByTestId('automations-panel')
+      .getByRole('button', { name: 'Nightly', exact: true })
+      .click();
+    await again.window.getByRole('tab', { name: 'Past runs' }).click();
+    await expect(again.window.getByTestId('automation-runs')).toContainText('Schedule');
+    await expect(again.window.getByTestId('automation-runs')).toContainText('Completed');
+  } finally {
+    for (const app of opened) await app.close().catch(() => undefined);
+    removeTaskFolder(tasks);
     await rm(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
