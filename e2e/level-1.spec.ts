@@ -219,6 +219,68 @@ test('keeps values in a profile and secrets out of it', async () => {
   expect(problems).toEqual([]);
 });
 
+test('a block shows its profile’s values and the defaults, dimmed, in fields it leaves empty', async () => {
+  const { app, window } = await launchShell();
+  await importSample(app, window);
+  await window.getByLabel('Report title').fill('Saved title');
+  await window.getByLabel('Show each step').check();
+  await window.getByRole('button', { name: 'Save as…' }).click();
+  await window.getByRole('dialog').getByLabel('Name').fill('Nightly');
+  await window.getByRole('dialog').getByRole('button', { name: 'Save' }).click();
+  await expect(window.getByLabel('Profile')).toHaveValue('nightly');
+
+  await window
+    .getByRole('navigation')
+    .getByRole('button', { name: 'Automations', exact: true })
+    .click();
+  await window.getByRole('button', { name: 'New automation' }).click();
+  await window.getByLabel('Name', { exact: true }).fill('Reports');
+  await window.getByTestId('block-library').getByRole('button', { name: 'File Report' }).click();
+  const settings = window.getByTestId('block-settings');
+  const title = settings.getByLabel('Report title', { exact: true });
+  // Before a profile, only the tool's defaults show.
+  await expect(title).not.toHaveAttribute('placeholder');
+  await expect(settings.getByLabel('Longest lines', { exact: true })).toHaveAttribute(
+    'placeholder',
+    '3',
+  );
+  await expect(settings.getByLabel('Longest lines', { exact: true })).toHaveAttribute(
+    'title',
+    'Tool default',
+  );
+  // A list shows the default as chosen, once, and dims only that choice.
+  const format = settings.getByLabel('Format', { exact: true });
+  await expect(format).toHaveClass(/is-inherited/);
+  await expect(format).toHaveValue('text');
+  await expect(format.locator('option')).toHaveText(['text', 'json']);
+  await expect(format.locator('option.is-inherited')).toHaveText('text');
+  await format.selectOption('json');
+  await expect(format).not.toHaveClass(/is-inherited/);
+  await expect(format.locator('option.is-inherited')).toHaveCount(0);
+
+  await settings.getByLabel('Profile').selectOption('nightly');
+  await expect(title).toHaveValue('');
+  await expect(title).toHaveAttribute('placeholder', 'Saved title');
+  await expect(title).toHaveAttribute('title', 'From the profile Nightly');
+
+  // The profile's tick shows dimmed, and a click clears it for this block alone.
+  const steps = settings.getByLabel('Show each step', { exact: true });
+  await expect(steps).toBeChecked();
+  await expect(settings.locator('.field-check.is-inherited')).toHaveCount(1);
+  await steps.click();
+  await expect(steps).not.toBeChecked();
+  await expect(settings.locator('.field-check.is-inherited')).toHaveCount(0);
+
+  // A value of the block's own hides the profile's, and the field's menu brings it back.
+  await title.fill('Own title');
+  await expect(title).not.toHaveAttribute('title');
+  await title.click({ button: 'right' });
+  await window.getByRole('menuitem', { name: 'Use the profile’s value' }).click();
+  await expect(title).toHaveValue('');
+  await expect(title).toHaveAttribute('placeholder', 'Saved title');
+  expect(problems).toEqual([]);
+});
+
 test('refuses a manifest it cannot use, and says why', async () => {
   const manifest = join(folder, 'tool.yaml');
   await writeFile(manifest, 'schemaVersion: 99\nid: future\n');

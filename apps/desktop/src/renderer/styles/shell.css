@@ -908,6 +908,21 @@ input[type='radio'] {
   font-weight: var(--bildora-weight-medium);
 }
 
+/* A box or a list left to a profile's value or a default shows that value, dimmed. In the open
+   list only that choice is dimmed; the others read as usual. */
+.field-check.is-inherited input {
+  opacity: 0.6;
+}
+
+.field select.is-inherited,
+.field select option.is-inherited {
+  color: var(--bildora-text-muted);
+}
+
+.field select.is-inherited option:not(.is-inherited) {
+  color: var(--bildora-text);
+}
+
 .field-row {
   display: flex;
   gap: var(--bildora-space-2);
