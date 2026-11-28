@@ -101,6 +101,8 @@ Tools that need an interpreter, such as `node` or `python`, must find it on the 
 
 **Verified** on 2026-11-08 with the 0.1.0-alpha.1 package, on Windows 11 Home with a Microsoft account. With the user signed out, a scheduled automation ran a level 1 tool in a Bildora console, read a secret saved in a profile, and wrote its run to history, which the app showed afterwards. It worked in both modes below.
 
+Verified again on 2026-11-28 with tasks the app created from the Start block, on the same package version. A run once started with the app closed and the user signed in, and another with **Run when nobody is signed in** on and the user signed out. Both wrote their run to history, marked as started by their schedule.
+
 | Mode on **General**                                     | Password needed        | Reaches network shares |
 | ------------------------------------------------------- | ---------------------- | ---------------------- |
 | **Run whether user is logged on or not**                | Yes, stored by Windows | Yes                    |
