@@ -3,6 +3,9 @@ import type {
   AutomationListView,
   AutomationProblemView,
   AutomationRunRecordView,
+  ScheduleStatusView,
+  TestPlanView,
+  TestRequestView,
   AutomationRunStateView,
   AutomationView,
   DetectionView,
@@ -81,6 +84,24 @@ export interface ShellApi {
   /** Calls back on every automation run change, and returns how to stop listening. */
   onAutomationsChanged(listener: (runs: readonly AutomationRunStateView[]) => void): () => void;
   automationHistory(id: string): Promise<readonly AutomationRunRecordView[]>;
+  /** How an automation's schedule stands on this computer: on or off, next run, last result. */
+  scheduleStatus(id: string): Promise<ScheduleStatusView>;
+  /**
+   * Turns an automation's schedule on or off for this computer. Running with nobody signed in
+   * makes Windows ask for administrator rights.
+   */
+  setSchedule(id: string, on: boolean, signedOut?: boolean): Promise<ScheduleStatusView>;
+  /** Whether a block can be tested on the latest run, and what Test block opens with. */
+  planTest(request: TestRequestView): Promise<TestPlanView>;
+  /**
+   * Tests a block: alone, with values typed over its own, or with everything after it. Real tools
+   * run.
+   */
+  testAutomation(
+    request: TestRequestView & {
+      readonly values?: Readonly<Record<string, string | number | boolean>>;
+    },
+  ): Promise<AutomationRunStateView>;
   listProfiles(toolId: string): Promise<readonly ProfileView[]>;
   saveProfile(input: SaveProfileInput): Promise<ProfileView>;
   removeProfile(toolId: string, id: string): Promise<void>;

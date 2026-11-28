@@ -3,6 +3,10 @@ import {
   checkAutomation,
   findVisibleTool,
   getAutomation,
+  getProfile,
+  latestBaseRun,
+  planTest,
+  readBaseRun,
   listAutomations,
   newAutomationId,
   readCallTree,
@@ -12,11 +16,15 @@ import {
   startAutomationRun,
 } from '@bildora/core';
 import type {
+  AutomationAt,
   AutomationRun,
   AutomationRunOptions,
   AutomationRunView,
+  BaseRun,
   CallTree,
   ManualAnswer,
+  PathVariables,
+  Profile,
   ManualRequest,
   RecordedToolRun,
   RegisteredTool,
@@ -29,14 +37,19 @@ import {
   blockingProblems,
   problemsOfIssues,
 } from '@bildora/protocol';
-import type { Automation, AutomationProblem } from '@bildora/protocol';
+import type { Automation, AutomationInputDeclaration, AutomationProblem } from '@bildora/protocol';
 import type {
   ReceivedAutomationDraft,
   AutomationListView,
   AutomationProblemView,
   AutomationView,
+  ParameterView,
+  ScheduleStatusView,
+  TestPlanView,
 } from '../shared/ipc-contract.js';
+import { viewOfParameter } from './tool-service.js';
 import type { ServiceRunRequest } from './run-service.js';
+import type { ScheduleService } from './schedule-service.js';
 
 /** How often a run's state reaches the shell. A chatty tool must not flood the page. */
 const SHELL_UPDATE_MS = 33;
@@ -53,6 +66,37 @@ export interface AutomationServiceOptions {
     request: ServiceRunRequest,
   ) => Promise<RecordedToolRun>;
   readonly onChange: (views: readonly AutomationRunView[]) => void;
+  /** Keeps scheduled tasks in step, where this computer can schedule. */
+  readonly schedules?: ScheduleService;
+}
+
+/** A test of a block of a saved automation. */
+export interface TestRequest {
+  readonly id: string;
+  readonly kind: 'block' | 'from';
+  readonly blockId: string;
+  readonly round?: string | undefined;
+}
+
+/** The inputs of the automation a Run automation block calls. */
+function inputsOfCalled(calls: CallTree, blockId: string): readonly AutomationInputDeclaration[] {
+  const called = calls.calls.get(blockId)?.automation;
+  const start = called?.blocks.find(({ type }) => type === 'start');
+  return start?.type === 'start' ? (start.inputs ?? []) : [];
+}
+
+/** An input as the form a tool's parameters use shows it. */
+function inputParameterView(input: AutomationInputDeclaration): ParameterView {
+  return {
+    name: input.name,
+    label: input.label ?? input.name,
+    type: input.type,
+    required: input.required === true,
+    delivery: 'argument',
+    ...(input.description === undefined ? {} : { description: input.description }),
+    ...(input.default === undefined ? {} : { default: input.default }),
+    ...(input.type === 'choice' ? { choices: input.choices } : {}),
+  };
 }
 
 interface ActiveAutomation {
@@ -163,6 +207,8 @@ export class AutomationService {
       );
     }
     const saved = await saveAutomation(dataDir, workspace, parsed.automation);
+    // A task that cannot follow now says so in the Start block; the file is saved either way.
+    await this.options.schedules?.apply(workspace, saved).catch(() => undefined);
     return this.viewOf(saved, workspace);
   }
 
@@ -180,8 +226,37 @@ export class AutomationService {
       throw new Error('This automation is running');
     }
     await removeAutomation(dataDir, workspace, id, history);
+    await this.options.schedules
+      ?.forget({ workspaceId: workspace, automationId: id })
+      .catch(() => undefined);
     this.lastFinished.delete(`${workspace}/${id}`);
     this.sendChanges();
+  }
+
+  private async scheduleTarget(
+    id: string,
+  ): Promise<{ schedules: ScheduleService; target: AutomationAt }> {
+    const { dataDir, workspaceId, schedules } = this.options;
+    if (schedules === undefined) throw new Error('This computer cannot schedule automations');
+    const workspace = workspaceId();
+    const automation = await getAutomation(dataDir, workspace, id);
+    if (automation === undefined) throw new Error('This automation no longer exists');
+    return { schedules, target: { workspaceId: workspace, automation } };
+  }
+
+  /** How an automation's schedule stands on this computer. */
+  async scheduleStatus(id: string): Promise<ScheduleStatusView> {
+    const { schedules, target } = await this.scheduleTarget(id);
+    return schedules.status(target);
+  }
+
+  /** Turns an automation's schedule on or off for this computer, as saved in its file. */
+  async setSchedule(
+    id: string,
+    choice: { readonly on: boolean; readonly signedOut?: boolean | undefined },
+  ): Promise<ScheduleStatusView> {
+    const { schedules, target } = await this.scheduleTarget(id);
+    return schedules.set(target, choice);
   }
 
   /** Tells whether an automation is going on in this session. The CLI's runs are its own. */
@@ -191,13 +266,14 @@ export class AutomationService {
     );
   }
 
-  /** Starts an automation of the active Workspace, whatever the user switches to afterwards. */
-  /** Starts an automation. Inputs that do not fit its Start block throw before anything runs. */
-  async start(
+  /**
+   * Reads a saved automation of the active Workspace that is not running, with every automation it
+   * can call, read once so that checking and running see the same files.
+   */
+  private async runnable(
     id: string,
-    inputs?: Readonly<Record<string, string | number | boolean>>,
-  ): Promise<AutomationRunView> {
-    const { dataDir, registry, history, workspaceId } = this.options;
+  ): Promise<{ automation: Automation; calls: CallTree; workspace: string }> {
+    const { dataDir, workspaceId } = this.options;
     const workspace = workspaceId();
     if (this.isRunning(workspace, id)) {
       throw new Error('This automation is already running');
@@ -206,10 +282,17 @@ export class AutomationService {
     if (automation === undefined) {
       throw new Error('This automation no longer exists');
     }
-    // Every automation it can call is read once, so that checking and running see the same files.
-    const calls = await this.callTree(automation, workspace);
+    return { automation, calls: await this.callTree(automation, workspace), workspace };
+  }
+
+  /** Throws the first problem that keeps an automation from running. */
+  private async refuseBroken(
+    automation: Automation,
+    workspace: string,
+    calls: CallTree,
+  ): Promise<void> {
     const [problem] = blockingProblems(
-      await checkAutomation(automation, registry, workspace, calls),
+      await checkAutomation(automation, this.options.registry, workspace, calls),
     );
     if (problem !== undefined) {
       throw new Error(
@@ -218,17 +301,141 @@ export class AutomationService {
           : `Block "${problem.blockId}": ${problem.message}`,
       );
     }
+  }
 
+  /**
+   * Starts an automation of the active Workspace, whatever the user switches to afterwards. Inputs
+   * that do not fit its Start block throw before anything runs.
+   */
+  async start(
+    id: string,
+    inputs?: Readonly<Record<string, string | number | boolean>>,
+  ): Promise<AutomationRunView> {
+    const { automation, calls, workspace } = await this.runnable(id);
+    await this.refuseBroken(automation, workspace, calls);
+    return this.launch(automation, workspace, calls, { inputs });
+  }
+
+  /**
+   * What a test of a block reads: the latest run of its automation, tests included, and the tools,
+   * profiles and path variables its values are worked out with.
+   */
+  private async testContext(automation: Automation, workspace: string) {
+    const { dataDir, registry, history } = this.options;
+    const latest = latestBaseRun(history.listAutomationRuns(workspace, automation.id));
+    const base: BaseRun | undefined =
+      latest === undefined ? undefined : await readBaseRun(history, automation, latest);
+    const tools = new Map<string, RegisteredTool>();
+    const profiles = new Map<string, Profile>();
+    for (const block of automation.blocks) {
+      if (block.type !== 'run') continue;
+      const tool = await findVisibleTool(registry, workspace, block.tool).catch(() => undefined);
+      if (tool === undefined) continue;
+      tools.set(block.id, tool);
+      if (block.profile === undefined) continue;
+      const profile = await getProfile(tool, block.profile).catch(() => undefined);
+      if (profile !== undefined) profiles.set(block.id, profile);
+    }
+    const pathVariables: PathVariables =
+      (await readPathVariables(dataDir).catch(() => undefined)) ?? new Map<string, string>();
+    return { base, latest, tools, profiles, pathVariables };
+  }
+
+  private async plan(request: TestRequest) {
+    const { dataDir } = this.options;
+    const { automation, calls, workspace } = await this.runnable(request.id);
+    const context = await this.testContext(automation, workspace);
+    const plan = planTest(
+      automation,
+      context.base,
+      {
+        kind: request.kind,
+        blockId: request.blockId,
+        round: request.round,
+        dataDir,
+        workspaceId: workspace,
+      },
+      { ...context, calls },
+    );
+    return { automation, calls, workspace, context, plan };
+  }
+
+  /**
+   * Whether a block of a saved automation can be tested now, and the fields Test block opens with.
+   * Nothing runs.
+   */
+  async planTest(request: TestRequest): Promise<TestPlanView> {
+    const { calls, context, plan, automation } = await this.plan(request);
+    const block = automation.blocks.find(({ id }) => id === request.blockId);
+    let declared: readonly ParameterView[] = [];
+    if (block?.type === 'run') {
+      const manifest = context.tools.get(block.id)?.manifest;
+      declared = manifest?.level === 1 ? manifest.parameters.map(viewOfParameter) : [];
+    } else if (block?.type === 'run-automation') {
+      declared = inputsOfCalled(calls, block.id).map(inputParameterView);
+    }
+    const fields = plan.fields?.flatMap((field) => {
+      const parameter = declared.find(({ name }) => name === field.name);
+      if (parameter === undefined) return [];
+      return [
+        {
+          parameter,
+          ...(field.value === undefined ? {} : { value: field.value }),
+          ...(field.missing === undefined ? {} : { missing: field.missing }),
+        },
+      ];
+    });
+    return {
+      ...(plan.blocker === undefined ? {} : { blocker: plan.blocker }),
+      ...(plan.round === undefined ? {} : { round: plan.round }),
+      ...(context.latest === undefined ? {} : { baseStartedAt: context.latest.startedAt }),
+      ...(fields === undefined ? {} : { fields }),
+    };
+  }
+
+  /**
+   * Tests a block of a saved automation on what its latest run left: the block alone, with values
+   * typed over its own, or the block and everything after it. Real tools run.
+   */
+  async test(
+    request: TestRequest & {
+      readonly values?: Readonly<Record<string, string | number | boolean>> | undefined;
+    },
+  ): Promise<AutomationRunView> {
+    const { automation, calls, workspace, context, plan } = await this.plan(request);
+    await this.refuseBroken(automation, workspace, calls);
+    if (plan.blocker !== undefined) {
+      throw new Error(`This test cannot start: ${plan.blocker.code}`);
+    }
+    return this.launch(automation, workspace, calls, {
+      test: {
+        kind: request.kind,
+        blockId: request.blockId,
+        round: plan.round,
+        base: context.base,
+        values: request.kind === 'block' ? request.values : undefined,
+      },
+    });
+  }
+
+  /** Starts a run of an automation already read and checked, and follows it. */
+  private async launch(
+    automation: Automation,
+    workspace: string,
+    calls: CallTree,
+    extra: Pick<AutomationRunOptions, 'inputs' | 'test'>,
+  ): Promise<AutomationRunView> {
+    const { dataDir, registry, history } = this.options;
     const pathVariables = await readPathVariables(dataDir).catch(() => undefined);
     const entry: ActiveAutomation = {
       workspaceId: workspace,
-      automationId: id,
+      automationId: automation.id,
       answers: new Map(),
       run: startAutomationRun({
         automation,
         workspaceId: workspace,
         trigger: 'app',
-        inputs,
+        ...extra,
         calls,
         startCalled: (called) => this.startCalled(called),
         dataDir,

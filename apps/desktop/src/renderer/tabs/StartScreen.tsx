@@ -19,7 +19,7 @@ interface StartScreenProps {
 export function StartScreen({ recent, onOpen }: StartScreenProps) {
   return (
     <section className="welcome start-screen" data-testid="start-screen">
-      <BildoraMark />
+      <BildoraMark size="large" />
       <h1>{t('start.title')}</h1>
       <p>{t('start.body')}</p>
       <dl className="start-shortcuts">

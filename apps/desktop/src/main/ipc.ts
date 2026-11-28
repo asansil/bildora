@@ -17,6 +17,9 @@ import { t } from '../shared/i18n/translate.js';
 import {
   automationDraftSchema,
   automationIdSchema,
+  automationScheduleSchema,
+  automationTestPlanSchema,
+  automationTestSchema,
   automationStartSchema,
   automationConfirmSchema,
   automationRunIdSchema,
@@ -310,6 +313,16 @@ export function registerIpc(context: IpcContext): void {
     automations.confirm(runId, stepId);
   });
   handle(CHANNELS.automationsRuns, noInputSchema, () => automations.views());
+  handle(CHANNELS.automationsScheduleStatus, automationIdSchema, ({ id }) =>
+    automations.scheduleStatus(id),
+  );
+  handle(CHANNELS.automationsScheduleSet, automationScheduleSchema, ({ id, on, signedOut }) =>
+    automations.setSchedule(id, { on, signedOut }),
+  );
+  handle(CHANNELS.automationsTestPlan, automationTestPlanSchema, (request) =>
+    automations.planTest(request),
+  );
+  handle(CHANNELS.automationsRunFrom, automationTestSchema, (request) => automations.test(request));
   handle(CHANNELS.automationsHistory, automationIdSchema, ({ id }) =>
     history.listAutomationRuns(workspaces.activeId, id),
   );
@@ -341,15 +354,20 @@ export function registerIpc(context: IpcContext): void {
   );
 
   handle(CHANNELS.preferencesGet, noInputSchema, async () => {
-    const { historyRunLimit } = await readPreferences(dataDir);
-    return { historyRunLimit };
+    const { historyRunLimit, warnBeforeTests } = await readPreferences(dataDir);
+    return { historyRunLimit, warnBeforeTests };
   });
-  handle(CHANNELS.preferencesSet, preferencesSchema, async ({ historyRunLimit }) => {
-    if (historyRunLimit !== undefined) {
-      await writePreferences(dataDir, { historyRunLimit });
-      await removeRunFolders(dataDir, history.pruneAll(historyRunLimit));
-    }
-  });
+  handle(
+    CHANNELS.preferencesSet,
+    preferencesSchema,
+    async ({ historyRunLimit, warnBeforeTests }) => {
+      if (warnBeforeTests !== undefined) await writePreferences(dataDir, { warnBeforeTests });
+      if (historyRunLimit !== undefined) {
+        await writePreferences(dataDir, { historyRunLimit });
+        await removeRunFolders(dataDir, history.pruneAll(historyRunLimit));
+      }
+    },
+  );
 
   function followTheme(): void {
     nativeTheme.themeSource = workspaces.current.theme;

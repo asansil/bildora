@@ -111,6 +111,25 @@ export const automationStartSchema = z.strictObject({
   inputs: valuesSchema.optional(),
 });
 export const automationRunIdSchema = z.strictObject({ runId: idSchema });
+/** Turns an automation's schedule on or off for this computer, or changes how it runs. */
+export const automationScheduleSchema = z.strictObject({
+  id: idSchema,
+  on: z.boolean(),
+  /** Runs with nobody signed in, which asks for administrator rights. */
+  signedOut: z.boolean().optional(),
+});
+/** A test of one block, or a run from a block onward, on what the latest run left. */
+export const automationTestPlanSchema = z.strictObject({
+  id: idSchema,
+  kind: z.enum(['block', 'from']),
+  blockId: idSchema,
+  /** For a block inside loops, the round to test it in, as history names rounds. */
+  round: z.string().min(1).max(500).optional(),
+});
+/** Starts a test, with values typed over the tested block's own. */
+export const automationTestSchema = automationTestPlanSchema.extend({
+  values: valuesSchema.optional(),
+});
 export const automationConfirmSchema = z.strictObject({
   runId: idSchema,
   /** The block to answer, when a run waits on several at once. */
@@ -150,6 +169,7 @@ export const historyListSchema = z.strictObject({
 });
 export const preferencesSchema = z.strictObject({
   historyRunLimit: z.int().min(1).max(HISTORY_RUN_LIMIT_MAX).optional(),
+  warnBeforeTests: z.boolean().optional(),
 });
 export const workspaceIdSchema = z.strictObject({ id: idSchema });
 export const createWorkspaceSchema = z.strictObject({ name: workspaceNameSchema });
@@ -243,6 +263,8 @@ export interface AutomationDraft {
 
 export interface ShellPreferences {
   readonly historyRunLimit: number;
+  /** Whether testing a block warns first that real tools will run. */
+  readonly warnBeforeTests: boolean;
 }
 
 export interface WorkspaceLayoutView {
@@ -558,6 +580,19 @@ export interface StepRunView {
   readonly rounds?: number;
   /** For a Run automation block, the run it started. */
   readonly calledRunId?: string;
+  /** In a test, the block kept what the run it reused left, and did not run again. */
+  readonly reused?: true;
+  /** For an If or a Switch, the output it took. */
+  readonly took?: string;
+}
+
+/** What a test ran: one block, or a block and everything after it. */
+export interface RunTestView {
+  readonly kind: 'block' | 'from';
+  readonly blockId: string;
+  readonly round?: string;
+  /** The run whose values it reused. A test with none used only typed values. */
+  readonly baseRunId?: string;
 }
 
 /** The Run automation block, and its round, that started a run. */
@@ -596,6 +631,8 @@ export interface AutomationRunStateView {
   readonly paths: readonly TakenPathView[];
   /** Set when a Run automation block of another run started this one. */
   readonly caller?: RunCallerView;
+  /** Set for a test from the canvas. */
+  readonly test?: RunTestView;
 }
 
 export interface TakenPathView {
@@ -609,7 +646,7 @@ export interface TakenPathView {
 /** A past run of an automation, from the app or from the CLI. */
 export interface AutomationRunRecordView {
   readonly runId: string;
-  readonly trigger: 'app' | 'cli';
+  readonly trigger: 'app' | 'cli' | 'schedule';
   readonly startedAt: number;
   readonly status: HistoryStatus;
   readonly durationMs?: number;
@@ -625,6 +662,8 @@ export interface AutomationRunRecordView {
   readonly paths: readonly TakenPathView[];
   /** Set when a Run automation block of another run started this one. */
   readonly caller?: RunCallerView;
+  /** Set for a test from the canvas. */
+  readonly test?: RunTestView;
 }
 
 /** One row of Run history: a tool run, or an automation run standing for the tool runs it made. */
@@ -653,4 +692,56 @@ export interface HistoryRecordView extends HistorySummaryView {
   }[];
   readonly output: string;
   readonly outputTruncated: boolean;
+}
+
+/** How an automation's schedule stands on this computer. */
+export type ScheduleKind = 'off' | 'blocked' | 'on' | 'missing' | 'changed' | 'outdated';
+
+export interface ScheduleStatusView {
+  readonly kind: ScheduleKind;
+  /** Why a schedule that is on cannot run. */
+  readonly blocker?: 'not-scheduled' | 'input-without-default' | 'past';
+  /** Whether it runs with nobody signed in, as chosen for this computer. */
+  readonly signedOut: boolean;
+  readonly nextRun?: string;
+  readonly lastRun?: string;
+  /** The exit code of the last run, which `bildora run` documents. */
+  readonly lastResult?: number;
+  readonly running: boolean;
+}
+
+/** A test of a block of a saved automation. */
+export interface TestRequestView {
+  readonly id: string;
+  readonly kind: 'block' | 'from';
+  readonly blockId: string;
+  readonly round?: string;
+}
+
+/** Why a test cannot start. `block` names the block whose value the latest run lacks. */
+export type TestBlockerView =
+  | { readonly code: 'not-testable' | 'start' | 'inside-loop' | 'inside-branch' | 'no-run' }
+  | { readonly code: 'round-gone'; readonly round: string }
+  | {
+      readonly code: 'value-missing';
+      readonly block: string;
+      readonly why: 'not-run' | 'failed' | 'absent' | 'secret' | 'shortened' | 'no-output';
+    };
+
+/** A field of a tested block, with the value the latest run gives it. */
+export interface TestFieldView {
+  readonly parameter: ParameterView;
+  readonly value?: string | number | boolean;
+  /** Why the latest run gives no value, for a field the block links to another. */
+  readonly missing?: string;
+}
+
+/** Whether a block can be tested now, and what Test block opens with. */
+export interface TestPlanView {
+  readonly blocker?: TestBlockerView;
+  /** The round a block inside loops is tested in. */
+  readonly round?: string;
+  /** When the run a test reuses started, in milliseconds since the epoch. */
+  readonly baseStartedAt?: number;
+  readonly fields?: readonly TestFieldView[];
 }

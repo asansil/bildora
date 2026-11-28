@@ -4,6 +4,7 @@ import {
   DEFAULT_OUTPUT,
   ERROR_OUTPUT,
   ExpressionError,
+  SCHEDULE_DAYS,
   isExpressionValue,
   parseCached,
   targetOf,
@@ -12,6 +13,7 @@ import type {
   AutomationBlock,
   AutomationCondition,
   AutomationRule,
+  AutomationSchedule,
   BlockValue,
   ExpressionNode,
 } from '@bildora/protocol';
@@ -181,6 +183,34 @@ export function blockName(block: AutomationBlock): string {
 }
 
 /** What a block is, as the second line of its label says: its tool's name, or its kind. */
+/** A schedule in a few words, as the Start block shows it, such as "Mon, Fri 07:00". */
+export function scheduleText(schedule: AutomationSchedule): string {
+  switch (schedule.repeat) {
+    case 'once': {
+      const [year = 0, month = 1, day = 1] = schedule.date.split('-').map(Number);
+      const date = new Date(year, month - 1, day).toLocaleDateString('en', {
+        day: 'numeric',
+        month: 'short',
+      });
+      return t('canvas.scheduleOnce', { date, time: schedule.time });
+    }
+    case 'daily':
+      return t('canvas.scheduleDaily', { time: schedule.time });
+    case 'weekly': {
+      const days = SCHEDULE_DAYS.filter((day) => schedule.days.includes(day));
+      if (days.length === SCHEDULE_DAYS.length) {
+        return t('canvas.scheduleDaily', { time: schedule.time });
+      }
+      return t('canvas.scheduleWeekly', {
+        days: days.map((day) => t(`canvas.day.${day}`)).join(', '),
+        time: schedule.time,
+      });
+    }
+    case 'hours':
+      return t('canvas.scheduleHours', { count: schedule.every, time: schedule.from });
+  }
+}
+
 export function blockKindText(
   block: AutomationBlock,
   tools: readonly ToolView[],
@@ -188,7 +218,9 @@ export function blockKindText(
 ): string {
   switch (block.type) {
     case 'start':
-      return t('canvas.startKind');
+      return block.mode === 'scheduled' && block.schedule !== undefined
+        ? scheduleText(block.schedule)
+        : t('canvas.startKind');
     case 'run':
       return tools.find(({ id }) => id === block.tool)?.name ?? block.tool;
     case 'wait-for-time':

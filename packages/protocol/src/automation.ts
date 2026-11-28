@@ -30,6 +30,14 @@ export const LOOP_ROUNDS_MAX = 1000;
 export const LOOP_PATTERN_MAX_LENGTH = 200;
 /** Automations deep a run can call, the first one included. */
 export const CALL_DEPTH_MAX = 5;
+/** Days of the week a weekly schedule can name, in the order the editor shows them. */
+export const SCHEDULE_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
+/** Hours between two runs of a schedule that repeats every few hours. */
+export const SCHEDULE_EVERY_HOURS_MAX = 24;
+/** Minutes a scheduled run may last before it is ended, when the schedule says nothing. */
+export const SCHEDULE_TIME_LIMIT_DEFAULT_MINUTES = 120;
+/** The longest time limit a schedule can set: three days. */
+export const SCHEDULE_TIME_LIMIT_MAX_MINUTES = 4320;
 
 /** Names an output cannot be given by a Switch case, because they mean something else. */
 const RESERVED_CASES = ['next', 'error', 'true', 'false', 'default', 'body'];
@@ -156,11 +164,54 @@ const inputSchema = z.discriminatedUnion('type', [
   }),
 ]);
 
+/** A time of day on this computer's clock, as `HH:MM`. */
+const timeOfDay = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
+
+/** What every schedule says besides when it runs. */
+const scheduleFields = {
+  /** Whether a run missed while the computer was off or asleep starts as soon as it can. Yes when left out. */
+  runMissed: z.boolean().optional(),
+  /** How long a run may last before it is ended. Two hours when left out. */
+  timeLimitMinutes: z.int().min(1).max(SCHEDULE_TIME_LIMIT_MAX_MINUTES).optional(),
+};
+
+/** When a scheduled automation starts, in this computer's local time. */
+const scheduleSchema = z.discriminatedUnion('repeat', [
+  z.strictObject({
+    ...scheduleFields,
+    repeat: z.literal('once'),
+    date: z.iso.date(),
+    time: timeOfDay,
+  }),
+  z.strictObject({ ...scheduleFields, repeat: z.literal('daily'), time: timeOfDay }),
+  z.strictObject({
+    ...scheduleFields,
+    repeat: z.literal('weekly'),
+    days: z.array(z.enum(SCHEDULE_DAYS)).min(1).max(SCHEDULE_DAYS.length),
+    time: timeOfDay,
+  }),
+  z.strictObject({
+    ...scheduleFields,
+    repeat: z.literal('hours'),
+    every: z.int().min(1).max(SCHEDULE_EVERY_HOURS_MAX),
+    /** The first run of each day; the next ones follow every few hours until midnight comes round. */
+    from: timeOfDay,
+  }),
+]);
+
 const startBlockSchema = z.strictObject({
   id: blockId,
   type: z.literal('start'),
-  /** How the automation begins. Only a button for now; later modes must not change existing files. */
-  mode: z.literal('button').optional(),
+  /**
+   * How the automation begins: a button, which is the default, or a schedule. Run and `bildora run`
+   * work in every mode. Later modes must not change existing files.
+   */
+  mode: z.enum(['button', 'scheduled']).optional(),
+  /**
+   * When a scheduled automation runs. It stays in the file while the mode is a button, so switching
+   * back and forth keeps it. Whether it is on is a choice per computer, never stored here.
+   */
+  schedule: scheduleSchema.optional(),
   /** What the automation asks for when it starts. Blocks read them as `inputs.<name>`. */
   inputs: z.array(inputSchema).max(AUTOMATION_INPUTS_MAX).optional(),
 });
@@ -423,7 +474,23 @@ export function automationRuleIssues(automation: z.output<typeof automationShape
     if (RESERVED_BLOCK_IDS.includes(block.id)) {
       report([...path, 'id'], 'block-reserved', { block: block.id }, block.id);
     }
-    if (block.type === 'start') checkInputs(block.inputs ?? [], [...path, 'inputs'], block.id);
+    if (block.type === 'start') {
+      checkInputs(block.inputs ?? [], [...path, 'inputs'], block.id);
+      if (block.mode === 'scheduled' && block.schedule === undefined) {
+        report([...path, 'schedule'], 'schedule-missing', {}, block.id);
+      }
+      const days = block.schedule?.repeat === 'weekly' ? block.schedule.days : [];
+      days.forEach((day, position) => {
+        if (days.indexOf(day) !== position) {
+          report(
+            [...path, 'schedule', 'days', position],
+            'schedule-day-twice',
+            { label: day },
+            block.id,
+          );
+        }
+      });
+    }
     if (block.type === 'if') {
       checkCondition(block.condition, [...path, 'condition'], block.id);
     }
@@ -498,6 +565,8 @@ export type AutomationPosition = z.output<typeof positionSchema>;
 export type AutomationRule = z.output<typeof ruleSchema>;
 export type ValueRule = z.output<typeof valueRuleSchema>;
 export type StartBlock = z.output<typeof startBlockSchema>;
+export type AutomationSchedule = z.output<typeof scheduleSchema>;
+export type ScheduleDay = (typeof SCHEDULE_DAYS)[number];
 export type AutomationInputDeclaration = z.output<typeof inputSchema>;
 export type ExpressionValue = z.output<typeof expressionSchema>;
 export type LiteralValue = z.output<typeof literalSchema>;

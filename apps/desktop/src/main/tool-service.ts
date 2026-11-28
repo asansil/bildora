@@ -83,7 +83,7 @@ function deliveryOf(parameter: DeclaredParameter): ParameterView['delivery'] {
   return parameter.env === undefined ? 'argument' : 'environment';
 }
 
-function viewOfParameter(parameter: DeclaredParameter): ParameterView {
+export function viewOfParameter(parameter: DeclaredParameter): ParameterView {
   const { name, label, type, required, description } = parameter;
   return {
     name,

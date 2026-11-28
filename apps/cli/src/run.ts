@@ -55,6 +55,8 @@ export interface CliIo {
   readonly error: (line: string) => void;
   /** Whether a person can answer. Under a scheduler nobody can. */
   readonly interactive: boolean;
+  /** Set when a scheduled task started the command, so history tells the run apart. */
+  readonly trigger?: 'cli' | 'schedule';
   /** Waits for Enter. It resolves false if input ends, or if the signal aborts. */
   readonly waitForEnter: (signal: AbortSignal) => Promise<boolean>;
   /** Calls back when the user asks to stop, and returns how to stop listening. */
@@ -228,7 +230,7 @@ async function runAutomation(
     const run = startAutomationRun({
       automation,
       workspaceId,
-      trigger: 'cli',
+      trigger: io.trigger ?? 'cli',
       inputs,
       calls,
       startCalled,

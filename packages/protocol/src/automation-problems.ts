@@ -105,6 +105,9 @@ const MESSAGES = {
   'input-duplicate': ({ input }) => `Input "${input}" is declared more than once`,
   'input-default-choice': ({ input }) =>
     `The default of input "${input}" is not one of its choices`,
+  // When the automation starts.
+  'schedule-missing': () => 'The Start block is set to run on a schedule, and has none',
+  'schedule-day-twice': ({ label }) => `The schedule names "${label}" more than once`,
   'exit-code-not-run': ({ source }) =>
     `Reads the exit code of "${source}", which is not a run block`,
   'exit-code-not-certain': ({ source, block }) =>

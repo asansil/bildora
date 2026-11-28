@@ -51,7 +51,14 @@ import type {
   TakenPathView,
   ToolView,
 } from '../../../shared/ipc-contract.js';
-import { blockKindText, loopHeader, loopSummary, outputLabel, portText } from './block-text.js';
+import {
+  blockKindText,
+  loopHeader,
+  loopSummary,
+  outputLabel,
+  portText,
+  scheduleText,
+} from './block-text.js';
 import {
   NOTE_SIZE,
   blockOf,
@@ -146,6 +153,9 @@ const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 4;
 /** A box drawn for Scale to rectangle smaller than this, in pixels, zooms nowhere. */
 const RECTANGLE_MIN = 8;
+
+/** Blocks Test block runs on their own: tools, calls and conditions. */
+const TESTED_ALONE: ReadonlySet<string> = new Set(['run', 'run-automation', 'if', 'switch']);
 export const LIBRARY_DRAG_TYPE = 'application/x-bildora-block';
 /** What Ctrl+C copied, kept outside any one canvas so it pastes into another automation too. */
 let clipboard: FlowClip | undefined;
@@ -375,6 +385,8 @@ export interface CanvasProps {
   readonly onRenameBlock?: (id: string) => void;
   /** Puts a new block for another tool in a Run tool block's place, and gives its id. */
   readonly onReplaceBlock?: (id: string, choice: NewBlock & { kind: 'run' }) => string | undefined;
+  /** Tests a block alone, or runs from it onward, as its menu asks. */
+  readonly onTestBlock?: (id: string, kind: 'block' | 'from') => void;
   /** Adds a block after another, and gives the new block's id. */
   readonly onAddAfter: (anchor: string, choice: NewBlock) => string | undefined;
   /** Moves keyboard focus to a block, as the blocks list asks. Changes each time it is asked. */
@@ -670,6 +682,7 @@ export function Canvas({
   onOpenBlock,
   onRenameBlock,
   onReplaceBlock,
+  onTestBlock,
   onAddAfter,
   focusRequest,
   options = NO_OPTIONS,
@@ -792,6 +805,7 @@ export function Canvas({
               problems: readOnly ? 0 : (problemCounts.get(block.id) ?? 0),
               usedBy: usedBy.get(block.id) ?? 0,
               ...(run === undefined ? {} : { state: step?.state ?? 'idle' }),
+              ...(step?.reused === true ? { reused: true } : {}),
               ...(detail === undefined ? {} : { detail }),
               ...(rounds === undefined ? {} : { rounds }),
             },
@@ -804,6 +818,9 @@ export function Canvas({
             name: names.get(block.id) ?? block.id,
             // Start's name already says what it is, so its second line says when it runs.
             kindLabel: blockKindText(block, tools, automations),
+            ...(block.type === 'start' && block.mode === 'scheduled' && block.schedule !== undefined
+              ? { schedule: scheduleText(block.schedule) }
+              : {}),
             outputs: outputsOf(block).map((id) => ({ id, label: outputLabel(id) })),
             domId: domId(prefix, block.id),
             blockId: block.id,
@@ -813,6 +830,7 @@ export function Canvas({
             disabled: isDisabled(block) || step?.state === 'disabled',
             ...(tool === undefined ? {} : { tool }),
             ...(run === undefined ? {} : { state: step?.state ?? 'idle' }),
+            ...(step?.reused === true ? { reused: true } : {}),
             ...(detail === undefined ? {} : { detail }),
           },
         ];
@@ -1906,6 +1924,33 @@ export function Canvas({
     [onCommands],
   );
 
+  /** Test block and Run from here, for the blocks each applies to. */
+  function testItems(
+    type: string,
+    test: (kind: 'block' | 'from') => void,
+    offered: boolean,
+  ): MenuEntry[] {
+    if (!offered) return [];
+    const items: MenuEntry[] = [];
+    if (TESTED_ALONE.has(type)) {
+      items.push({
+        label: t('test.menuBlock'),
+        run: () => {
+          test('block');
+        },
+      });
+    }
+    if (type !== 'start') {
+      items.push({
+        label: t('test.menuFrom'),
+        run: () => {
+          test('from');
+        },
+      });
+    }
+    return items.length === 0 ? [] : ['separator', ...items];
+  }
+
   /** A block's or a note's menu. */
   function itemMenu(id: string): MenuEntry[] {
     const block = blockOf(document, id);
@@ -1975,6 +2020,7 @@ export function Canvas({
           ]
         : []),
       ...(isDisableable(block.type) ? [toggleDisabledItem(commands)] : []),
+      ...testItems(block.type, (kind) => onTestBlock?.(id, kind), onTestBlock !== undefined),
       ...(block.type === 'start'
         ? []
         : [

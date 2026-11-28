@@ -135,6 +135,8 @@ input:not([type]),
 input[type='number'],
 input[type='password'],
 input[type='search'],
+input[type='date'],
+input[type='time'],
 select {
   width: 100%;
   height: var(--bildora-control-height);
@@ -179,7 +181,6 @@ input[type='radio'] {
   width: 18px;
   height: 18px;
   flex: none;
-  color: var(--bildora-accent);
 }
 
 .brand {
@@ -747,6 +748,8 @@ input[type='radio'] {
   z-index: 40;
   max-width: min(720px, calc(100% - 2 * var(--bildora-space-4)));
   margin: 0;
+  /* It floats over the content, so it needs a ground of its own to be read. */
+  background: var(--bildora-surface-raised);
   box-shadow: var(--bildora-shadow-overlay);
 }
 

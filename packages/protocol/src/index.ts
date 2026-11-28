@@ -50,6 +50,10 @@ export {
   RESERVED_BLOCK_IDS,
   RETRY_ATTEMPTS_MAX,
   RETRY_DELAY_SECONDS_MAX,
+  SCHEDULE_DAYS,
+  SCHEDULE_EVERY_HOURS_MAX,
+  SCHEDULE_TIME_LIMIT_DEFAULT_MINUTES,
+  SCHEDULE_TIME_LIMIT_MAX_MINUTES,
   SWITCH_CASES_MAX,
   UNARY_VALUE_RULE_OPERATORS,
   VALUE_RULE_OPERATORS,
@@ -61,6 +65,8 @@ export {
   isExpressionValue,
   isLoopBlock,
 } from './automation.js';
+export { startBlocker } from './schedule-blocker.js';
+export type { ScheduleBlocker } from './schedule-blocker.js';
 export type {
   Automation,
   AutomationBlock,
@@ -72,6 +78,7 @@ export type {
   AutomationNote,
   AutomationPosition,
   AutomationRule,
+  AutomationSchedule,
   BlockValue,
   ExpressionValue,
   ForBlock,
@@ -81,6 +88,7 @@ export type {
   WhileBlock,
   RunAutomationBlock,
   RunBlock,
+  ScheduleDay,
   StartBlock,
   ValueRule,
   ValueRuleOperator,

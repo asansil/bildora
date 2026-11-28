@@ -15,6 +15,8 @@ export interface Preferences {
   /** Only the seed of the first Workspace. After that, each Workspace holds its own theme. */
   readonly theme: Theme;
   readonly historyRunLimit: number;
+  /** Whether testing a block from the canvas first warns that real tools will run. */
+  readonly warnBeforeTests: boolean;
   /** The Workspace to open with. Absent or gone, the app takes the first one. */
   readonly activeWorkspaceId?: string;
 }
@@ -22,6 +24,7 @@ export interface Preferences {
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: 'system',
   historyRunLimit: DEFAULT_HISTORY_RUN_LIMIT,
+  warnBeforeTests: true,
 };
 
 const PREFERENCES_FILE = 'preferences.json';
@@ -64,12 +67,17 @@ export async function readPreferences(dataDir: string): Promise<Preferences> {
   if (document === undefined || document['formatVersion'] === undefined) {
     return DEFAULT_PREFERENCES;
   }
-  const { theme, historyRunLimit, activeWorkspaceId } = migrateDefinition(document, format);
+  const { theme, historyRunLimit, warnBeforeTests, activeWorkspaceId } = migrateDefinition(
+    document,
+    format,
+  );
   return {
     theme: isTheme(theme) ? theme : DEFAULT_PREFERENCES.theme,
     historyRunLimit: isHistoryRunLimit(historyRunLimit)
       ? historyRunLimit
       : DEFAULT_PREFERENCES.historyRunLimit,
+    warnBeforeTests:
+      typeof warnBeforeTests === 'boolean' ? warnBeforeTests : DEFAULT_PREFERENCES.warnBeforeTests,
     ...(typeof activeWorkspaceId === 'string' ? { activeWorkspaceId } : {}),
   };
 }

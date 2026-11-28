@@ -8,11 +8,12 @@ import {
   useUpdateNodeInternals,
 } from '@xyflow/react';
 import type { Node, NodeProps } from '@xyflow/react';
-import { ChevronLeft, ChevronRight, Link2, TriangleAlert } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Clock, Link2, TriangleAlert } from 'lucide-react';
 import { BODY_OUTPUT, ERROR_OUTPUT, NOTE_TEXT_MAX } from '@bildora/protocol';
 import { t } from '../../../shared/i18n/translate.js';
 import type { StepStateView, ToolView } from '../../../shared/ipc-contract.js';
 import { RunStateIcon } from '../../shell/RunStateBadge.js';
+import { ScheduleStatusContext } from '../schedule-status.js';
 import { BlockIcon, familyOf } from './BlockIcon.js';
 import {
   CanvasActionsContext,
@@ -52,8 +53,12 @@ export interface BlockNodeData extends Record<string, unknown> {
   readonly disabled: boolean;
   /** Set in the run view. */
   readonly state?: StepStateView;
+  /** In a test, the block kept what the run it reused left, and did not run again. */
+  readonly reused?: boolean;
   /** A line under the name in the run view, such as a progress message or a failure. */
   readonly detail?: string;
+  /** When a scheduled Start block runs, in a few words. */
+  readonly schedule?: string;
 }
 
 export type BlockNode = Node<BlockNodeData, 'block'>;
@@ -147,6 +152,22 @@ function UsedBy({ id, count }: { readonly id: string; readonly count: number }) 
   );
 }
 
+/** When a scheduled Start block runs, with a clock that says whether it is on for this computer. */
+function ScheduleMark({ text }: { readonly text: string }) {
+  const kind = use(ScheduleStatusContext)?.status?.kind;
+  const on = kind === 'on' || kind === 'changed' || kind === 'outdated';
+  return (
+    <span
+      className={`block-schedule${on ? ' is-on' : ''}`}
+      data-testid="block-schedule"
+      data-on={on}
+    >
+      <Clock className="icon" aria-hidden="true" />
+      {text}
+    </span>
+  );
+}
+
 export const BlockNodeView = memo(function BlockNodeView({
   id,
   data,
@@ -172,13 +193,20 @@ export const BlockNodeView = memo(function BlockNodeView({
     peer ? 'is-port-peer' : '',
     data.disabled ? 'is-disabled' : '',
     data.state === undefined ? '' : `is-${data.state}`,
+    data.reused === true ? 'is-reused' : '',
   ].join(' ');
   const input = placeOf(layout, INPUT_PORT);
   // Over one of its ports the canvas shows the port's tooltip, so the block's own stays away.
   const title =
     portHover.owner === data.blockId
       ? undefined
-      : [data.name, data.kindLabel, data.disabled ? t('canvas.disabledBlock') : '', data.detail]
+      : [
+          data.name,
+          data.kindLabel,
+          data.disabled ? t('canvas.disabledBlock') : '',
+          data.reused === true ? t('test.reused') : '',
+          data.detail,
+        ]
           .filter(Boolean)
           .join('\n');
   return (
@@ -213,6 +241,7 @@ export const BlockNodeView = memo(function BlockNodeView({
         <BlockIcon kind={data.kind} tool={data.tool} className="block-logo" />
       </span>
       <span className="block-name truncate">{data.name}</span>
+      {data.schedule === undefined ? null : <ScheduleMark text={data.schedule} />}
       {data.detail === undefined ? null : (
         <span className="block-detail truncate">{data.detail}</span>
       )}
@@ -324,6 +353,8 @@ export interface LoopNodeData extends Record<string, unknown> {
   readonly problems: number;
   readonly usedBy: number;
   readonly state?: StepStateView;
+  /** In a test, the loop kept what the run it reused left, and did not run again. */
+  readonly reused?: boolean;
   readonly detail?: string;
   readonly rounds?: LoopRoundsView;
 }
@@ -543,6 +574,7 @@ export const LoopNodeView = memo(function LoopNodeView({
     selected ? 'is-selected' : '',
     peer ? 'is-port-peer' : '',
     data.state === undefined ? '' : `is-${data.state}`,
+    data.reused === true ? 'is-reused' : '',
   ].join(' ');
   const title =
     portHover.owner === data.blockId
