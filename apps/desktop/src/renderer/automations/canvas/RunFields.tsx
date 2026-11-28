@@ -14,6 +14,7 @@ import type {
 import { ContextMenu } from '../../shell/ContextMenu.js';
 import type { MenuEntry } from '../../shell/menu-model.js';
 import { ParameterForm } from '../../tools/ParameterForm.js';
+import type { InheritedValue } from '../../tools/ParameterForm.js';
 import { parameterProblem, submittedValues } from '../../tools/parameter-form.js';
 import type { FormValue, FormValues } from '../../tools/parameter-form.js';
 import { without } from '../automation-draft.js';
@@ -78,16 +79,23 @@ function expressionsFrom(values: HeldValues): Readonly<Record<string, string>> {
   );
 }
 
-/** What a form holds, as a block stores it: only what was set, so the rest stays as the tool has it. */
+/**
+ * What a form holds, as a block stores it: only what was set, so the rest stays as the tool has it.
+ * A box left clear is not kept, unless `cleared` names it: one cleared over a profile's or a
+ * default's tick, which only a kept `false` overrides.
+ */
 function plainValues(
   parameters: readonly ParameterView[],
   form: FormValues,
+  cleared: ReadonlySet<string> = new Set(),
 ): Record<string, LiteralValue> {
   const usable = parameters.filter(
     (parameter) => parameterProblem(parameter, form[parameter.name], false) === undefined,
   );
   const { plain } = submittedValues(usable, form);
-  return Object.fromEntries(Object.entries(plain).filter(([, value]) => value !== false));
+  return Object.fromEntries(
+    Object.entries(plain).filter(([name, value]) => value !== false || cleared.has(name)),
+  );
 }
 
 /** A form value as a plain value of its parameter, for turning it into an expression. */
@@ -210,10 +218,42 @@ export function RunFields<Block extends ValuesBlock>({
     [tool, called],
   );
   const [form, setForm] = useState<FormValues>(() => formFrom(parameters, heldValues(block)));
+  /** The boxes the block sets itself, ticked or not, so a clear one can override a tick. */
+  const [flags, setFlags] = useState<ReadonlySet<string>>(
+    () =>
+      new Set(
+        Object.entries(heldValues(block) ?? {}).flatMap(([name, value]) =>
+          typeof value === 'boolean' ? [name] : [],
+        ),
+      ),
+  );
   const [linked, setLinked] = useState(() => expressionsFrom(heldValues(block)));
   /** The field just linked, which takes the caret. */
   const [justLinked, setJustLinked] = useState<string | undefined>();
   const [profiles, setProfiles] = useState<readonly ProfileView[]>([]);
+  const profile =
+    block.type === 'run' ? profiles.find(({ id }) => id === block.profile) : undefined;
+  const held = heldValues(block) ?? {};
+  /** What a parameter gets when the block leaves it empty: its profile's value, or a default. */
+  const inheritedOf = (parameter: ParameterView): InheritedValue | undefined => {
+    const fromProfile = profile?.values[parameter.name];
+    if (profile !== undefined && fromProfile !== undefined) {
+      return { value: fromProfile, from: t('canvas.fromProfile', { name: profile.name }) };
+    }
+    if (parameter.default === undefined) return undefined;
+    return {
+      value: parameter.default,
+      from: t(block.type === 'run' ? 'canvas.toolDefault' : 'canvas.calledDefault'),
+    };
+  };
+  const inherited: Record<string, InheritedValue> = Object.fromEntries(
+    parameters.flatMap((parameter) => {
+      const value = inheritedOf(parameter);
+      return value === undefined || Object.hasOwn(held, parameter.name)
+        ? []
+        : [[parameter.name, value]];
+    }),
+  );
   const [menu, setMenu] = useState<Menu | undefined>();
   const [whip, setWhip] = useState<Whip | undefined>();
   const toolLevel = tool?.level;
@@ -234,13 +274,27 @@ export function RunFields<Block extends ValuesBlock>({
     };
   }, [toolId, toolLevel, onError]);
 
-  function commit(nextForm: FormValues, nextLinked: Readonly<Record<string, string>>): void {
+  function commit(
+    nextForm: FormValues,
+    nextLinked: Readonly<Record<string, string>>,
+    nextFlags: ReadonlySet<string> = flags,
+  ): void {
     setForm(nextForm);
     setLinked(nextLinked);
-    const plain = plainValues(
-      parameters.filter(({ name }) => !Object.hasOwn(nextLinked, name)),
-      nextForm,
+    setFlags(nextFlags);
+    const shown = parameters.filter(({ name }) => !Object.hasOwn(nextLinked, name));
+    // A box cleared over an inherited tick is kept as `false`, or the tick would come back.
+    const cleared = new Set(
+      shown
+        .filter(
+          (parameter) =>
+            nextFlags.has(parameter.name) &&
+            nextForm[parameter.name] === false &&
+            inheritedOf(parameter)?.value === true,
+        )
+        .map(({ name }) => name),
     );
+    const plain = plainValues(shown, nextForm, cleared);
     const worked = Object.fromEntries(
       Object.entries(nextLinked)
         .filter(([, text]) => text.trim() !== '')
@@ -271,7 +325,18 @@ export function RunFields<Block extends ValuesBlock>({
       link(name, value.trimStart().slice(1).trimStart());
       return;
     }
-    commit({ ...form, [name]: value }, linked);
+    const nextFlags = typeof value === 'boolean' ? new Set([...flags, name]) : flags;
+    commit({ ...form, [name]: value }, linked, nextFlags);
+  }
+
+  /** Drops the block's own value, so the field gets its profile's value or its default again. */
+  function clearValue(parameter: ParameterView): void {
+    const { name, type } = parameter;
+    commit(
+      { ...form, [name]: type === 'boolean' ? false : '' },
+      linked,
+      new Set([...flags].filter((flag) => flag !== name)),
+    );
   }
 
   /** What a parameter can link to, each marked by whether it fits. */
@@ -304,6 +369,22 @@ export function RunFields<Block extends ValuesBlock>({
               unlink(parameter, true);
             },
           },
+      ...(expression === undefined &&
+      Object.hasOwn(held, name) &&
+      inheritedOf(parameter) !== undefined
+        ? [
+            {
+              label: t(
+                profile?.values[name] === undefined
+                  ? 'canvas.useDefault'
+                  : 'canvas.useProfileValue',
+              ),
+              run: () => {
+                clearValue(parameter);
+              },
+            },
+          ]
+        : []),
       ...(source === undefined
         ? []
         : [
@@ -524,6 +605,7 @@ export function RunFields<Block extends ValuesBlock>({
             onForget={() => undefined}
             replace={replace}
             decorate={decorate}
+            inherited={inherited}
           />
         </PanelSection>
       )}
