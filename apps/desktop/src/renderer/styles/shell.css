@@ -748,6 +748,8 @@ input[type='radio'] {
   z-index: 40;
   max-width: min(720px, calc(100% - 2 * var(--bildora-space-4)));
   margin: 0;
+  /* It floats over the content, so it needs a ground of its own to be read. */
+  background: var(--bildora-surface-raised);
   box-shadow: var(--bildora-shadow-overlay);
 }
 

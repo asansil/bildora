@@ -124,8 +124,9 @@ type CloseQuestion = 'running' | 'unsaved';
 
 function messageOf(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
-  // Electron wraps what a handler throws with the name of the channel.
-  return text.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+  // Electron wraps what a handler throws with the name of the channel and of the error's class,
+  // neither of which means anything to the person reading it.
+  return text.replace(/^Error invoking remote method '[^']+': (?:[A-Za-z]*Error: )?/, '');
 }
 
 const NO_PANELS: AutomationPanelsView = {};
