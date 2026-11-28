@@ -11,7 +11,8 @@ export interface MenuCommand<Action extends string = string> {
   readonly disabled?: boolean;
   /** Drawn as a dangerous action, such as a delete. */
   readonly danger?: boolean;
-  readonly checked?: boolean;
+  /** A check item: ticked, clear, or 'mixed' when it stands for several things that differ. */
+  readonly checked?: boolean | 'mixed';
   readonly run?: () => void;
   /** Handed to the menu's `onAction` when the item has no `run`, for callers that switch on it. */
   readonly action?: Action;

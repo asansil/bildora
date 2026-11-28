@@ -104,7 +104,8 @@ export interface BlockSettingsProps {
   /** Asks for the block's new name in links, in the Rename dialog. */
   readonly onRename: () => void;
   /** What the card's ⋯ button and a right-click on the name offer. */
-  readonly menu: readonly MenuEntry[];
+  /** The block's menu, built when it opens so it matches the canvas as it is then. */
+  readonly menu: () => readonly MenuEntry[];
   /** Gives focus back to the canvas, once Enter has applied a field. */
   readonly onDone: () => void;
   /** Selects another block on the canvas. */
@@ -482,7 +483,7 @@ export function BlockSettings({
           x={menu.x}
           y={menu.y}
           label={t('canvas.menu', { name: nameOf(block.id) })}
-          items={menuItems}
+          items={menuItems()}
           onClose={() => {
             setMenu(undefined);
           }}

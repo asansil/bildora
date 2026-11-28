@@ -934,7 +934,7 @@ export function App() {
   function editItem(
     label: string,
     shortcut: string,
-    edit: 'undo' | 'redo' | 'copy' | 'paste' | 'selectAll',
+    edit: 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'selectAll',
     pick: (commands: CanvasCommands) => CanvasCommand,
   ) {
     return {
@@ -975,7 +975,7 @@ export function App() {
         editItem(t('menu.undo'), 'Ctrl+Z', 'undo', (commands) => commands.undo),
         editItem(t('menu.redo'), 'Ctrl+Y', 'redo', (commands) => commands.redo),
         'separator',
-        { label: t('menu.cut'), shortcut: 'Ctrl+X', run: () => void api.edit('cut') },
+        editItem(t('menu.cut'), 'Ctrl+X', 'cut', (commands) => commands.cut),
         editItem(t('menu.copy'), 'Ctrl+C', 'copy', (commands) => commands.copy),
         editItem(t('menu.paste'), 'Ctrl+V', 'paste', (commands) => commands.paste),
         commandItem(t('menu.duplicate'), canvasCommands?.duplicate, 'Ctrl+D'),

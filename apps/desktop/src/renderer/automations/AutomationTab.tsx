@@ -51,7 +51,6 @@ import { CalledBy } from './CalledBy.js';
 import { affectedCallers, renamedCallerBlocks } from './canvas/caller-rename.js';
 import type { CalledRename } from './canvas/caller-rename.js';
 import { BlockSettings } from './canvas/BlockSettings.js';
-import { blockCardMenu } from './canvas/block-menu.js';
 import type { BlockTab } from './canvas/BlockSettings.js';
 import { PanelSectionsContext } from './canvas/PanelSection.js';
 import { ScheduleStatusContext, useScheduleStatus } from './schedule-status.js';
@@ -1471,6 +1470,18 @@ function FlowEditor({
               onShowRun(block.automation, called);
               return true;
             }}
+            onOpenTool={onShowTool}
+            onRenameGroup={(id) => {
+              setSelected(new Set([id]));
+              // The group's card shows once it is chosen; its name field then takes the caret.
+              requestAnimationFrame(() => {
+                const field = window.document.querySelector<HTMLInputElement>(
+                  '[data-testid="group-settings"] input',
+                );
+                field?.focus();
+                field?.select();
+              });
+            }}
             onRenameBlock={(id) => {
               pick(id);
               setRenaming(id);
@@ -1618,29 +1629,18 @@ function FlowEditor({
                   onRename={() => {
                     setRenaming(selectedBlock.id);
                   }}
-                  menu={blockCardMenu(selectedBlock, canvasCommands, {
-                    rename: () => {
-                      setRenaming(selectedBlock.id);
-                    },
-                    showOnCanvas: () => {
-                      const id = selectedBlock.id;
-                      setReveal((current) => ({
-                        id,
-                        count: (current?.count ?? 0) + 1,
-                        center: true,
-                      }));
-                    },
-                    copyId: () => {
-                      void navigator.clipboard.writeText(selectedBlock.id).catch(onError);
-                    },
-                    openTool:
-                      selectedBlock.type === 'run' &&
-                      tools.some(({ id }) => id === selectedBlock.tool)
-                        ? () => {
-                            onShowTool(selectedBlock.tool);
-                          }
-                        : undefined,
-                  })}
+                  menu={() =>
+                    canvasCommands?.itemMenu(selectedBlock.id, {
+                      showOnCanvas: () => {
+                        const id = selectedBlock.id;
+                        setReveal((current) => ({
+                          id,
+                          count: (current?.count ?? 0) + 1,
+                          center: true,
+                        }));
+                      },
+                    }) ?? []
+                  }
                   onDone={() => {
                     const id = selectedBlock.id;
                     setFocusRequest((current) => ({ id, count: (current?.count ?? 0) + 1 }));

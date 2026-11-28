@@ -179,7 +179,7 @@ test('tests one block with a typed value, and stops warning when asked', async (
   await runAll(window);
   await backToEditing(window);
 
-  await fromMenu(window, 'third', 'Test block…');
+  await fromMenu(window, 'third', 'Test…');
   const dialog = window.getByTestId('test-dialog');
   await expect(dialog.getByLabel(/^Text/)).toHaveValue(join(folder, 'second.txt'));
   await dialog.getByLabel(/^Text/).fill('typed');

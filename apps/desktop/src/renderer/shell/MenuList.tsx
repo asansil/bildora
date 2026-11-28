@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { Check, ChevronRight } from 'lucide-react';
+import { Check, ChevronRight, Minus } from 'lucide-react';
 import { isEnabled, nextEnabled } from './menu-model.js';
 import type { MenuCommand, MenuEntry } from './menu-model.js';
 
@@ -235,7 +235,13 @@ export function MenuList<Action extends string>({
             }}
           >
             <span className="menu-lead" aria-hidden="true">
-              {entry.checked === true ? <Check className="icon" /> : entry.icon}
+              {entry.checked === true ? (
+                <Check className="icon" />
+              ) : entry.checked === 'mixed' ? (
+                <Minus className="icon" />
+              ) : (
+                entry.icon
+              )}
             </span>
             <span className="menu-label">{entry.label}</span>
             {entry.shortcut === undefined ? (

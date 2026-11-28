@@ -664,12 +664,18 @@ test('a block is disabled from its card or Ctrl+E, and the run passes through it
   // The card has one way into its actions: its ⋯ button, or a right-click on the name.
   await expect(card.getByRole('button', { name: 'Rename…' })).toHaveCount(0);
   await card.getByTestId('block-settings-name').click({ button: 'right' });
-  await expect(menu.getByRole('menuitem', { name: /Show on the canvas/ })).toBeVisible();
-  await expect(menu.getByRole('menuitem', { name: /Copy its id \(extract\)/ })).toBeVisible();
+  // It is the canvas's menu for the block, plus Show on canvas.
+  await expect(menu.getByRole('menuitem', { name: /^Show on canvas/ })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: /^Copy ID/ })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: /^Add after/ })).toBeVisible();
   await window.keyboard.press('Escape');
   await card.getByRole('button', { name: 'More actions' }).click();
   await shot(window, 'block-card-menu');
-  await menu.getByRole('menuitem', { name: /^Disable/ }).click();
+  await expect(menu.getByRole('menuitemcheckbox', { name: /^Disabled/ })).toHaveAttribute(
+    'aria-checked',
+    'false',
+  );
+  await menu.getByRole('menuitemcheckbox', { name: /^Disabled/ }).click();
   await expect(shown('extract')).toHaveClass(/is-disabled/);
   await expect(card).toContainText('Disabled · ');
 
@@ -731,9 +737,12 @@ test('a right-click on the canvas opens its menu, which adds where it was asked'
   await block(window, 'start').click({ button: 'right' });
   const menu = window.getByRole('menu', { name: 'Actions for Start' });
   await expect(menu.getByRole('menuitem')).toHaveText([
-    /^Add a block after this one…/,
-    /^Connect an output…/,
+    /^Add after/,
+    /^Connect/,
     /^Rename…/,
+    /^Select downstream/,
+    /^Show uses/,
+    /^Copy ID/,
   ]);
   await window.keyboard.press('Escape');
   await expect(menu).toBeHidden();
@@ -1402,11 +1411,11 @@ test('the canvas options snap, turn connections and hide the grid and navigator,
   await expect(navigator(first.window)).toHaveCount(1);
 
   await toggleOption(first.window, 'Snap to grid');
-  await toggleOption(first.window, 'Right-angle connections');
+  await toggleOption(first.window, 'Right angles');
   await toggleOption(first.window, 'Show grid');
   await toggleOption(first.window, 'Show navigator');
   await optionIs(first.window, 'Snap to grid', true);
-  await optionIs(first.window, 'Right-angle connections', true);
+  await optionIs(first.window, 'Right angles', true);
   await expect.poll(() => path(first.window)).not.toContain('C');
   await expect(grid(first.window)).toHaveCount(0);
   await expect(navigator(first.window)).toHaveCount(0);
@@ -1434,7 +1443,7 @@ test('the canvas options snap, turn connections and hide the grid and navigator,
   await expect(navigator(window)).toHaveCount(0);
   await expect.poll(() => path(window)).not.toContain('C');
 
-  await toggleOption(window, 'Right-angle connections');
+  await toggleOption(window, 'Right angles');
   await toggleOption(window, 'Show grid');
   await toggleOption(window, 'Show navigator');
   await expect.poll(() => path(window)).toContain('C');
@@ -1453,6 +1462,42 @@ test('Delete removes every block a selection box took', async () => {
   await expect(block(window, 'report')).toHaveCount(0);
   await expect(block(window, 'send')).toHaveCount(0);
   await expect(block(window, 'extract')).toBeVisible();
+});
+
+test('a right-click on a selection box, or on a block in it, opens the block menu for all of them', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('pair', PAIR);
+  const { window } = await launchShell();
+  await boxReportAndSend(window);
+  const selection = window.locator('.react-flow__nodesselection-rect');
+  await expect(selection).toBeVisible();
+  await selection.click({ button: 'right' });
+  const menu = window.getByRole('menu', { name: /^Actions for / });
+  // What needs one block is greyed, and the rest acts on both.
+  for (const name of [/^Add after/, /^Connect/, /^Rename…/, /^Test…/, /^Copy ID/]) {
+    await expect(menu.getByRole('menuitem', { name })).toHaveAttribute('aria-disabled', 'true');
+  }
+  await expect(menu.getByRole('menuitem', { name: /^Duplicate/ })).not.toHaveAttribute(
+    'aria-disabled',
+    'true',
+  );
+  await window.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(window.locator('.react-flow__node-block.selected')).toHaveCount(2);
+
+  // Chosen with Ctrl+click there is no frame, and a right-click on either block keeps both.
+  await window.keyboard.press('Escape');
+  await expect(window.locator('.react-flow__node-block.selected')).toHaveCount(0);
+  await block(window, 'report').click();
+  await block(window, 'send').click({ modifiers: ['Control'] });
+  await expect(window.locator('.react-flow__node-block.selected')).toHaveCount(2);
+  await block(window, 'report').click({ button: 'right' });
+  await expect(menu).toBeVisible();
+  await window.getByRole('menuitem', { name: /^Duplicate/ }).click();
+  await expect(block(window, 'report1')).toBeVisible();
+  await expect(block(window, 'send1')).toBeVisible();
+  await expect(window.locator('.react-flow__node-block.selected')).toHaveCount(2);
 });
 
 /** The view's pan and zoom, from the transform the canvas gives its viewport. */
@@ -1591,18 +1636,23 @@ test('a block menu duplicates and takes out, and Selection selects downstream', 
 
   await block(window, 'extract').click({ button: 'right' });
   const menu = window.getByRole('menu', { name: 'Actions for extract' });
-  await expect(menu.getByRole('menuitem')).toHaveText([
-    /^Add a block after this one…/,
-    /^Connect an output…/,
+  await expect(menu.locator('[role^="menuitem"]')).toHaveText([
+    /^Add after/,
+    /^Connect/,
+    /^Replace/,
     /^Rename…/,
-    /^Replace…/,
-    /^Disable/,
-    /^Test block…/,
+    /^Open tool/,
+    /^Test…/,
     /^Run from here…/,
+    /^Cut/,
     /^Copy/,
     /^Duplicate/,
-    /^Take out of the flow/,
+    /^Disabled/,
+    /^Take out/,
     /^Group/,
+    /^Select/,
+    /^Show uses/,
+    /^Copy ID/,
     /^Delete/,
   ]);
   await menu.getByRole('menuitem', { name: /^Duplicate/ }).click();
@@ -1612,12 +1662,12 @@ test('a block menu duplicates and takes out, and Selection selects downstream', 
   );
 
   await block(window, 'report').click({ button: 'right' });
-  await window.getByRole('menuitem', { name: /^Take out of the flow/ }).click();
+  await window.getByRole('menuitem', { name: /^Take out/ }).click();
   await expect
     .poll(() => connectionsShown(window))
     .toEqual(['extract next send', 'start next extract']);
   await block(window, 'report').click({ button: 'right' });
-  await expect(window.getByRole('menuitem', { name: /^Take out of the flow/ })).toHaveAttribute(
+  await expect(window.getByRole('menuitem', { name: /^Take out/ })).toHaveAttribute(
     'aria-disabled',
     'true',
   );
@@ -1646,6 +1696,124 @@ test('a block menu duplicates and takes out, and Selection selects downstream', 
   await expect.poll(() => readFile(automationFile('chain'), 'utf8')).toContain('send1');
 });
 
+test('a block menu adds after it and connects it from submenus', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Chain');
+  await expect(block(window, 'send')).toBeVisible();
+  await connectionMiddle(window, 'Start', 'Next', 'extract');
+
+  // A block with two outputs asks which one first.
+  await block(window, 'extract').click({ button: 'right' });
+  await window.getByRole('menuitem', { name: /^Connect/ }).click();
+  await window
+    .getByRole('menu', { name: 'Connect' })
+    .getByRole('menuitem', { name: 'Error' })
+    .click();
+  await window.getByRole('menu', { name: 'Error' }).getByRole('menuitem', { name: 'send' }).click();
+  await expect.poll(() => connectionsShown(window)).toContain('extract error send');
+
+  await block(window, 'send').click({ button: 'right' });
+  await window.getByRole('menuitem', { name: /^Add after/ }).click();
+  await window
+    .getByRole('menu', { name: 'Add after' })
+    .getByRole('menuitem', { name: 'Tools' })
+    .click();
+  await window
+    .getByRole('menu', { name: 'Tools' })
+    .getByRole('menuitem', { name: 'Report' })
+    .click();
+  await expect(block(window, 'Report1')).toBeVisible();
+  await expect.poll(() => connectionsShown(window)).toContain('send next Report1');
+});
+
+test('a connection menu inserts a block into it, and a group frame menu selects and ungroups', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Chain');
+  await expect(block(window, 'send')).toBeVisible();
+
+  const middle = await connectionMiddle(window, 'Start', 'Next', 'extract');
+  await window.mouse.click(middle.x, middle.y, { button: 'right' });
+  const lineMenu = window.getByRole('menu', { name: 'Connection actions' });
+  await expect(lineMenu.getByRole('menuitem')).toHaveText([/^Insert block/, /^Delete/]);
+  await lineMenu.getByRole('menuitem', { name: /^Insert block/ }).click();
+  await window
+    .getByRole('menu', { name: 'Insert block' })
+    .getByRole('menuitem', { name: 'Tools' })
+    .click();
+  await window
+    .getByRole('menu', { name: 'Tools' })
+    .getByRole('menuitem', { name: 'Report' })
+    .click();
+  await expect
+    .poll(() => connectionsShown(window))
+    .toEqual([
+      'Report1 next extract',
+      'extract next report',
+      'report next send',
+      'start next Report1',
+    ]);
+
+  await block(window, 'report').click();
+  await block(window, 'send').click({ modifiers: ['Control'] });
+  await window.keyboard.press('Control+g');
+  await expect(window.getByTestId('canvas-group')).toHaveCount(1);
+  await block(window, 'extract').click();
+
+  const header = window.locator('.frame-header');
+  await header.click({ button: 'right' });
+  const frameMenu = window.getByRole('menu', { name: /^Actions for / });
+  await expect(frameMenu.locator('[role^="menuitem"]')).toHaveText([
+    /^Rename…/,
+    /^Select blocks/,
+    /^Ungroup/,
+  ]);
+  await frameMenu.getByRole('menuitem', { name: /^Select blocks/ }).click();
+  await expect(window.locator('.react-flow__node-block.selected')).toHaveCount(2);
+
+  await header.click({ button: 'right' });
+  await frameMenu.getByRole('menuitem', { name: /^Rename…/ }).click();
+  await expect(window.getByTestId('group-settings').getByLabel('Name')).toBeFocused();
+
+  await header.click({ button: 'right' });
+  await frameMenu.getByRole('menuitem', { name: /^Ungroup/ }).click();
+  await expect(window.getByTestId('canvas-group')).toHaveCount(0);
+});
+
+test('in a run view, a block and the canvas have menus that only look', async () => {
+  await fakeTool('acme.extract', 'Extract', ['exit', '0']);
+  await fakeTool('acme.report', 'Report', ['exit', '0']);
+  await writeAutomation('chain', CHAIN);
+  const { window } = await launchShell();
+  await openAutomation(window, 'Chain');
+  await window.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(block(window, 'send').getByTestId('canvas-block')).toHaveAttribute(
+    'data-state',
+    'completed',
+    { timeout: 30_000 },
+  );
+  await expect(window.getByRole('button', { name: 'Back to editing' })).toBeVisible();
+
+  await block(window, 'extract').click({ button: 'right' });
+  const menu = window.getByRole('menu', { name: 'Actions for extract' });
+  await expect(menu.getByRole('menuitem')).toHaveText([/^Show result/, /^Show uses/, /^Copy ID/]);
+  await window.keyboard.press('Escape');
+
+  const start = await middleOf(block(window, 'start'));
+  await window.mouse.click(start.x, start.y + 160, { button: 'right' });
+  const canvasMenu = window.getByRole('menu', { name: 'Canvas actions' });
+  await expect(canvasMenu.getByRole('menuitem')).toHaveText([/^Select all/, /^Scale/, /^Options/]);
+  await canvasMenu.getByRole('menuitem', { name: 'Options' }).click();
+  await expect(
+    window.getByRole('menu', { name: 'Options' }).getByRole('menuitemcheckbox'),
+  ).toHaveText([/^Show grid/, /^Right angles/, /^Show navigator/]);
+});
+
 test('the menus act on the automation on view, and are disabled for other tabs', async () => {
   await fakeTool('acme.extract', 'Extract', ['exit', '0']);
   await fakeTool('acme.report', 'Report', ['exit', '0']);
@@ -1666,7 +1834,7 @@ test('the menus act on the automation on view, and are disabled for other tabs',
 
   await rail(window, 'Run history').click();
   await selection.click();
-  const items = window.getByRole('menu', { name: 'Selection' }).getByRole('menuitem');
+  const items = window.getByRole('menu', { name: 'Selection' }).locator('[role^="menuitem"]');
   await expect(items).toHaveCount(11);
   for (const item of await items.all()) {
     await expect(item).toHaveAttribute('aria-disabled', 'true');
