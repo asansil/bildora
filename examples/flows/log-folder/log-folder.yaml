@@ -1,0 +1,41 @@
+schemaVersion: 2
+id: log-folder
+name: Log Folder
+description: Scans every log of a folder and writes a note for each
+blocks:
+  - id: start
+    type: start
+    inputs: [{ name: logs, type: path, label: Log folder, required: true }]
+  - id: EachLog
+    type: for
+    items: { kind: folder, folder: { expression: inputs.logs }, pattern: '*.log' }
+  - id: Scan
+    type: run
+    tool: bildora.sample.scan-log
+    loop: EachLog
+    values: { file: { expression: loop.item }, out: { expression: loop.folder } }
+  - id: Note
+    type: run
+    tool: bildora.sample.write-note
+    loop: EachLog
+    values:
+      file: { expression: 'join(inputs.logs, "reports", stem(loop.item) + ".txt")' }
+      text:
+        { expression: 'name(loop.item) + ": " + text(steps.Scan.outputs.scan.errors) + " errors"' }
+  - id: Summary
+    type: run
+    tool: bildora.sample.write-note
+    values:
+      file: { expression: 'join(inputs.logs, "reports", "summary.txt")' }
+      text: { expression: 'text(steps.EachLog.outputs.rounds) + " logs scanned"' }
+connections:
+  - { from: start, to: EachLog }
+  - { from: EachLog, output: body, to: Scan }
+  - { from: Scan, to: Note }
+  - { from: EachLog, to: Summary }
+positions:
+  start: { x: 0, y: 0 }
+  EachLog: { x: 180, y: -40 }
+  Scan: { x: 236, y: 16 }
+  Note: { x: 456, y: 16 }
+  Summary: { x: 480, y: 130 }

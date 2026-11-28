@@ -1,0 +1,49 @@
+schemaVersion: 2
+id: two-logs
+name: Two Logs
+description: Scans two logs at once, and notes when one cannot be read
+blocks:
+  - id: start
+    type: start
+    inputs:
+      - { name: app, type: path, label: App log, required: true }
+      - { name: web, type: path, label: Web log, required: true }
+  - { id: Both, type: parallel }
+  - id: ScanApp
+    type: run
+    tool: bildora.sample.scan-log
+    values: { file: { expression: inputs.app }, out: { expression: 'join(run.folder, "app")' } }
+  - id: ScanWeb
+    type: run
+    tool: bildora.sample.scan-log
+    values: { file: { expression: inputs.web }, out: { expression: 'join(run.folder, "web")' } }
+  - id: WebMissing
+    type: run
+    tool: bildora.sample.write-note
+    values:
+      file: { expression: 'join(folder(inputs.app), "web-missing.txt")' }
+      text: The web log could not be read
+  - { id: Meet, type: join, parallel: Both }
+  - id: Summary
+    type: run
+    tool: bildora.sample.write-note
+    values:
+      file: { expression: 'join(folder(inputs.app), "summary.txt")' }
+      text: { expression: 'text(steps.ScanApp.outputs.scan.errors) + " errors in the app log"' }
+connections:
+  - { from: start, to: Both }
+  - { from: Both, to: ScanApp }
+  - { from: Both, to: ScanWeb }
+  - { from: ScanWeb, output: error, to: WebMissing }
+  - { from: ScanApp, to: Meet }
+  - { from: ScanWeb, to: Meet }
+  - { from: WebMissing, to: Meet }
+  - { from: Meet, to: Summary }
+positions:
+  start: { x: 0, y: 0 }
+  Both: { x: 216, y: 0 }
+  ScanApp: { x: 648, y: 0 }
+  ScanWeb: { x: 432, y: 45 }
+  WebMissing: { x: 648, y: 90 }
+  Meet: { x: 864, y: 45 }
+  Summary: { x: 1080, y: 45 }

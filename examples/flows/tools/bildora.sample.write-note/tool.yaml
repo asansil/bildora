@@ -1,0 +1,25 @@
+# Writes a line of text to a file, creating its folder. Flows use it to leave a visible result.
+schemaVersion: 1
+id: bildora.sample.write-note
+name: Write Note
+version: 1.0.0
+level: 1
+category: Samples
+description: Writes a short note to a file.
+interpreter: node
+permissions:
+  - filesystem.write
+run:
+  program: write-note.mjs
+parameters:
+  - name: file
+    type: path
+    label: Note file
+    description: The file to write. An existing file is replaced.
+    required: true
+    flag: --file
+  - name: text
+    type: string
+    label: Text
+    description: What the note says.
+    flag: --text
