@@ -1,0 +1,36 @@
+schemaVersion: 2
+id: log-notes
+name: Log Notes
+description: Writes an errors note and a warnings note for a log, named with a tag
+blocks:
+  - id: start
+    type: start
+    inputs:
+      - { name: log, type: path, label: Log file, required: true }
+      - { name: tag, type: string, label: Tag, required: true }
+  - id: Scan
+    type: run
+    tool: bildora.sample.scan-log
+    values: { file: { expression: inputs.log }, out: { expression: run.folder } }
+  - id: Errors
+    type: run
+    tool: bildora.sample.write-note
+    values:
+      file: { expression: 'join(folder(inputs.log), stem(inputs.log) + "-" + inputs.tag + ".txt")' }
+      text: { expression: 'text(steps.Scan.outputs.scan.errors) + " errors in " + name(Scan.file)' }
+  - id: Warnings
+    type: run
+    tool: bildora.sample.write-note
+    values:
+      file: { expression: 'replace(Errors.file, ".txt", "-warnings.txt")' }
+      text:
+        { expression: 'text(steps.Scan.outputs.scan.warnings) + " warnings in " + name(Scan.file)' }
+connections:
+  - { from: start, to: Scan }
+  - { from: Scan, to: Errors }
+  - { from: Errors, to: Warnings }
+positions:
+  start: { x: 0, y: 0 }
+  Scan: { x: 180, y: 0 }
+  Errors: { x: 360, y: 0 }
+  Warnings: { x: 540, y: 0 }

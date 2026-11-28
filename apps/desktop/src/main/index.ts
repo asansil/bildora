@@ -21,7 +21,12 @@ import { t } from '../shared/i18n/translate.js';
 import { AutomationService } from './automation-service.js';
 import { registerIpc } from './ipc.js';
 import { RunService } from './run-service.js';
-import { SCHEDULED_RUN_ARGUMENT, ScheduleService, scheduledCommand } from './schedule-service.js';
+import {
+  SCHEDULED_RUN_ARGUMENT,
+  ScheduleService,
+  dataDirArgument,
+  scheduledCommand,
+} from './schedule-service.js';
 import type { RunContext } from './run-service.js';
 import { ToolService } from './tool-service.js';
 import { shellWebPreferences, titleBarOverlay } from './web-preferences.js';
@@ -31,7 +36,13 @@ const moduleDirectory = fileURLToPath(new URL('.', import.meta.url));
 const rendererFile = join(moduleDirectory, '../renderer/index.html');
 const developmentUrl = process.env['ELECTRON_RENDERER_URL'];
 
+// A scheduled task names a data directory that is not the usual one, and the command it runs finds
+// the directory as the app does.
+const givenDataDir = dataDirArgument(process.argv);
+if (givenDataDir !== undefined) process.env['BILDORA_DATA_DIR'] = givenDataDir;
 const dataDir = resolveDataDir();
+/** Whether this is the usual data directory, whose tasks need not name it. */
+const usualDataDir = taskRootFor(dataDir) === '\\Bildora\\';
 // A packaged app named Bildora would otherwise mix Chromium's files into the data directory.
 app.setPath('userData', join(dataDir, 'chromium'));
 
@@ -202,6 +213,7 @@ async function start(): Promise<void> {
               process.execPath,
               app.isPackaged ? undefined : app.getAppPath(),
               location,
+              usualDataDir ? undefined : dataDir,
             ),
         )
       : undefined;

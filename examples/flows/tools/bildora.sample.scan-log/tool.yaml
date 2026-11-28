@@ -1,0 +1,36 @@
+# Reads a log and writes how many errors and warnings it holds to scan.json, a JSON output that
+# later blocks can decide on, as in `= steps.Scan.outputs.scan.errors`.
+schemaVersion: 1
+id: bildora.sample.scan-log
+name: Scan Log
+version: 1.0.0
+level: 1
+category: Samples
+description: Counts the errors and warnings in a log file.
+interpreter: node
+permissions:
+  - filesystem.read
+  - filesystem.write
+run:
+  program: scan-log.mjs
+parameters:
+  - name: file
+    type: path
+    label: Log file
+    description: The log to read.
+    required: true
+    flag: --file
+  - name: out
+    type: path
+    label: Result folder
+    description: Where scan.json goes.
+    required: true
+    flag: --out
+outputs:
+  - name: scan
+    description: What the scan found.
+    json: '{{params.out}}/scan.json'
+    fields:
+      - { name: errors, type: integer, description: Lines that hold ERROR. }
+      - { name: warnings, type: integer, description: Lines that hold WARN. }
+      - { name: lines, type: integer, description: Lines in the log. }

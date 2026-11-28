@@ -1538,10 +1538,31 @@ test('the wheel moves the view, Shift+wheel moves it sideways, and Ctrl+wheel zo
   await expect.poll(async () => (await viewOf(window)).zoom).toBeGreaterThan(before.zoom);
 });
 
-/** Opens the empty canvas's menu below Start, where Chain has nothing. */
+/**
+ * Opens the empty canvas's menu below Start, where Chain has nothing, or at the first empty spot of
+ * the canvas when that one is out of sight or taken.
+ */
 async function canvasMenuBelowStart(window: Page): Promise<Locator> {
   const start = await middleOf(block(window, 'start'));
-  await window.mouse.click(start.x, start.y + 160, { button: 'right' });
+  const read: unknown = await window.evaluate(`(() => {
+    const pane = document.querySelector('[role="tabpanel"]:not([hidden]) .react-flow__pane');
+    if (pane === null) return null;
+    const box = pane.getBoundingClientRect();
+    const empty = (x, y) => x > box.left && x < box.right && y > box.top && y < box.bottom &&
+      document.elementFromPoint(x, y) === pane;
+    if (empty(${String(start.x)}, ${String(start.y + 160)})) {
+      return { x: ${String(start.x)}, y: ${String(start.y + 160)} };
+    }
+    for (let y = box.top + 40; y < box.bottom - 40; y += 40) {
+      for (let x = box.left + 40; x < box.right - 40; x += 40) {
+        if (empty(x, y)) return { x, y };
+      }
+    }
+    return null;
+  })()`);
+  if (read === null) throw new Error('The canvas has no empty spot in sight');
+  const spot = read as { x: number; y: number };
+  await window.mouse.click(spot.x, spot.y, { button: 'right' });
   const menu = window.getByRole('menu', { name: 'Canvas actions' });
   await expect(menu).toBeVisible();
   return menu;
@@ -1600,13 +1621,14 @@ test('Scale to rectangle zooms to a box drawn on the canvas, and Escape cancels 
   await openAutomation(window, 'Chain');
   await expect(block(window, 'send')).toBeVisible();
   await connectionMiddle(window, 'Start', 'Next', 'extract');
+  const opened = await viewOf(window);
 
   await (await canvasMenuBelowStart(window)).getByRole('menuitem', { name: 'Scale' }).click();
   await window.getByRole('menuitem', { name: 'Scale to rectangle' }).click();
   await expect(window.getByTestId('scale-rectangle')).toBeVisible();
   await window.keyboard.press('Escape');
   await expect(window.getByTestId('scale-rectangle')).toHaveCount(0);
-  expect((await viewOf(window)).zoom).toBe(1);
+  expect((await viewOf(window)).zoom).toBe(opened.zoom);
 
   await (await canvasMenuBelowStart(window)).getByRole('menuitem', { name: 'Scale' }).click();
   await window.getByRole('menuitem', { name: 'Scale to rectangle' }).click();

@@ -1,0 +1,46 @@
+schemaVersion: 2
+id: log-check
+name: Log Check
+description: Scans a log and writes a note on whether it holds errors
+blocks:
+  - id: start
+    type: start
+    inputs: [{ name: log, type: path, label: Log file, required: true }]
+  - id: Scan
+    type: run
+    tool: bildora.sample.scan-log
+    values: { file: { expression: inputs.log }, out: { expression: run.folder } }
+  - id: HasErrors
+    type: if
+    condition:
+      match: all
+      rules:
+        - {
+            field: value,
+            read: { expression: steps.Scan.outputs.scan.errors },
+            operator: greater-than,
+            value: 0,
+          }
+  - id: Report
+    type: run
+    tool: bildora.sample.write-note
+    values:
+      file: { expression: 'join(folder(inputs.log), stem(inputs.log) + "-errors.txt")' }
+      text: { expression: 'text(steps.Scan.outputs.scan.errors) + " errors found"' }
+  - id: AllClear
+    type: run
+    tool: bildora.sample.write-note
+    values:
+      file: { expression: 'join(folder(inputs.log), stem(inputs.log) + "-ok.txt")' }
+      text: No errors found
+connections:
+  - { from: start, to: Scan }
+  - { from: Scan, to: HasErrors }
+  - { from: HasErrors, output: 'true', to: Report }
+  - { from: HasErrors, output: 'false', to: AllClear }
+positions:
+  start: { x: 0, y: 0 }
+  Scan: { x: 180, y: 0 }
+  HasErrors: { x: 360, y: 0 }
+  Report: { x: 530, y: -60 }
+  AllClear: { x: 530, y: 60 }
