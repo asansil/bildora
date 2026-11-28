@@ -1,4 +1,10 @@
-import type { Automation, AutomationSchedule, StartBlock } from '@bildora/protocol';
+import { startBlocker } from '@bildora/protocol';
+import type {
+  Automation,
+  AutomationSchedule,
+  ScheduleBlocker,
+  StartBlock,
+} from '@bildora/protocol';
 import {
   putScheduleSetting,
   readScheduleSettings,
@@ -24,15 +30,6 @@ export interface AutomationAt {
   readonly automation: Automation;
 }
 
-/** Why a schedule cannot run, even if it is on. */
-export type ScheduleBlocker =
-  /** The Start block starts with a button. */
-  | 'not-scheduled'
-  /** A required input has no default, and a scheduled start has nobody to ask. */
-  | 'input-without-default'
-  /** A schedule that runs once is set for a time already gone. */
-  | 'past';
-
 /** How one automation's schedule stands on this computer. */
 export type ScheduleState =
   | { readonly kind: 'off' }
@@ -52,6 +49,8 @@ export interface TaskTimes {
   readonly running: boolean;
 }
 
+export type { ScheduleBlocker };
+
 const keyOf = ({ workspaceId, automationId }: TaskLocation): string =>
   `${workspaceId}/${automationId}`;
 
@@ -67,20 +66,7 @@ function scheduleOf(automation: Automation): AutomationSchedule | undefined {
 
 /** Why the automation's schedule cannot run now, if it cannot. */
 export function scheduleBlocker(automation: Automation, now: Date): ScheduleBlocker | undefined {
-  const start = startOf(automation);
-  const schedule = scheduleOf(automation);
-  if (start === undefined || schedule === undefined) return 'not-scheduled';
-  if (
-    (start.inputs ?? []).some((input) => input.required === true && input.default === undefined)
-  ) {
-    return 'input-without-default';
-  }
-  if (schedule.repeat === 'once') {
-    const [hours = 0, minutes = 0] = schedule.time.split(':').map(Number);
-    const [year = 0, month = 1, day = 1] = schedule.date.split('-').map(Number);
-    if (new Date(year, month - 1, day, hours, minutes).getTime() <= now.getTime()) return 'past';
-  }
-  return undefined;
+  return startBlocker(startOf(automation), now);
 }
 
 function definitionOf(

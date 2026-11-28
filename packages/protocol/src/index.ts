@@ -65,6 +65,8 @@ export {
   isExpressionValue,
   isLoopBlock,
 } from './automation.js';
+export { startBlocker } from './schedule-blocker.js';
+export type { ScheduleBlocker } from './schedule-blocker.js';
 export type {
   Automation,
   AutomationBlock,
