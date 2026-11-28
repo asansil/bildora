@@ -28,6 +28,7 @@ export interface EditorCommands {
  * menu, the canvas menu and the app's menus all read this one object, so they never disagree.
  */
 export interface CanvasCommands extends EditorCommands {
+  readonly cut: CanvasCommand;
   readonly copy: CanvasCommand;
   readonly paste: CanvasCommand;
   readonly duplicate: CanvasCommand;
@@ -44,8 +45,10 @@ export interface CanvasCommands extends EditorCommands {
   readonly showUses: CanvasCommand;
   /** Disables the chosen blocks, or enables them when all of them are disabled. */
   readonly toggleDisabled: CanvasCommand;
-  /** True when toggling disables, so menus say Disable; false when they say Enable. */
-  readonly disables: boolean;
+  /** Whether the chosen blocks are disabled: all of them, none, or 'mixed' for some. */
+  readonly disabledMark: boolean | 'mixed';
+  /** The menu of a block or a note, as a right-click on it opens it. */
+  readonly itemMenu: (id: string, extra?: ItemMenuExtra) => MenuEntry[];
   readonly tidyAll: CanvasCommand;
   readonly tidySelected: CanvasCommand;
   readonly alignToGrid: CanvasCommand;
@@ -60,6 +63,11 @@ export interface CanvasCommands extends EditorCommands {
   readonly snapToGrid: CanvasToggle;
   readonly rightAngles: CanvasToggle;
   readonly showNavigator: CanvasToggle;
+}
+
+/** What a block's menu adds when it opens from the block's card. */
+export interface ItemMenuExtra {
+  readonly showOnCanvas?: () => void;
 }
 
 /** The zooms Scale offers. */
@@ -138,10 +146,11 @@ export function scaleEntries(commands: CanvasCommands | undefined): MenuEntry[] 
   ];
 }
 
-export function optionsEntries(commands: CanvasCommands | undefined): MenuEntry[] {
+/** The canvas options; Snap to grid only where blocks can move. */
+export function optionsEntries(commands: CanvasCommands | undefined, canMove = true): MenuEntry[] {
   return [
     toggleItem(t('command.showGrid'), commands?.showGrid),
-    toggleItem(t('canvas.snapToGrid'), commands?.snapToGrid),
+    ...(canMove ? [toggleItem(t('canvas.snapToGrid'), commands?.snapToGrid)] : []),
     toggleItem(t('canvas.rightAngles'), commands?.rightAngles),
     toggleItem(t('command.showNavigator'), commands?.showNavigator),
   ];
@@ -155,13 +164,11 @@ export function arrangeEntries(commands: CanvasCommands | undefined): MenuEntry[
   ];
 }
 
-/** Disable or Enable, as the chosen blocks are. */
+/** Disabled, ticked when the chosen blocks are, and marked mixed when only some are. */
 export function toggleDisabledItem(commands: CanvasCommands | undefined): MenuEntry {
-  return commandItem(
-    t(commands?.disables === false ? 'command.enable' : 'command.disable'),
-    commands?.toggleDisabled,
-    'Ctrl+E',
-  );
+  return commandItem(t('command.disabledMark'), commands?.toggleDisabled, 'Ctrl+E', {
+    checked: commands?.disabledMark ?? false,
+  });
 }
 
 /** The Selection menu of the menu bar. */

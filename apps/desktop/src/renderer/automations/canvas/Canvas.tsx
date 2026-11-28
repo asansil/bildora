@@ -91,20 +91,17 @@ import {
 import type { ConnectionRef, FlowClip } from './flow-document.js';
 import { ContextMenu } from '../../shell/ContextMenu.js';
 import type { MenuEntry } from '../../shell/menu-model.js';
-import {
-  arrangeEntries,
-  commandItem,
-  optionsEntries,
-  scaleEntries,
-  toggleDisabledItem,
-} from './canvas-commands.js';
+import { arrangeEntries, commandItem, optionsEntries, scaleEntries } from './canvas-commands.js';
 import type {
   CanvasCommand,
   CanvasCommands,
   CanvasToggle,
   EditorCommands,
+  ItemMenuExtra,
 } from './canvas-commands.js';
 import { layoutBlocks } from './layout.js';
+import { blockMenu, noteMenu } from './block-menu.js';
+import type { BlockMenuActions } from './block-menu.js';
 import {
   CanvasActionsContext,
   InputTonesContext,
@@ -156,6 +153,77 @@ const RECTANGLE_MIN = 8;
 
 /** Blocks Test block runs on their own: tools, calls and conditions. */
 const TESTED_ALONE: ReadonlySet<string> = new Set(['run', 'run-automation', 'if', 'switch']);
+
+/** How many blocks Connect lists for an output; its Search… finds the others. */
+const MENU_TARGETS = 12;
+
+function libraryItem({ choice, label, icon }: LibraryChoice, pick: (choice: AddChoice) => void) {
+  return {
+    label,
+    ...(icon === undefined ? {} : { icon }),
+    run: () => {
+      pick(choice);
+    },
+  };
+}
+
+/** A menu item for each tool, under its category when the tools have more than one. */
+function toolItems(
+  tools: readonly LibraryChoice[],
+  pick: (choice: AddChoice) => void,
+): MenuEntry[] {
+  if (tools.length === 0) return [{ label: t('canvas.noTools'), disabled: true }];
+  const categories = new Map<string, LibraryChoice[]>();
+  for (const tool of tools) {
+    const name = tool.group ?? t('nav.uncategorized');
+    categories.set(name, [...(categories.get(name) ?? []), tool]);
+  }
+  return categories.size === 1
+    ? tools.map((tool) => libraryItem(tool, pick))
+    : [...categories].map(([name, list]) => ({
+        label: name,
+        items: list.map((tool) => libraryItem(tool, pick)),
+      }));
+}
+
+/** The blocks a menu can add, as Tools, Control and Automations submenus. */
+function libraryItems(
+  library: readonly LibraryChoice[],
+  pick: (choice: AddChoice) => void,
+): MenuEntry[] {
+  const tools = library.filter(({ choice }) => choice.kind === 'run');
+  const calls = library.filter(({ choice }) => choice.kind === 'run-automation');
+  const controls = library.filter(
+    ({ choice }) =>
+      choice.kind !== 'run' && choice.kind !== 'run-automation' && choice.kind !== 'note',
+  );
+  return [
+    { label: t('command.tools'), items: toolItems(tools, pick) },
+    { label: t('command.control'), items: controls.map((control) => libraryItem(control, pick)) },
+    ...(calls.length === 0
+      ? []
+      : [
+          {
+            label: t('canvas.libraryAutomations'),
+            items: calls.map((call) => libraryItem(call, pick)),
+          },
+        ]),
+  ];
+}
+
+/** The blocks inside a loop, at any depth. */
+function insideOf(document: FlowDocument, id: string): string[] {
+  return document.blocks
+    .filter((block) => {
+      let at = loopOf(block);
+      for (let depth = 0; at !== undefined && depth <= document.blocks.length; depth++) {
+        if (at === id) return true;
+        at = loopOf(blockOf(document, at));
+      }
+      return false;
+    })
+    .map(({ id: inside }) => inside);
+}
 export const LIBRARY_DRAG_TYPE = 'application/x-bildora-block';
 /** What Ctrl+C copied, kept outside any one canvas so it pastes into another automation too. */
 let clipboard: FlowClip | undefined;
@@ -285,6 +353,7 @@ function relayed(
     ungroup: command('ungroup'),
     save: command('save'),
     saveAndRun: command('saveAndRun'),
+    cut: command('cut'),
     copy: command('copy'),
     paste: command('paste'),
     duplicate: command('duplicate'),
@@ -298,7 +367,8 @@ function relayed(
     replace: command('replace'),
     showUses: command('showUses'),
     toggleDisabled: command('toggleDisabled'),
-    disables: commands.disables,
+    disabledMark: commands.disabledMark,
+    itemMenu: (id, extra) => latest.current.itemMenu(id, extra),
     tidyAll: command('tidyAll'),
     tidySelected: command('tidySelected'),
     alignToGrid: command('alignToGrid'),
@@ -321,7 +391,7 @@ function relayed(
 function stateOf(commands: CanvasCommands): string {
   return Object.values(commands)
     .map((value: unknown) =>
-      typeof value === 'number' || typeof value === 'boolean'
+      typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string'
         ? String(value)
         : typeof value === 'object' && value !== null && 'enabled' in value
           ? String(value.enabled)
@@ -381,6 +451,10 @@ export interface CanvasProps {
   readonly library: readonly LibraryChoice[];
   /** In the run view, a double-click on a block goes back to editing it. */
   readonly onOpenBlock?: (id: string) => void;
+  /** Asks for a group's name, as its frame's menu does. */
+  readonly onRenameGroup?: (id: string) => void;
+  /** Opens a tool the Workspace has, as a Run block's menu asks. */
+  readonly onOpenTool?: (toolId: string) => void;
   /** Asks for a block's name in links to be changed, as F2 and the block's menu do. */
   readonly onRenameBlock?: (id: string) => void;
   /** Puts a new block for another tool in a Run tool block's place, and gives its id. */
@@ -680,6 +754,8 @@ export function Canvas({
   onOpenCall,
   library,
   onOpenBlock,
+  onOpenTool,
+  onRenameGroup,
   onRenameBlock,
   onReplaceBlock,
   onTestBlock,
@@ -716,7 +792,13 @@ export function Canvas({
     { x: number; y: number; at: AutomationPosition } | undefined
   >(undefined);
   /** Where a right-click on the empty canvas asked to add something. */
-  const [addAt, setAddAt] = useState<AutomationPosition | undefined>(undefined);
+  const [addAt, setAddAt] = useState<
+    { readonly at: AutomationPosition; readonly into?: ConnectionRef } | undefined
+  >(undefined);
+  /** A connection's menu, open at the pointer, with the point of the flow it was asked at. */
+  const [edgeMenu, setEdgeMenu] = useState<
+    { id: string; x: number; y: number; at: AutomationPosition } | undefined
+  >(undefined);
   /** Scale to rectangle: waiting for a box, then the box being drawn, from the canvas's corner. */
   const [rectangle, setRectangle] = useState<
     { from?: { x: number; y: number }; to?: { x: number; y: number } } | undefined
@@ -1572,7 +1654,10 @@ export function Canvas({
 
   /** Opens a block's or a note's menu, chosen first so the menu acts on what it shows. */
   function openMenu(id: string, x: number, y: number): void {
-    onSelect(new Set([id]));
+    setPaneMenu(undefined);
+    setEdgeMenu(undefined);
+    // A right-click on one of several chosen items keeps them all, and its menu acts on them.
+    if (!(selected.size > 1 && selected.has(id))) onSelect(new Set([id]));
     if (blockOf(document, id) !== undefined) setFocused(id);
     setMoving(false);
     setMenu({ id, x, y });
@@ -1722,6 +1807,12 @@ export function Canvas({
     [flow],
   );
 
+  /** A block just added from a menu, brought into sight once it is drawn. */
+  const [added, setAdded] = useState<{ readonly id: string } | undefined>(undefined);
+  useEffect(() => {
+    if (added !== undefined) reveal_(added.id);
+  }, [added, reveal_]);
+
   // The blocks list moves focus here, onto the block it names.
   const [focusAsked, setFocusAsked] = useState(focusRequest);
   if (focusAsked !== focusRequest) {
@@ -1779,6 +1870,12 @@ export function Canvas({
   const can = (enabled: boolean, run: () => void): CanvasCommand => ({ enabled, run });
   /** Whether toggling the chosen blocks disables them, or undefined when none can be. */
   const disables = disablesChosen(document, chosen);
+  /** Whether the chosen blocks are disabled: all, none, or some of them. */
+  const disabledMark = ((): boolean | 'mixed' => {
+    const list = document.blocks.filter(({ id, type }) => chosen.has(id) && isDisableable(type));
+    const off = list.filter(isDisabled).length;
+    return off === 0 ? false : off === list.length ? true : 'mixed';
+  })();
 
   function duplicateChosen(): void {
     const copy = duplicateItems(document, chosen, GRID);
@@ -1821,6 +1918,10 @@ export function Canvas({
 
   const commands: CanvasCommands = {
     ...editor,
+    cut: can(editable && copyable, () => {
+      copyChosen();
+      deleteChosen();
+    }),
     copy: can(copyable, copyChosen),
     paste: can(editable && clipboard !== undefined, () => {
       pasteClip();
@@ -1860,7 +1961,8 @@ export function Canvas({
       onChange((current) => toggleDisabled(current, chosen));
       announce(t(disables === true ? 'command.disabled' : 'command.enabled', { names }));
     }),
-    disables: disables !== false,
+    disabledMark,
+    itemMenu: (id, extra) => itemMenu(id, extra),
     tidyAll: can(editable, () => {
       void layoutBlocks(document.blocks, document.connections)
         .then((positions) => {
@@ -1924,114 +2026,263 @@ export function Canvas({
     [onCommands],
   );
 
-  /** Test block and Run from here, for the blocks each applies to. */
-  function testItems(
-    type: string,
-    test: (kind: 'block' | 'from') => void,
-    offered: boolean,
-  ): MenuEntry[] {
-    if (!offered) return [];
-    const items: MenuEntry[] = [];
-    if (TESTED_ALONE.has(type)) {
-      items.push({
-        label: t('test.menuBlock'),
-        run: () => {
-          test('block');
-        },
-      });
+  /** Adds a block after another, from its menu or the add dialog, and moves to the new one. */
+  function addAfterBlock(id: string, choice: AddChoice): void {
+    if (choice.kind === 'note') return;
+    const next = onAddAfter(id, choice);
+    if (next !== undefined) {
+      setFocused(next);
+      setAdded({ id: next });
+      announce(t('canvas.added', { after: nameOf(id) }));
     }
-    if (type !== 'start') {
-      items.push({
-        label: t('test.menuFrom'),
-        run: () => {
-          test('from');
-        },
-      });
-    }
-    return items.length === 0 ? [] : ['separator', ...items];
   }
 
-  /** A block's or a note's menu. */
-  function itemMenu(id: string): MenuEntry[] {
-    const block = blockOf(document, id);
-    const copying: MenuEntry[] = [
-      commandItem(t('command.copy'), commands.copy, 'Ctrl+C'),
-      commandItem(t('command.duplicate'), commands.duplicate, 'Ctrl+D'),
-    ];
-    const removing: MenuEntry[] =
-      block?.type === 'start'
-        ? []
-        : [
-            'separator',
-            commandItem(t('canvas.menuDelete'), commands.delete, 'Del', { danger: true }),
-          ];
-    if (block === undefined) {
-      const note = document.notes.some((item) => item.id === id);
-      return [
-        ...(note
-          ? [
-              {
-                label: t('canvas.menuWrite'),
-                run: () => {
-                  setEditingNote(id);
-                },
-              },
-              'separator' as const,
-              ...copying,
-            ]
-          : []),
-        ...removing,
-      ];
+  /** Puts a block for another tool in a Run block's place. */
+  function replaceBlockWith(id: string, choice: AddChoice): void {
+    if (choice.kind !== 'run') return;
+    const replaced = onReplaceBlock?.(id, choice);
+    if (replaced !== undefined) {
+      setFocused(replaced);
+      announce(t('canvas.replaced', { name: replaced }));
     }
+  }
+
+  /** Connects one output of a block to another block. */
+  function connectBlock(id: string, output: string, target: string): void {
+    onChange((current) => connect(current, id, output, target));
+    announce(
+      t('canvas.connected', { from: nameOf(id), output: outputLabel(output), to: nameOf(target) }),
+    );
+  }
+
+  /** The blocks an output of a block can lead to, nearest first. */
+  function targetsOf(id: string, output: string): string[] {
+    const origin = document.positions[id] ?? { x: 0, y: 0 };
+    const distance = (other: string): number => {
+      const at = document.positions[other] ?? origin;
+      return Math.hypot(at.x - origin.x, at.y - origin.y);
+    };
+    return validTargets(document, id, output).sort((a, b) => distance(a) - distance(b));
+  }
+
+  /** What a block's menu does to that block alone. */
+  function blockActions(block: AutomationBlock, extra?: ItemMenuExtra): BlockMenuActions {
+    const { id, type } = block;
+    const search = (kind: 'add' | 'connect' | 'replace'): MenuEntry => ({
+      label: t('canvas.menuSearch'),
+      run: () => {
+        setDialog({ kind, id });
+      },
+    });
+    const connectTo = (output: string): MenuEntry[] => {
+      const targets = targetsOf(id, output);
+      return [
+        search('connect'),
+        'separator',
+        ...(targets.length === 0
+          ? [{ label: t('canvas.menuNoTargets'), disabled: true }]
+          : targets.slice(0, MENU_TARGETS).map((target) => ({
+              label: nameOf(target),
+              run: () => {
+                connectBlock(id, output, target);
+              },
+            }))),
+      ];
+    };
+    const outputs = outputsOf(block);
+    const [only] = outputs;
+    const tool = block.type === 'run' ? block.tool : undefined;
+    return {
+      addAfter: [
+        search('add'),
+        'separator',
+        ...libraryItems(library, (choice) => {
+          addAfterBlock(id, choice);
+        }),
+      ],
+      connect:
+        only === undefined
+          ? undefined
+          : outputs.length === 1
+            ? connectTo(only)
+            : outputs.map((output) => ({ label: outputLabel(output), items: connectTo(output) })),
+      replace:
+        type === 'run' && onReplaceBlock !== undefined
+          ? [
+              search('replace'),
+              'separator',
+              ...toolItems(
+                library.filter(({ choice }) => choice.kind === 'run'),
+                (choice) => {
+                  replaceBlockWith(id, choice);
+                },
+              ),
+            ]
+          : undefined,
+      rename: () => {
+        onRenameBlock?.(id);
+      },
+      open:
+        tool !== undefined
+          ? {
+              label: t('canvas.menuOpenTool'),
+              run:
+                onOpenTool !== undefined && tools.some((item) => item.id === tool)
+                  ? () => {
+                      onOpenTool(tool);
+                    }
+                  : undefined,
+            }
+          : type === 'run-automation' && onOpenCall !== undefined
+            ? {
+                label: t('canvas.menuOpenAutomation'),
+                run: () => {
+                  onOpenCall(id);
+                },
+              }
+            : undefined,
+      test:
+        onTestBlock !== undefined && TESTED_ALONE.has(type)
+          ? () => {
+              onTestBlock(id, 'block');
+            }
+          : undefined,
+      runFrom:
+        onTestBlock !== undefined && type !== 'start'
+          ? () => {
+              onTestBlock(id, 'from');
+            }
+          : undefined,
+      selectInside: isLoopBlock(block)
+        ? () => {
+            onSelect(new Set(insideOf(document, id)));
+          }
+        : undefined,
+      copyId: () => {
+        void navigator.clipboard.writeText(id).catch((error: unknown) => onError?.(error));
+      },
+      showOnCanvas: extra?.showOnCanvas,
+    };
+  }
+
+  /** A block's menu in a run view, which shows what the run did and changes nothing. */
+  function runBlockMenu(block: AutomationBlock): MenuEntry[] {
+    const { id } = block;
     return [
       {
-        label: t('canvas.menuAdd'),
-        shortcut: 'A',
+        label: t('canvas.menuShowResult'),
+        shortcut: 'Enter',
         run: () => {
-          setDialog({ kind: 'add', id });
+          onSelect(new Set([id]));
+          setFocused(id);
         },
       },
-      ...(outputsOf(block).length > 0
+      ...(block.type === 'run-automation' && onOpenCall !== undefined
         ? [
             {
-              label: t('canvas.menuConnect'),
-              shortcut: 'C',
+              label: t('canvas.menuOpenRun'),
               run: () => {
-                setDialog({ kind: 'connect', id });
+                onOpenCall(id);
               },
             },
           ]
         : []),
+      'separator',
+      commandItem(t('canvas.menuShowUses'), commands.showUses),
+      {
+        label: t('canvas.menuCopyId'),
+        run: () => {
+          void navigator.clipboard.writeText(id).catch((error: unknown) => onError?.(error));
+        },
+      },
+    ];
+  }
+
+  /** A group frame's menu. */
+  function groupMenu(group: AutomationGroup): MenuEntry[] {
+    return [
       {
         label: t('canvas.rename'),
         shortcut: 'F2',
         run: () => {
-          onRenameBlock?.(id);
+          onRenameGroup?.(group.id);
         },
       },
-      ...(block.type === 'run' && onReplaceBlock !== undefined
-        ? [
-            {
-              label: t('canvas.menuReplace'),
-              run: () => {
-                setDialog({ kind: 'replace', id });
-              },
-            },
-          ]
-        : []),
-      ...(isDisableable(block.type) ? [toggleDisabledItem(commands)] : []),
-      ...testItems(block.type, (kind) => onTestBlock?.(id, kind), onTestBlock !== undefined),
-      ...(block.type === 'start'
-        ? []
-        : [
-            'separator' as const,
-            ...copying,
-            'separator' as const,
-            commandItem(t('command.takeOut'), commands.takeOut, 'Shift+drag'),
-            commandItem(t('command.group'), commands.group, 'Ctrl+G'),
-          ]),
-      ...removing,
+      {
+        label: t('canvas.menuSelectBlocks'),
+        run: () => {
+          onSelect(new Set(group.blocks));
+        },
+      },
+      'separator',
+      commandItem(t('command.ungroup'), commands.ungroup),
     ];
+  }
+
+  /** A connection's menu: a block can go into it, or it can be deleted. */
+  function connectionMenu(id: string, at: AutomationPosition): MenuEntry[] {
+    const into = connectionOf(id);
+    return [
+      {
+        label: t('canvas.menuInsertBlock'),
+        items: [
+          {
+            label: t('canvas.menuSearch'),
+            run: () => {
+              setAddAt({ at, into });
+            },
+          },
+          'separator',
+          ...libraryItems(library, (choice) => {
+            onAddAt(choice, at, into);
+          }),
+        ],
+      },
+      'separator',
+      {
+        label: t('canvas.menuDelete'),
+        shortcut: 'Del',
+        danger: true,
+        run: () => {
+          deleteConnection(id);
+        },
+      },
+    ];
+  }
+
+  /** The empty canvas's menu in a run view, which only looks. */
+  function runCanvasMenu(): MenuEntry[] {
+    return [
+      commandItem(t('command.selectAll'), commands.selectAll, 'Ctrl+A'),
+      'separator',
+      { label: t('menu.scale'), items: scaleEntries(commands) },
+      { label: t('menu.options'), items: optionsEntries(commands, false) },
+    ];
+  }
+
+  /** The name a menu is titled with: a block's, a note's or a group's. */
+  function menuName(id: string): string {
+    return document.groups.find((group) => group.id === id)?.name ?? nameOf(id);
+  }
+
+  /** A block's, a note's or a group's menu, acting on every chosen item when it is one of them. */
+  function itemMenu(id: string, extra?: ItemMenuExtra): MenuEntry[] {
+    const several = chosen.size > 1 && chosen.has(id);
+    const block = blockOf(document, id);
+    if (readOnly) return block === undefined ? [] : runBlockMenu(block);
+    if (block !== undefined) return blockMenu(block, commands, blockActions(block, extra), several);
+    const group = document.groups.find((item) => item.id === id);
+    if (group !== undefined) return groupMenu(group);
+    if (document.notes.some((note) => note.id === id)) {
+      return noteMenu(
+        commands,
+        () => {
+          setEditingNote(id);
+        },
+        several,
+      );
+    }
+    return [];
   }
 
   /** The empty canvas's menu, whose additions land where it was opened. */
@@ -2041,26 +2292,6 @@ export function Canvas({
       () => {
         onAddAt(choice, at);
       };
-    const tools = library.filter(({ choice }) => choice.kind === 'run');
-    const controls = library.filter(
-      ({ choice }) => choice.kind !== 'run' && choice.kind !== 'note',
-    );
-    const entry = ({ choice, label, icon }: LibraryChoice): MenuEntry => ({
-      label,
-      ...(icon === undefined ? {} : { icon }),
-      run: add(choice),
-    });
-    const categories = new Map<string, LibraryChoice[]>();
-    for (const tool of tools) {
-      const name = tool.group ?? t('nav.uncategorized');
-      categories.set(name, [...(categories.get(name) ?? []), tool]);
-    }
-    const toolEntries: MenuEntry[] =
-      tools.length === 0
-        ? [{ label: t('canvas.noTools'), disabled: true }]
-        : categories.size === 1
-          ? tools.map(entry)
-          : [...categories].map(([name, list]) => ({ label: name, items: list.map(entry) }));
     return [
       {
         label: t('command.addBlock'),
@@ -2069,12 +2300,13 @@ export function Canvas({
             label: t('command.search'),
             shortcut: 'Shift+Space',
             run: () => {
-              setAddAt(at);
+              setAddAt({ at });
             },
           },
           'separator',
-          { label: t('command.tools'), items: toolEntries },
-          { label: t('command.control'), items: controls.map(entry) },
+          ...libraryItems(library, (choice) => {
+            onAddAt(choice, at);
+          }),
         ],
       },
       { label: t('command.addNote'), run: add({ kind: 'note' }) },
@@ -2088,6 +2320,7 @@ export function Canvas({
       ),
       commandItem(t('command.selectAll'), commands.selectAll, 'Ctrl+A'),
       commandItem(t('command.deselectAll'), commands.deselectAll, 'Esc'),
+      commandItem(t('command.invertSelection'), commands.invertSelection),
       'separator',
       { label: t('command.arrange'), items: arrangeEntries(commands) },
       { label: t('menu.scale'), items: scaleEntries(commands) },
@@ -2124,6 +2357,7 @@ export function Canvas({
     // box, so they are not limited to the canvas itself.
     if (event.ctrlKey) {
       const shortcuts: Readonly<Record<string, CanvasCommand>> = {
+        x: commands.cut,
         c: commands.copy,
         v: commands.paste,
         d: commands.duplicate,
@@ -2165,6 +2399,9 @@ export function Canvas({
       if (id !== undefined && blockOf(document, id) !== undefined) {
         event.preventDefault();
         onRenameBlock?.(id);
+      } else if (only !== undefined && document.groups.some((group) => group.id === only)) {
+        event.preventDefault();
+        onRenameGroup?.(only);
       }
       return;
     }
@@ -2182,7 +2419,7 @@ export function Canvas({
         x: area.left + area.width / 2,
         y: area.top + area.height / 2,
       };
-      setAddAt(placed(flow.screenToFlowPosition(at)));
+      setAddAt({ at: placed(flow.screenToFlowPosition(at)) });
       return;
     }
     const key = event.key;
@@ -2472,8 +2709,8 @@ export function Canvas({
                     }}
                     onPaneContextMenu={(event) => {
                       event.preventDefault();
-                      if (readOnly) return;
                       setMenu(undefined);
+                      setEdgeMenu(undefined);
                       setPaneMenu({
                         x: event.clientX,
                         y: event.clientY,
@@ -2484,8 +2721,32 @@ export function Canvas({
                     }}
                     onNodeContextMenu={(event, node) => {
                       event.preventDefault();
-                      if (readOnly || node.type === 'frame') return;
+                      // A run view has menus for its blocks only, which change nothing.
+                      if (readOnly && node.type !== 'block' && node.type !== 'loop') return;
                       openMenu(node.id, event.clientX, event.clientY);
+                    }}
+                    onEdgeContextMenu={(event, edge) => {
+                      event.preventDefault();
+                      if (readOnly) return;
+                      setMenu(undefined);
+                      setPaneMenu(undefined);
+                      setEdgeMenu({
+                        id: edge.id,
+                        x: event.clientX,
+                        y: event.clientY,
+                        at: placed(
+                          flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+                        ),
+                      });
+                    }}
+                    // After a selection box, the frame around the chosen items takes the click.
+                    onSelectionContextMenu={(event, chosenNodes) => {
+                      event.preventDefault();
+                      const target =
+                        chosenNodes.find(({ type }) => type === 'block' || type === 'loop') ??
+                        chosenNodes.find(({ type }) => type === 'note');
+                      if (readOnly || target === undefined) return;
+                      openMenu(target.id, event.clientX, event.clientY);
                     }}
                     zoomOnDoubleClick={false}
                     onConnectStart={onConnectStart}
@@ -2565,10 +2826,22 @@ export function Canvas({
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          label={t('canvas.menu', { name: nameOf(menu.id) })}
+          label={t('canvas.menu', { name: menuName(menu.id) })}
           items={itemMenu(menu.id)}
           onClose={() => {
             setMenu(undefined);
+            container.current?.focus();
+          }}
+        />
+      )}
+      {edgeMenu === undefined ? null : (
+        <ContextMenu
+          x={edgeMenu.x}
+          y={edgeMenu.y}
+          label={t('canvas.connectionMenu')}
+          items={connectionMenu(edgeMenu.id, edgeMenu.at)}
+          onClose={() => {
+            setEdgeMenu(undefined);
             container.current?.focus();
           }}
         />
@@ -2578,7 +2851,7 @@ export function Canvas({
           x={paneMenu.x}
           y={paneMenu.y}
           label={t('command.canvasMenu')}
-          items={canvasMenu(paneMenu.at)}
+          items={readOnly ? runCanvasMenu() : canvasMenu(paneMenu.at)}
           onClose={() => {
             setPaneMenu(undefined);
             container.current?.focus();
@@ -2587,18 +2860,22 @@ export function Canvas({
       )}
       {addAt === undefined ? null : (
         <AddDialog
-          title={t('canvas.addHereTitle')}
-          choices={[
-            ...library,
-            {
-              choice: { kind: 'note' },
-              label: t('canvas.kindNote'),
-              icon: <StickyNote className="icon" aria-hidden="true" />,
-            },
-          ]}
+          title={t(addAt.into === undefined ? 'canvas.addHereTitle' : 'canvas.insertTitle')}
+          choices={
+            addAt.into === undefined
+              ? [
+                  ...library,
+                  {
+                    choice: { kind: 'note' },
+                    label: t('canvas.kindNote'),
+                    icon: <StickyNote className="icon" aria-hidden="true" />,
+                  },
+                ]
+              : library
+          }
           onPick={(choice) => {
             setAddAt(undefined);
-            onAddAt(choice, addAt);
+            onAddAt(choice, addAt.at, addAt.into);
             container.current?.focus();
           }}
           onClose={() => {
@@ -2613,14 +2890,8 @@ export function Canvas({
           choices={library}
           onPick={(choice) => {
             setDialog(undefined);
-            if (choice.kind === 'note') return;
-            const added = onAddAfter(dialogBlock.id, choice);
             container.current?.focus();
-            if (added !== undefined) {
-              setFocused(added);
-              reveal_(added);
-              announce(t('canvas.added', { after: nameOf(dialogBlock.id) }));
-            }
+            addAfterBlock(dialogBlock.id, choice);
           }}
           onClose={() => {
             setDialog(undefined);
@@ -2634,13 +2905,8 @@ export function Canvas({
           choices={library.filter(({ choice }) => choice.kind === 'run')}
           onPick={(choice) => {
             setDialog(undefined);
-            if (choice.kind !== 'run') return;
-            const replaced = onReplaceBlock?.(dialogBlock.id, choice);
             container.current?.focus();
-            if (replaced !== undefined) {
-              setFocused(replaced);
-              announce(t('canvas.replaced', { name: replaced }));
-            }
+            replaceBlockWith(dialogBlock.id, choice);
           }}
           onClose={() => {
             setDialog(undefined);
@@ -2664,27 +2930,13 @@ export function Canvas({
               now: now.length === 0 ? undefined : now.join(', '),
             };
           })}
-          targetsOf={(output) => {
-            const origin = document.positions[dialogBlock.id] ?? { x: 0, y: 0 };
-            const distance = (id: string): number => {
-              const at = document.positions[id] ?? origin;
-              return Math.hypot(at.x - origin.x, at.y - origin.y);
-            };
-            return validTargets(document, dialogBlock.id, output)
-              .sort((a, b) => distance(a) - distance(b))
-              .map((id) => ({ id, name: nameOf(id) }));
-          }}
+          targetsOf={(output) =>
+            targetsOf(dialogBlock.id, output).map((id) => ({ id, name: nameOf(id) }))
+          }
           onConnect={(output, target) => {
             setDialog(undefined);
-            onChange((current) => connect(current, dialogBlock.id, output, target));
             container.current?.focus();
-            announce(
-              t('canvas.connected', {
-                from: nameOf(dialogBlock.id),
-                output: outputLabel(output),
-                to: nameOf(target),
-              }),
-            );
+            connectBlock(dialogBlock.id, output, target);
           }}
           onClose={() => {
             setDialog(undefined);

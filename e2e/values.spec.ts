@@ -430,7 +430,11 @@ test('Enter hands the keyboard back, F2 renames, Replace starts a block afresh, 
 
   // Replace puts a new block in place: a new name, no values, the same connections.
   await block(window, 'first').click({ button: 'right' });
-  await window.locator('.context-menu-root').getByRole('menuitem', { name: 'Replace…' }).click();
+  await window.locator('.context-menu-root').getByRole('menuitem', { name: 'Replace' }).click();
+  await window
+    .getByRole('menu', { name: 'Replace' })
+    .getByRole('menuitem', { name: 'Search…' })
+    .click();
   await window.getByTestId('add-choices').getByRole('button', { name: 'Writer' }).click();
   await expect(block(window, 'Writer1')).toBeVisible();
   await expect(block(window, 'first')).toHaveCount(0);
