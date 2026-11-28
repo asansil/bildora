@@ -135,6 +135,10 @@ import { matchingBlocks } from './find.js';
 const CULL_FROM = 150;
 /** A flow opens at a readable zoom on its Start block; a long one fitted to the screen is too small. */
 const OPENING_ZOOM = 1;
+/** The smallest zoom whose block names still read well. */
+const READABLE_ZOOM = 0.75;
+/** Room left around a flow that opens whole, in pixels, so nothing touches the canvas edges. */
+const OPENING_MARGIN = 32;
 /** Room a group's frame leaves around its blocks, and the height of its name. */
 const FRAME_PADDING = 16;
 const FRAME_HEADER = 28;
@@ -1764,7 +1768,8 @@ export function Canvas({
     [onChange],
   );
 
-  // Where a flow opens: its Start block at a readable size, once the tab can be measured.
+  // Where a flow opens, once the tab can be measured: the whole flow when it fits at a readable
+  // size, its Start block otherwise.
   useEffect(() => {
     if (!active || !hasWidth || opened.current) return undefined;
     const frame = requestAnimationFrame(() => {
@@ -1772,9 +1777,23 @@ export function Canvas({
       const at = start === undefined ? undefined : document.positions[start.id];
       if (start === undefined || at === undefined) return;
       const bounds = flow.getNodesBounds([start.id]);
-      const width = container.current?.getBoundingClientRect().width ?? 0;
+      const area = container.current?.getBoundingClientRect();
+      const width = area?.width ?? 0;
       if (width === 0) return;
       opened.current = true;
+      const whole = flow.getNodesBounds(flow.getNodes());
+      const height = area?.height ?? 0;
+      const fitting = Math.min(
+        OPENING_ZOOM,
+        (width - 2 * OPENING_MARGIN) / Math.max(1, whole.width),
+        (height - 2 * OPENING_MARGIN) / Math.max(1, whole.height),
+      );
+      if (fitting >= READABLE_ZOOM) {
+        void flow.setCenter(whole.x + whole.width / 2, whole.y + whole.height / 2, {
+          zoom: fitting,
+        });
+        return;
+      }
       // Start sits a little in from the left edge, so the flow reads on from there.
       const offset = Math.max(0, width / 2 - 96) / OPENING_ZOOM;
       void flow.setCenter(bounds.x + offset, bounds.y + bounds.height / 2, { zoom: OPENING_ZOOM });
@@ -1800,7 +1819,7 @@ export function Canvas({
           bounds.y + bounds.height <= far.y;
         if (inSight && !center) return;
         void flow.setCenter(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, {
-          zoom: Math.max(flow.getZoom(), 0.75),
+          zoom: Math.max(flow.getZoom(), READABLE_ZOOM),
         });
       });
     },
